@@ -11,7 +11,7 @@
 当前优先提交包：
 
 ```text
-experiments/goalflow_ltr120_lambda2_head0_judge_v2_clean/blindset_A/submission.zip
+experiments/goalflow_ltr120_lambda2_head0_judge_mix_clean/blindset_A/submission.zip
 ```
 
 ## 1. 比赛任务一句话
