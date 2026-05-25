@@ -1323,6 +1323,7 @@ L2 正则可以理解成“不要让树的判断太激进”。单折里 `lambda
 | 120-tree judge_v2_clean | 0.182098 | 0.148765 | 当前主回复 |
 | 120-tree lambda2 judge_v2 | 0.183021 | 0.148741 | 当前主 ranking + 当前主回复 |
 | 120/140/200 lambda2 RRF ensemble | 0.183253 | 0.148741 | 当前本地 OOF 最高，但收益很小 |
+| 120-tree lambda2 judge_v3 | 0.183021 | 0.125937 | 回复更像完整解释，但 lexical 下降 |
 
 Blind A gold-free 检查：
 
@@ -1334,6 +1335,8 @@ Blind A gold-free 检查：
 | `goalflow_ltr120_lambda2_head0_compact_broad_clean` | 1496 | 0.031782 | 0.696674 |
 | `goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v2_clean` | 1494 | 0.031739 | 0.485312 |
 | `goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_broad_clean` | 1494 | 0.031739 | 0.700198 |
+| `goalflow_ltr120_lambda2_head0_judge_v3_clean` | 1496 | 0.031782 | 0.434335 |
+| `goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v3_clean` | 1494 | 0.031739 | 0.437063 |
 
 ### 17.4 候选缓存和 ensemble
 
@@ -1376,7 +1379,26 @@ OOF 结果：
 
 因为提升非常小，而且 Blind A unique tracks 从 `1496` 降到 `1494`，我把 ensemble 放在“有提交预算时可以试”的位置，而不是直接替代主包。
 
-### 17.5 当前提交顺序
+### 17.5 judge-v3 回复实验
+
+`judge_v3` 是一个更像自然解释的版本。它会明确写：
+
+- 我把当前请求理解成哪一类意图；
+- 第一首歌为什么排第一；
+- 可验证的 metadata 证据是什么；
+- 历史正/负反馈和用户画像如何作为辅助信号；
+- 第二、第三首歌为什么作为备选。
+
+它的缺点是模板骨架更长，所以 Distinct-2 比 `judge_v2` 低：
+
+| Style | Blind A Distinct-2 | 结论 |
+|---|---:|---|
+| `judge_v2` | 0.485312 | 当前主回复 |
+| `judge_v3` | 0.434335 | 更完整，但 lexical 指标更低 |
+
+所以它不是主版本，只作为 LLM judge 备选。如果 Gemini 更喜欢解释完整度，`judge_v3` 可能有机会；如果 Gemini 同时惩罚重复表达，`judge_v2` 更稳。
+
+### 17.6 当前提交顺序
 
 第一优先：
 
@@ -1413,12 +1435,28 @@ experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_broad_clean/blinds
 第五备选：
 
 ```text
+experiments/goalflow_ltr120_lambda2_head0_judge_v3_clean/blindset_A/submission.zip
+```
+
+理由：同一套 120-tree lambda2 ranking，换成更完整的自然解释。Distinct-2 低于 judge_v2，所以仅作为 LLM judge 试验。
+
+第六备选：
+
+```text
+experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v3_clean/blindset_A/submission.zip
+```
+
+理由：ensemble ranking + judge_v3 回复，同时承担 ranking 微增益和文本风格风险。
+
+第七备选：
+
+```text
 experiments/goalflow_ltr120_head0_judge_v2_clean/blindset_A/submission.zip
 ```
 
 理由：上一轮 120-tree 无 L2 主包，Blind A 唯一曲目略高，但 OOF nDCG 低于 lambda2。
 
-第六备选：
+第八备选：
 
 ```text
 experiments/goalflow_ltr_head0_polished_v3/blindset_A/submission.zip

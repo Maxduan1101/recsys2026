@@ -39,6 +39,15 @@ experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_broad_clean/blinds
 
 Same ensemble ranking, with Distinct-2 `0.70020`.
 
+Fuller-prose LLM-judge backups:
+
+```text
+experiments/goalflow_ltr120_lambda2_head0_judge_v3_clean/blindset_A/submission.zip
+experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v3_clean/blindset_A/submission.zip
+```
+
+These use the same rankings as the `judge_v2` packages but longer, more natural explanations. They have lower local lexical diversity (`0.43434` / `0.43706` on Blind A), so use them only to test whether the LLM judge rewards fuller explanation quality more than Distinct-2.
+
 Previous LTR backup:
 
 ```text

@@ -123,6 +123,15 @@ This package RRF-ensembles the 120/140/200-tree `reg_lambda=2` LTR rankings with
 /Users/bytedance/generated_problems/recsys2026_music_crs/goalflow_musiccrs/experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_broad_clean/blindset_A/submission.zip
 ```
 
+Fuller-prose LLM-judge text backups:
+
+```text
+/Users/bytedance/generated_problems/recsys2026_music_crs/goalflow_musiccrs/experiments/goalflow_ltr120_lambda2_head0_judge_v3_clean/blindset_A/submission.zip
+/Users/bytedance/generated_problems/recsys2026_music_crs/goalflow_musiccrs/experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v3_clean/blindset_A/submission.zip
+```
+
+These keep the same rankings as the `judge_v2` packages but use longer, more natural explanations. Local lexical diversity is lower than `judge_v2`, so they are backups for testing whether Gemini-style judging rewards fuller explanation more than Distinct-2.
+
 The previous LTR package is still available as a fallback:
 
 ```text

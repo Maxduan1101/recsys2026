@@ -1075,6 +1075,72 @@ def _generate_judge_v2_response(state: ConversationState, catalog: TrackCatalog,
     return " ".join(part for part in [lead, reason, context, backup] if part)
 
 
+def _generate_judge_v3_response(state: ConversationState, catalog: TrackCatalog, track_ids: list[str]) -> str:
+    if not track_ids:
+        return "I found a few tracks that should fit the direction you described."
+
+    first_phrase = _track_phrase(catalog, track_ids[0])
+    second_phrase = _track_phrase(catalog, track_ids[1]) if len(track_ids) > 1 else ""
+    third_phrase = _track_phrase(catalog, track_ids[2]) if len(track_ids) > 2 else ""
+    intent = infer_intent(state)
+    direction = _judge_direction_phrase(state, intent)
+    first_detail = _judge_track_detail(catalog, track_ids[0])
+    second_detail = _judge_track_detail(catalog, track_ids[1]) if len(track_ids) > 1 else ""
+    feedback = _judge_feedback_sentence(state, catalog)
+    profile = _judge_profile_phrase(state)
+
+    lead = _pick(
+        state,
+        [
+            f"I read this as {direction}, so I put {first_phrase} first.",
+            f"My first pick is {first_phrase} because the conversation points most strongly toward {direction}.",
+            f"I treated the request as {direction} and used {first_phrase} as the lead answer.",
+        ],
+        salt=f"judge-v3-lead-{intent}",
+    )
+    reason = _pick(
+        state,
+        [
+            f"The verifiable catalog evidence is {first_detail}.",
+            f"The concrete match I can cite is {first_detail}.",
+            f"I am grounding that choice in {first_detail}.",
+        ],
+        salt="judge-v3-reason",
+    )
+
+    context_parts = []
+    if feedback:
+        context_parts.append(feedback)
+    if profile:
+        context_parts.append(
+            _pick(
+                state,
+                [
+                    f"I only used {profile} after the conversation clues were matched.",
+                    f"{profile.capitalize()} helped break close ties, but did not override the request.",
+                    f"I treated {profile} as a secondary signal for the final order.",
+                ],
+                salt="judge-v3-profile",
+            )
+        )
+
+    backup = ""
+    if second_phrase and third_phrase:
+        backup = _pick(
+            state,
+            [
+                f"I put {second_phrase} next because {second_detail}, with {third_phrase} as a nearby fallback.",
+                f"If the lead is not quite the one, {second_phrase} is the next focused check and {third_phrase} gives the list another close route.",
+                f"The second and third checks are {second_phrase} and {third_phrase}, so the list can recover without drifting too far.",
+            ],
+            salt="judge-v3-backup-two",
+        )
+    elif second_phrase:
+        backup = f"If the lead is not quite the one, {second_phrase} is the next focused check."
+
+    return " ".join(part for part in [lead, reason, *context_parts[:2], backup] if part)
+
+
 def _generate_polished_response(state: ConversationState, catalog: TrackCatalog, track_ids: list[str]) -> str:
     if not track_ids:
         return "I found a few tracks that should fit the direction you described."
@@ -1196,4 +1262,6 @@ def generate_response(
         return _generate_judge_response(state, catalog, track_ids)
     if style == "judge_v2":
         return _generate_judge_v2_response(state, catalog, track_ids)
+    if style == "judge_v3":
+        return _generate_judge_v3_response(state, catalog, track_ids)
     raise ValueError(f"Unsupported response style: {style!r}")
