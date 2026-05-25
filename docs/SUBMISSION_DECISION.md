@@ -23,6 +23,22 @@ experiments/goalflow_ltr120_lambda2_head0_compact_broad_clean/blindset_A/submiss
 
 Use this if the first LTR judge-v2 package unexpectedly loses on lexical diversity or if maximizing Distinct-2 becomes the only goal. It has the same best L2-regularized LTR ranking and local Blind A catalog diversity, but Distinct-2 is higher at `0.69667` and the response is more mechanical.
 
+OOF-max ensemble backup:
+
+```text
+experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v2_clean/blindset_A/submission.zip
+```
+
+This RRF-ensembles the 120/140/200-tree L2 LTR packages with `rrf_k=60`. It has the best local OOF score so far (`nDCG@20=0.18325`), but the gain over the single 120-tree model is only `+0.00023` and Blind A unique-track coverage is slightly lower (`1494` vs `1496`). Treat it as a micro-gain experiment, not a risk-free replacement.
+
+OOF-max high-lexical ensemble backup:
+
+```text
+experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_broad_clean/blindset_A/submission.zip
+```
+
+Same ensemble ranking, with Distinct-2 `0.70020`.
+
 Previous LTR backup:
 
 ```text
@@ -48,6 +64,9 @@ Rejected near-misses:
 - `min_child_samples=80`: won one held-out split, but five-fold OOF dropped to `nDCG@20=0.18114`.
 - Row bagging/subsample values below `1.0`: once `subsample_freq=1` made row subsampling active, all tested values underperformed no-bagging.
 - L2 `reg_lambda=0.1`: won the first held-out split, but five-fold OOF dropped to `nDCG@20=0.18154`; `reg_lambda=2` is the accepted L2 setting.
+- L1 regularization: every tested `reg_alpha` value underperformed `reg_alpha=0` on the held-out split.
+- More trees as a single model: 140/160/200 trees looked good on fold 0, but five-fold OOF was worse than 120 trees.
+- `colsample_bytree=1.0` and `learning_rate=0.06`: both had small fold 0 gains and worse five-fold OOF.
 
 Key correction:
 

@@ -1322,6 +1322,7 @@ L2 正则可以理解成“不要让树的判断太激进”。单折里 `lambda
 | 120-tree polished | 0.182098 | 0.137308 | 自然，但词汇多样性低 |
 | 120-tree judge_v2_clean | 0.182098 | 0.148765 | 当前主回复 |
 | 120-tree lambda2 judge_v2 | 0.183021 | 0.148741 | 当前主 ranking + 当前主回复 |
+| 120/140/200 lambda2 RRF ensemble | 0.183253 | 0.148741 | 当前本地 OOF 最高，但收益很小 |
 
 Blind A gold-free 检查：
 
@@ -1331,8 +1332,51 @@ Blind A gold-free 检查：
 | `goalflow_ltr120_head0_compact_broad_clean` | 1500 | 0.031867 | 0.702228 |
 | `goalflow_ltr120_lambda2_head0_judge_v2_clean` | 1496 | 0.031782 | 0.485312 |
 | `goalflow_ltr120_lambda2_head0_compact_broad_clean` | 1496 | 0.031782 | 0.696674 |
+| `goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v2_clean` | 1494 | 0.031739 | 0.485312 |
+| `goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_broad_clean` | 1494 | 0.031739 | 0.700198 |
 
-### 17.4 当前提交顺序
+### 17.4 候选缓存和 ensemble
+
+为了避免每次调参都重新检索 8000 个 dev turn，我给 `run_ltr_rerank.py` 加了 LTR candidate frame cache。
+
+可以把它理解成：先把“每个 turn 的候选歌曲 + 特征表”存下来，后面只训练不同的 LightGBM，不再重复 BM25/RRF 检索。
+
+缓存位置：
+
+```text
+cache/ltr_candidate_frames/
+```
+
+我做了两次烟测：
+
+- 第一次 dev-limit 小样本会写入 cache；
+- 第二次同参数运行会打印 `Loaded LTR candidate cache`，并得到完全相同的分数。
+
+我还新增了：
+
+```text
+scripts/ensemble_predictions.py
+```
+
+它的作用是把多个已经生成好的 `prediction.json` 做 RRF 融合。RRF 的意思是 Reciprocal Rank Fusion，可以粗略理解成“几份榜单都靠前的歌会被加分”。这次最佳组合是：
+
+```text
+120-tree lambda2
+140-tree lambda2
+200-tree lambda2
+rrf_k=60
+```
+
+OOF 结果：
+
+| Run | nDCG@20 | 结论 |
+|---|---:|---|
+| single 120-tree lambda2 | 0.183021 | 最稳的单模型 |
+| RRF ensemble 120/140/200 | 0.183253 | 本地最高，但只高 `0.000232` |
+
+因为提升非常小，而且 Blind A unique tracks 从 `1496` 降到 `1494`，我把 ensemble 放在“有提交预算时可以试”的位置，而不是直接替代主包。
+
+### 17.5 当前提交顺序
 
 第一优先：
 
@@ -1345,12 +1389,28 @@ experiments/goalflow_ltr120_lambda2_head0_judge_v2_clean/blindset_A/submission.z
 第二备选：
 
 ```text
+experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v2_clean/blindset_A/submission.zip
+```
+
+理由：当前最高 OOF nDCG，但收益很小，Blind A 覆盖度略低。适合在有提交预算时试。
+
+第三备选：
+
+```text
 experiments/goalflow_ltr120_lambda2_head0_compact_broad_clean/blindset_A/submission.zip
 ```
 
 理由：同一套 ranking，Distinct-2 更高。如果 judge 对自然度不敏感、主要奖励词汇多样性，这个包可能更好。
 
-第三备选：
+第四备选：
+
+```text
+experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_broad_clean/blindset_A/submission.zip
+```
+
+理由：同一套 ensemble ranking，换成高 Distinct-2 回复。
+
+第五备选：
 
 ```text
 experiments/goalflow_ltr120_head0_judge_v2_clean/blindset_A/submission.zip
@@ -1358,7 +1418,7 @@ experiments/goalflow_ltr120_head0_judge_v2_clean/blindset_A/submission.zip
 
 理由：上一轮 120-tree 无 L2 主包，Blind A 唯一曲目略高，但 OOF nDCG 低于 lambda2。
 
-第四备选：
+第六备选：
 
 ```text
 experiments/goalflow_ltr_head0_polished_v3/blindset_A/submission.zip

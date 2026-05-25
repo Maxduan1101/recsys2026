@@ -89,9 +89,14 @@ This file tracks questions and optimization directions that deserve a dedicated 
    - Rejected `num_leaves=63` despite a better first held-out fold; five-fold OOF dropped to `0.18124`, below 31 leaves.
    - Rejected `min_child_samples=80`: first held-out fold improved slightly, but five-fold OOF dropped to `0.18114`.
    - Rejected row bagging for now: after enabling `subsample_freq=1`, subsample values under `1.0` all lost to no row sampling on the held-out fold.
-   - Engineering backlog: cache `build_candidate_frames` outputs as a parquet/arrow artifact so LTR hyperparameter sweeps do not repeat the expensive 8000-turn retrieval pass.
+   - Rejected L1 regularization: all tested `reg_alpha` values underperformed `reg_alpha=0` on fold 0.
+   - Rejected larger single models after OOF: 140/160/200 trees looked good on fold 0 but lost to 120-tree lambda2 on five-fold OOF.
+   - Rejected `colsample_bytree=1.0` and `learning_rate=0.06`: both had fold 0 gains and worse OOF.
+   - Implemented `build_candidate_frames` caching in `scripts/run_ltr_rerank.py`, using `cache/ltr_candidate_frames/*.pkl` plus metadata JSON. Smoke tests confirmed write/load parity.
+   - Implemented `scripts/ensemble_predictions.py` for RRF ensembling. Best local OOF so far is the 120/140/200-tree L2 ensemble at `nDCG@20=0.183253`, but the gain over the single 120-tree model is only `+0.000232`.
    - Deep research question: why do LTR hyperparameters show fold-specific wins that fail OOF, and can we design a more reliable early-stopping/model-selection protocol for only 80-row Blind A?
    - Deep research question: why does wholesale LTR replacement work so well offline despite Pro's earlier caution, and does that hold on Blind B/private splits?
+   - Deep research question: is tiny OOF gain from same-family rank ensembling likely to transfer to Blind A/B, or is it mostly dev-fold noise?
 
 7. **Cross-encoder reranking**
    - Compare `bge-reranker-v2-m3`, DeBERTa, and Qwen reranker-style LoRA for top-100 reranking.

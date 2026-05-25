@@ -20,7 +20,9 @@ The first runnable system implements:
 - conservative top-20 diversity post-processing;
 - optional source-gated fusion and tail-only global-repeat diversification;
 - LightGBM LambdaRank reranking for a learned source-fusion path;
-- configurable response styles, with `polished` as the current LTR submission default and `compact_broad` as the high-lexical backup;
+- cached LTR candidate frames for faster hyperparameter sweeps;
+- RRF ensembling over compatible prediction files;
+- configurable response styles, with `judge_v2` as the current LTR submission default and `compact_broad` as the high-lexical backup;
 - devset prediction, official evaluator compatibility, Blind A `submission.zip` generation.
 
 ## Run
@@ -107,6 +109,18 @@ This package uses full-dev LightGBM LambdaRank training for Blind A, with `reg_l
 
 ```text
 /Users/bytedance/generated_problems/recsys2026_music_crs/goalflow_musiccrs/experiments/goalflow_ltr120_lambda2_head0_compact_broad_clean/blindset_A/submission.zip
+```
+
+OOF-max micro-gain ensemble package:
+
+```text
+/Users/bytedance/generated_problems/recsys2026_music_crs/goalflow_musiccrs/experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v2_clean/blindset_A/submission.zip
+```
+
+This package RRF-ensembles the 120/140/200-tree `reg_lambda=2` LTR rankings with `rrf_k=60`. It has the best local OOF `nDCG@20=0.18325`, but the gain over the single 120-tree LTR is only `+0.00023`, so keep the single-model package as the more conservative main choice unless submission budget allows testing the ensemble. Its high-lexical backup is:
+
+```text
+/Users/bytedance/generated_problems/recsys2026_music_crs/goalflow_musiccrs/experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_broad_clean/blindset_A/submission.zip
 ```
 
 The previous LTR package is still available as a fallback:
@@ -240,6 +254,14 @@ python goalflow_musiccrs/scripts/refresh_responses.py \
   --tid goalflow_ltr120_lambda2_head0_compact_broad_clean \
   --response-style compact_broad \
   --zip
+
+python goalflow_musiccrs/scripts/ensemble_predictions.py \
+  --mode blind \
+  --tid goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v2_clean \
+  --input goalflow_musiccrs/experiments/goalflow_ltr120_lambda2_head0_judge_v2_clean/blindset_A/prediction.json \
+  --input goalflow_musiccrs/experiments/goalflow_ltr140_lambda2_head0_judge_v2_clean/blindset_A/prediction.json \
+  --input goalflow_musiccrs/experiments/goalflow_ltr200_lambda2_head0_judge_v2_clean/blindset_A/prediction.json \
+  --rrf-k 60
 ```
 
 Older polished-response fallback:
@@ -259,6 +281,6 @@ This is Phase 1/2 infrastructure. It deliberately avoids direct dependence on ga
 
 The current primary submission setting uses unprotected LightGBM LambdaRank with `preserve_head_k=0`, `n_estimators=120`, `colsample_bytree=0.9`, and `reg_lambda=2`. The older `legacy_head_k=20` package is now only a conservative fallback: it preserves the strongest BM25-style head ranking, but its local dev validation is far below the tuned LTR path.
 
-Public Blind A feedback from one conservative submission was `nDCG@20=0.1935`, `catalog_diversity=0.0257`, `lexical_diversity=0.0125`, and `llm_judge_score=1.0`. Blind A currently has only 80 rows, so the maximum possible catalog diversity is `1600 / 47071 = 0.0340`; catalog is not the main bottleneck. After OOF validation and LTR tuning, the immediate best submission candidate is `goalflow_ltr120_lambda2_head0_judge_v2_clean`, with `goalflow_ltr120_lambda2_head0_compact_broad_clean` as a higher-Distinct-2 text backup and `goalflow_head20_compact_broad` as the conservative legacy-rank backup.
+Public Blind A feedback from one conservative submission was `nDCG@20=0.1935`, `catalog_diversity=0.0257`, `lexical_diversity=0.0125`, and `llm_judge_score=1.0`. Blind A currently has only 80 rows, so the maximum possible catalog diversity is `1600 / 47071 = 0.0340`; catalog is not the main bottleneck. After OOF validation and LTR tuning, the immediate conservative submission candidate is `goalflow_ltr120_lambda2_head0_judge_v2_clean`, with `goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v2_clean` as a tiny-OOF-gain ensemble candidate, `goalflow_ltr120_lambda2_head0_compact_broad_clean` as a higher-Distinct-2 text backup, and `goalflow_head20_compact_broad` as the conservative legacy-rank backup.
 
 The newest diagnostics show the added sources are useful for recall but not yet calibrated for rank fusion: the best single source per dev state reaches hit@20 `0.4715` / nDCG@20 `0.2600`, while the current RRF fusion reaches hit@20 `0.2595` / nDCG@20 `0.1015`. Legacy-vs-fused deltas show `446` gained top-20 hits but `212` lost hits and `642` demotions, so the next implementation step is source gating or a learning-to-rank model rather than simply adding more BM25 sources.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import zipfile
@@ -33,6 +34,7 @@ from goalflow.validation import validate_predictions
 
 LTR_CATEGORICAL = ["intent", "category", "specificity"]
 META_COLUMNS = {"session_id", "user_id", "track_id", "label"}
+CANDIDATE_CACHE_VERSION = "ltr_candidate_frames_v1"
 
 
 def dcg_at_20(gold_track_id: str | None, ranked_track_ids: list[str]) -> float:
@@ -123,6 +125,111 @@ def build_candidate_frames(
             )
             rows.append(row)
     return pd.DataFrame(rows), legacy_by_group, state_by_group
+
+
+def candidate_cache_key(
+    *,
+    split: str,
+    config: GoalFlowConfig,
+    max_candidates_per_group: int,
+) -> str:
+    payload = {
+        "version": CANDIDATE_CACHE_VERSION,
+        "split": split,
+        "conversation_dataset_name": config.conversation_dataset_name,
+        "blind_dataset_name": config.blind_dataset_name,
+        "use_train_augmentation": config.use_train_augmentation,
+        "retrieval_top_k": config.retrieval_top_k,
+        "rerank_pool_size": config.rerank_pool_size,
+        "rrf_k": config.rrf_k,
+        "dev_limit": config.dev_limit,
+        "max_candidates_per_group": max_candidates_per_group,
+    }
+    digest = hashlib.sha1(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:12]
+    return f"{split}_{digest}"
+
+
+def candidate_cache_paths(config: GoalFlowConfig, cache_key: str) -> tuple[Path, Path]:
+    cache_dir = config.cache_dir / "ltr_candidate_frames"
+    return cache_dir / f"{cache_key}.pkl", cache_dir / f"{cache_key}.json"
+
+
+def load_candidate_frame_cache(
+    *,
+    states,
+    config: GoalFlowConfig,
+    cache_key: str,
+) -> tuple[pd.DataFrame, dict[int, list[str]], dict[int, object]] | None:
+    df_path, meta_path = candidate_cache_paths(config, cache_key)
+    if not df_path.exists() or not meta_path.exists():
+        return None
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    if meta.get("state_count") != len(states):
+        return None
+    df = pd.read_pickle(df_path)
+    legacy_by_group = {
+        int(group_id): list(track_ids)
+        for group_id, track_ids in meta.get("legacy_by_group", {}).items()
+    }
+    state_by_group = {group_id: state for group_id, state in enumerate(states)}
+    print(f"Loaded LTR candidate cache: {df_path}")
+    return df, legacy_by_group, state_by_group
+
+
+def write_candidate_frame_cache(
+    *,
+    states,
+    config: GoalFlowConfig,
+    cache_key: str,
+    df: pd.DataFrame,
+    legacy_by_group: dict[int, list[str]],
+) -> None:
+    df_path, meta_path = candidate_cache_paths(config, cache_key)
+    df_path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_pickle(df_path)
+    meta = {
+        "version": CANDIDATE_CACHE_VERSION,
+        "state_count": len(states),
+        "row_count": len(df),
+        "legacy_by_group": {str(group_id): track_ids for group_id, track_ids in legacy_by_group.items()},
+    }
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    print(f"Wrote LTR candidate cache: {df_path}")
+
+
+def build_or_load_candidate_frames(
+    *,
+    split: str,
+    states,
+    config: GoalFlowConfig,
+    catalog: TrackCatalog,
+    retriever,
+    max_candidates_per_group: int,
+) -> tuple[pd.DataFrame, dict[int, list[str]], dict[int, object]]:
+    cache_key = candidate_cache_key(
+        split=split,
+        config=config,
+        max_candidates_per_group=max_candidates_per_group,
+    )
+    if not config.rebuild_cache:
+        cached = load_candidate_frame_cache(states=states, config=config, cache_key=cache_key)
+        if cached is not None:
+            return cached
+    df, legacy_by_group, state_by_group = build_candidate_frames(
+        states=states,
+        config=config,
+        catalog=catalog,
+        retriever=retriever,
+        max_candidates_per_group=max_candidates_per_group,
+    )
+    write_candidate_frame_cache(
+        states=states,
+        config=config,
+        cache_key=cache_key,
+        df=df,
+        legacy_by_group=legacy_by_group,
+    )
+    return df, legacy_by_group, state_by_group
 
 
 def prepare_features(
@@ -475,7 +582,8 @@ def main() -> None:
     retriever = prepare_retriever(config, catalog)
 
     dev_states = load_dev_states(config)
-    dev_df, dev_legacy, dev_state_by_group = build_candidate_frames(
+    dev_df, dev_legacy, dev_state_by_group = build_or_load_candidate_frames(
+        split="dev",
         states=dev_states,
         config=config,
         catalog=catalog,
@@ -708,7 +816,8 @@ def main() -> None:
 
     if args.mode == "blind":
         states = load_blind_states(config)
-        apply_df, legacy_by_group, _state_by_group = build_candidate_frames(
+        apply_df, legacy_by_group, _state_by_group = build_or_load_candidate_frames(
+            split="blindA",
             states=states,
             config=config,
             catalog=catalog,
