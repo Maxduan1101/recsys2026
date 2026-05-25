@@ -96,6 +96,7 @@ Rejected near-misses:
 - `n_estimators=260`: stable but lower OOF than 120 trees.
 - `num_leaves=63`: won the first held-out fold, but five-fold OOF dropped to `nDCG@20=0.18124`, so it did not generalize.
 - `max_candidates_per_group=500`: added more candidates but lowered the main held-out score compared with max 300.
+- `max_candidates_per_group=200`: reduced training noise but lost too many positives; held-out nDCG@20 fell to `0.18156` and valid positive groups dropped from `787` to `737`.
 - Extra lexical/entity/year aggregate features: held-out nDCG@20 fell to `0.17941`, so the added features were noise.
 - `min_child_samples=80`: won one held-out split, but five-fold OOF dropped to `nDCG@20=0.18114`.
 - Row bagging/subsample values below `1.0`: once `subsample_freq=1` made row subsampling active, all tested values underperformed no-bagging.

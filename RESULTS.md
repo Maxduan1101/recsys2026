@@ -38,6 +38,7 @@ Development-set scores from the official evaluator.
 | `goalflow_ens_oof_ltr120_140_200_lambda2_rrf60` | 0.071000 | 0.163316 | 0.183253 | 0.525695 | 0.148741 | Micro-gain ensemble: only `+0.00023` over the single 120-tree model. |
 | `goalflow_ltr120_lambda2_head0_oof_judge_v3` | 0.070875 | 0.162514 | 0.183021 | 0.528011 | 0.125937 | Same ranking as `judge_v2`; more complete prose but lower lexical diversity. |
 | `goalflow_ltr120_lambda2_head0_oof_judge_mix` | 0.070875 | 0.162514 | 0.183021 | 0.528011 | 0.159260 | Same ranking as `judge_v2`; mixed response templates improve official lexical diversity. |
+| `goalflow_ens_oof_ltr120_140_200_lambda2_rrf60_judge_mix` | 0.071000 | 0.163316 | 0.183253 | 0.525695 | 0.159014 | Same ensemble ranking; mixed response templates improve lexical diversity. |
 | `goalflow_segcat_ltr120_140_200_ens_judge_v2` | 0.072125 | 0.164281 | 0.184069 | 0.526481 | 0.148494 | High-risk segment-selection experiment: best non-nested OOF score, but nested segment validation regresses. |
 
 Immediate interpretation:
@@ -191,6 +192,7 @@ Key validation:
 - Blind A local summary for `goalflow_ltr120_head0_judge_v2_clean`: 1500 unique tracks out of 1600 recommendation slots, catalog diversity `0.031867`, Distinct-2 `0.488329`.
 - Blind A local summary for `goalflow_ltr120_lambda2_head0_judge_v2_clean`: 1496 unique tracks out of 1600 recommendation slots, catalog diversity `0.031782`, Distinct-2 `0.485312`.
 - Max-500 candidate expansion was rejected: held-out head0 nDCG@20 `0.182574`, below the max-300 single-fold score `0.184317` for the 120-tree model.
+- Max-200 candidate reduction was rejected: held-out head0 nDCG@20 `0.181556`, and valid groups with positive candidates dropped from `787` to `737`.
 - Extra lexical/entity/year aggregate features were rejected: held-out nDCG@20 fell to `0.179408`.
 - A larger 63-leaf model was rejected after OOF: it won the first held-out fold (`0.184676` vs `0.184317`) but lost overall (`0.181239` vs `0.182098`).
 - L2 `reg_lambda=0.1` was rejected after OOF: fold 0 improved to `0.184929`, but five-fold official `nDCG@20` was `0.181537`.
