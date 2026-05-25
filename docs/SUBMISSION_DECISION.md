@@ -1,18 +1,26 @@
 # Blind A Submission Decision
 
-Recommended first retry:
+Recommended first retry after LTR OOF validation:
 
 ```text
-experiments/goalflow_head20_compact_broad/blindset_A/submission.zip
+experiments/goalflow_ltr_head0_polished_v3/blindset_A/submission.zip
 ```
 
 Why this one:
 
-- It keeps the same ranking strategy that already scored public nDCG@20 `0.1935`.
-- It changes only the response text, which was the clear weak point: public lexical diversity `0.0125`, LLM judge `1.0`.
-- Local Blind A Distinct-2 rises to `0.6642`.
-- It keeps compact v2's lexical diversity while filtering bad/private tag artifacts such as `albums i own`, `seen live`, `lastfm`, and profanity-like tag variants.
-- It avoids spending submission risk on tail ranking changes whose catalog-diversity gain is small on an 80-row blind split.
+- Five-fold out-of-fold dev validation reaches official `nDCG@20=0.18095`, versus `0.08587` for the conservative legacy head20 dev baseline.
+- Blind-A-shaped 500-panel validation gives mean nDCG@20 `0.16737`, with mean delta `+0.08088` over head20.
+- Local Blind A catalog diversity is `0.03180`, close to the 80-row ceiling `0.03399`.
+- Local Blind A Distinct-2 is `0.45124`; this is lower than compact-broad but the response is much more natural for the Gemini judge.
+- It directly attacks the previous public weak points: `lexical_diversity=0.0125` and `llm_judge_score=1.0`, while also improving local ranking validation.
+
+High-lexical LTR backup:
+
+```text
+experiments/goalflow_ltr_head0_compact_broad/blindset_A/submission.zip
+```
+
+Use this if the first LTR polished package unexpectedly loses on LLM judge or if maximizing Distinct-2 becomes the only goal. It has the same LTR ranking and local Blind A catalog diversity, but Distinct-2 is higher at `0.69996` and the response is more mechanical.
 
 Key correction:
 
@@ -42,7 +50,15 @@ lexical=0.0125
 llm_judge=1.0
 ```
 
-Backup package:
+Conservative legacy-rank backup:
+
+```text
+experiments/goalflow_head20_compact_broad/blindset_A/submission.zip
+```
+
+This keeps the same ranking strategy that already scored public nDCG@20 `0.1935` and changes only response text. Use it if LTR underperforms on public Blind A despite strong OOF validation.
+
+Legacy middle backup:
 
 ```text
 experiments/goalflow_taildiv_head19_compact_broad/blindset_A/submission.zip

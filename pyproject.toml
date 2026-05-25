@@ -15,5 +15,11 @@ dependencies = [
   "tqdm>=4.66.0",
 ]
 
+[project.optional-dependencies]
+ltr = [
+  "lightgbm>=4.6.0",
+  "scikit-learn>=1.4.0",
+]
+
 [tool.setuptools]
 packages = ["goalflow"]

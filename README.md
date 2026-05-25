@@ -19,7 +19,8 @@ The first runnable system implements:
 - lightweight entity, era, tag, profile, and seed-feedback boosts;
 - conservative top-20 diversity post-processing;
 - optional source-gated fusion and tail-only global-repeat diversification;
-- configurable response styles, with `compact_broad` as the current submission default;
+- LightGBM LambdaRank reranking for a learned source-fusion path;
+- configurable response styles, with `polished` as the current LTR submission default and `compact_broad` as the high-lexical backup;
 - devset prediction, official evaluator compatibility, Blind A `submission.zip` generation.
 
 ## Run
@@ -97,6 +98,18 @@ The upload file is:
 ```
 
 Current recommended Blind A package:
+
+```text
+/Users/bytedance/generated_problems/recsys2026_music_crs/goalflow_musiccrs/experiments/goalflow_ltr_head0_polished_v3/blindset_A/submission.zip
+```
+
+This package uses full-dev LightGBM LambdaRank training for Blind A, then generates more natural metadata-grounded responses. OOF dev validation, where each dev turn is scored by a model that did not train on it, reaches official `nDCG@20=0.18095`, catalog diversity `0.52096`, and lexical diversity `0.13695`. A high-lexical response backup with the same LTR ranking is:
+
+```text
+/Users/bytedance/generated_problems/recsys2026_music_crs/goalflow_musiccrs/experiments/goalflow_ltr_head0_compact_broad/blindset_A/submission.zip
+```
+
+Previous conservative Blind A package:
 
 ```text
 /Users/bytedance/generated_problems/recsys2026_music_crs/goalflow_musiccrs/experiments/goalflow_head20_compact_broad/blindset_A/submission.zip
@@ -180,12 +193,41 @@ python goalflow_musiccrs/scripts/apply_embedding_tail_rescue.py \
 
 Important: use `talkpl-ai/TalkPlayData-Challenge-Track-Embeddings`, not the older `TalkPlayData-2-Track-Embeddings` from the baseline tips. The Challenge embedding `all_tracks` split has full overlap with the Challenge track catalog.
 
+LTR validation and Blind A package:
+
+```bash
+# One-time local dependency for LTR experiments. On macOS LightGBM may also need:
+# brew install libomp
+python -m pip install -e "goalflow_musiccrs[ltr]"
+
+python goalflow_musiccrs/scripts/run_ltr_rerank.py \
+  --mode oof-dev \
+  --tid goalflow_ltr_head0_oof_compact_broad \
+  --max-candidates-per-group 300 \
+  --preserve-head-k 0 \
+  --response-style compact_broad
+
+python goalflow_musiccrs/scripts/run_ltr_rerank.py \
+  --mode blind \
+  --tid goalflow_ltr_head0_compact_broad \
+  --max-candidates-per-group 300 \
+  --preserve-head-k 0 \
+  --response-style compact_broad
+
+python goalflow_musiccrs/scripts/refresh_responses.py \
+  --mode blind \
+  --input goalflow_musiccrs/experiments/goalflow_ltr_head0_compact_broad/blindset_A/prediction.json \
+  --tid goalflow_ltr_head0_polished_v3 \
+  --response-style polished \
+  --zip
+```
+
 ## Current Scope
 
-This is Phase 1/2 infrastructure. It deliberately avoids direct dependence on gated LLaMA, GPU-only FlashAttention, LightGBM, FAISS, or cross-encoder models. Those are tracked in `research/DEEP_RESEARCH_BACKLOG.md`.
+This is Phase 1/2 infrastructure. It deliberately avoids direct dependence on gated LLaMA, GPU-only FlashAttention, FAISS, or cross-encoder models. LightGBM is optional under the `ltr` extra and is now the strongest local ranking path. Remaining research items are tracked in `research/DEEP_RESEARCH_BACKLOG.md`.
 
 The current safe submission setting uses `legacy_head_k=20`: recommendation IDs exactly preserve the strongest known BM25 dev ranking while GoalFlow upgrades response generation. Experimental settings with lower `legacy_head_k` are useful for research, but currently reduce nDCG.
 
-Public Blind A feedback from one conservative submission was `nDCG@20=0.1935`, `catalog_diversity=0.0257`, `lexical_diversity=0.0125`, and `llm_judge_score=1.0`. Blind A currently has only 80 rows, so the maximum possible catalog diversity is `1600 / 47071 = 0.0340`; catalog is not the main bottleneck. The immediate best submission is therefore `goalflow_head20_compact_broad`: keep the ranking fixed and test the stronger, cleaner text generator. The `goalflow_taildiv_head19_compact_broad` and `goalflow_taildiv_head18_compact_broad` packages are backups that change only the final rank or final two ranks.
+Public Blind A feedback from one conservative submission was `nDCG@20=0.1935`, `catalog_diversity=0.0257`, `lexical_diversity=0.0125`, and `llm_judge_score=1.0`. Blind A currently has only 80 rows, so the maximum possible catalog diversity is `1600 / 47071 = 0.0340`; catalog is not the main bottleneck. After OOF validation, the immediate best submission candidate is `goalflow_ltr_head0_polished_v3`, with `goalflow_ltr_head0_compact_broad` as a higher-Distinct-2 text backup and `goalflow_head20_compact_broad` as the conservative legacy-rank backup.
 
 The newest diagnostics show the added sources are useful for recall but not yet calibrated for rank fusion: the best single source per dev state reaches hit@20 `0.4715` / nDCG@20 `0.2600`, while the current RRF fusion reaches hit@20 `0.2595` / nDCG@20 `0.1015`. Legacy-vs-fused deltas show `446` gained top-20 hits but `212` lost hits and `642` demotions, so the next implementation step is source gating or a learning-to-rank model rather than simply adding more BM25 sources.

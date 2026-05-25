@@ -55,7 +55,7 @@ def parse_args():
     parser.add_argument("--track-metadata-name", default=TRACK_METADATA)
     parser.add_argument(
         "--response-style",
-        choices=["compact", "compact_broad", "concise", "setwise", "natural"],
+        choices=["compact", "compact_broad", "concise", "setwise", "natural", "polished"],
         default="compact",
     )
     parser.add_argument("--copy-to-official-evaluator", action="store_true")

@@ -588,6 +588,178 @@ def _generate_natural_response(state: ConversationState, catalog: TrackCatalog, 
     return " ".join(part for part in [lead, reason, cue, backup] if part)
 
 
+def _clean_reason_parts(catalog: TrackCatalog, track_id: str) -> list[str]:
+    view = catalog.view(track_id)
+    parts = []
+    artist = catalog.normalized_field(track_id, "artist_name")
+    tags = []
+    for tag in _tag_list(catalog, track_id, limit=4, require_good_words=True):
+        normalized_tag = re.sub(r"\s+", " ", tag.lower()).strip()
+        if normalized_tag and (normalized_tag in artist or artist in normalized_tag):
+            continue
+        tags.append(tag)
+        if len(tags) >= 2:
+            break
+    if tags:
+        parts.append(f"{_join_words(tags)} traits")
+    year = _year_hint(catalog, track_id)
+    if year:
+        parts.append(f"a {year} release window")
+    if view.album_name:
+        parts.append(f"the album context of {view.album_name}")
+    return parts[:3]
+
+
+def _clean_reason(catalog: TrackCatalog, track_id: str) -> str:
+    parts = _clean_reason_parts(catalog, track_id)
+    if not parts:
+        return "the track and artist metadata line up better than broader catalog matches"
+    if len(parts) == 1:
+        return parts[0]
+    return _join_words(parts)
+
+
+def _feedback_sentence(state: ConversationState, catalog: TrackCatalog) -> str:
+    seed = _seed_phrase(state, catalog)
+    if seed:
+        return _pick(
+            state,
+            [
+                f"Since {seed} was a useful signal earlier, I kept the list close to that lane.",
+                f"I also carried forward the positive hint from {seed}.",
+                f"The earlier fit around {seed} helped steer the nearby picks.",
+            ],
+            salt="polished-positive",
+        )
+    negative = _negative_phrase(state, catalog)
+    if negative:
+        return _pick(
+            state,
+            [
+                f"I avoided leaning too heavily on the direction around {negative}, since that path looked weaker.",
+                f"The list moves away from the weaker cue around {negative}.",
+                f"I treated {negative} as a path to de-emphasize rather than repeat.",
+            ],
+            salt="polished-negative",
+        )
+    return ""
+
+
+def _profile_sentence(state: ConversationState) -> str:
+    profile = _profile_hint(state)
+    if not profile:
+        return ""
+    profile = re.sub(r"^your\s+", "", profile, flags=re.IGNORECASE)
+    return _pick(
+        state,
+        [
+            f"I treated your {profile} as a soft tie-breaker.",
+            f"Your {profile} also nudged the ordering when several tracks were close.",
+            f"When the match was ambiguous, your {profile} helped choose the safer first pick.",
+        ],
+        salt="polished-profile",
+    )
+
+
+def _generate_polished_response(state: ConversationState, catalog: TrackCatalog, track_ids: list[str]) -> str:
+    if not track_ids:
+        return "I found a few tracks that should fit the direction you described."
+
+    first_phrase = _track_phrase(catalog, track_ids[0])
+    request_hint = _short_request(state)
+    reason = _clean_reason(catalog, track_ids[0])
+    backup_phrases = [_track_phrase(catalog, track_id) for track_id in track_ids[1:3]]
+    intent = infer_intent(state)
+
+    if intent == "specific_track":
+        lead = _pick(
+            state,
+            [
+                f"My best first answer to the song clue \"{request_hint}\" is {first_phrase}.",
+                f"I would check {first_phrase} first for the specific track clue \"{request_hint}\".",
+                f"For the exact-song clue \"{request_hint}\", {first_phrase} is the strongest lead I found.",
+            ],
+            salt="polished-specific",
+        )
+    elif intent == "album":
+        lead = _pick(
+            state,
+            [
+                f"For the album-shaped clue \"{request_hint}\", I would start with {first_phrase}.",
+                f"{first_phrase} is the cleanest record-context lead for this request.",
+                f"I treated this as an album-aware search and put {first_phrase} first.",
+            ],
+            salt="polished-album",
+        )
+    elif intent == "artist_exploration":
+        lead = _pick(
+            state,
+            [
+                f"For the artist-led request \"{request_hint}\", I would open with {first_phrase}.",
+                f"{first_phrase} gives the strongest first step for the artist direction in \"{request_hint}\".",
+                f"I started the artist path with {first_phrase} and kept nearby options after it for \"{request_hint}\".",
+            ],
+            salt="polished-artist",
+        )
+    elif intent == "cover_art":
+        lead = _pick(
+            state,
+            [
+                f"For the visual clue \"{request_hint}\", I would test {first_phrase} first.",
+                f"{first_phrase} is my first anchor for the cover or image hint in \"{request_hint}\".",
+                f"I used {first_phrase} as the lead while keeping the rest of the list close to \"{request_hint}\".",
+            ],
+            salt="polished-cover",
+        )
+    elif intent == "lyrics_theme":
+        lead = _pick(
+            state,
+            [
+                f"For the lyric or theme clue, I would start with {first_phrase}.",
+                f"{first_phrase} is the strongest first check for the story in \"{request_hint}\".",
+                f"I led with {first_phrase} because it best matches the theme in \"{request_hint}\".",
+            ],
+            salt="polished-lyrics",
+        )
+    else:
+        lead = _pick(
+            state,
+            [
+                f"For \"{request_hint}\", I would start with {first_phrase}.",
+                f"I put {first_phrase} first for the mood and style you described.",
+                f"{first_phrase} is the safest opening pick before widening the list.",
+                f"I would try {first_phrase} first, then use the rest of the ranking as nearby alternatives.",
+            ],
+            salt="polished-mood",
+        )
+
+    reason_sentence = _pick(
+        state,
+        [
+            f"It fits because the metadata points to {reason}.",
+            f"The useful catalog evidence is {reason}.",
+            f"I chose it because the strongest evidence is {reason}.",
+        ],
+        salt="polished-reason",
+    )
+    backup_sentence = ""
+    if len(backup_phrases) == 2:
+        backup_sentence = _pick(
+            state,
+            [
+                f"If that is not quite right, I would next try {backup_phrases[0]} and {backup_phrases[1]}.",
+                f"The next two checks are {backup_phrases[0]} and {backup_phrases[1]}.",
+                f"I kept {backup_phrases[0]} and {backup_phrases[1]} as close backups.",
+            ],
+            salt="polished-backups",
+        )
+    elif len(backup_phrases) == 1:
+        backup_sentence = f"If that is not quite right, I would next try {backup_phrases[0]}."
+
+    cues = [_feedback_sentence(state, catalog), _profile_sentence(state)]
+    return " ".join(part for part in [lead, reason_sentence, *cues, backup_sentence] if part)
+
+
 def generate_response(
     state: ConversationState,
     catalog: TrackCatalog,
@@ -604,4 +776,6 @@ def generate_response(
         return _generate_setwise_response(state, catalog, track_ids)
     if style == "natural":
         return _generate_natural_response(state, catalog, track_ids)
+    if style == "polished":
+        return _generate_polished_response(state, catalog, track_ids)
     raise ValueError(f"Unsupported response style: {style!r}")

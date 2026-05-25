@@ -77,7 +77,9 @@ This file tracks questions and optimization directions that deserve a dedicated 
    - Pro answer saved at `research/pro_answers/round2/tab3_recsys_challenge_2026_plan.txt`.
    - Round 3 Pro answer saved at `research/pro_answers/round3/tab2_next_step_modeling_roi.txt`: first fix response/diversity and use LTR after the safe public retry.
    - Round 5 Pro answer saved at `research/pro_answers/round5/tab3_ranker_implementation_guidance.txt`: LTR should initially protect legacy top ranks and act as a tail reranker/tie-breaker, not a wholesale replacement.
-   - Next: decide feature matrix encoding, candidate sampling, and whether missed gold rows should be included for training or only diagnostics.
+   - Implemented `scripts/probe_lgbm_ltr.py` and `scripts/run_ltr_rerank.py`.
+   - Contrary to the conservative prior, unprotected LTR head0 is strongest in held-out validation: five-fold OOF official dev `nDCG@20=0.18095`, Blind-A-shaped mean `0.16737` versus `0.08648` for head20.
+   - Next research question: why does wholesale LTR replacement work so well offline despite Pro's earlier caution, and does that hold on Blind B/private splits?
 
 7. **Cross-encoder reranking**
    - Compare `bge-reranker-v2-m3`, DeBERTa, and Qwen reranker-style LoRA for top-100 reranking.
@@ -113,6 +115,8 @@ This file tracks questions and optimization directions that deserve a dedicated 
    - Implemented metadata-grounded response variants keyed by session/turn. This raises dev lexical diversity from `0.0830` to `0.1019`.
    - Implemented compact response v2 with current-query snippets, profile cues, feedback cues, album/year/tag grounding, and tag profanity filtering. This raises dev lexical diversity to `0.1758` and Blind A local Distinct-2 to `0.6654` on the 80-row split.
    - Implemented `compact_broad`, `compact`, `concise`, `setwise`, and `natural` response styles. `compact_broad` is the current submission default; `natural` and `setwise` were more judge-friendly in tone but lowered Distinct-2 to roughly `0.10-0.12`.
+   - Implemented `polished` response style for LTR submissions. Blind A local Distinct-2 is `0.4512` for `goalflow_ltr_head0_polished_v3` versus `0.7000` for compact-broad, but the text is much more natural and should be better for LLM judge.
+   - Next research question: does Gemini judge prefer compact-broad's high lexical diversity or polished's more natural explanations, and what is the minimum lexical diversity needed before judge quality dominates?
    - Pro answers saved at `research/pro_answers/round2/tab4_recsys_2026_response_generation.txt` and `research/pro_answers/round3/tab5_metadata_grounded_response_design.txt`.
    - Additional Pro answer saved at `research/pro_answers/round5/tab1_response_generator_design.txt`.
 

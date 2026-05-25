@@ -11,7 +11,7 @@
 当前优先提交包：
 
 ```text
-experiments/goalflow_head20_compact_broad/blindset_A/submission.zip
+experiments/goalflow_ltr_head0_polished_v3/blindset_A/submission.zip
 ```
 
 ## 1. 比赛任务一句话
@@ -1173,3 +1173,37 @@ research/pro_answers/round5/tab3_ranker_implementation_guidance.txt
 research/pro_answers/round5/tab4_embedding_cf_integration.txt
 research/pro_answers/round5/tab5_offline_validation_design.txt
 ```
+## 2026-05-26 追加日志：LTR 排序器成为新的主线
+
+这次关键迭代把原本只是研究设想的 LightGBM LambdaRank 真正接到了项目里。
+
+新增脚本：
+
+- `scripts/probe_lgbm_ltr.py`：读取 LTR JSONL 候选特征，快速验证学习型重排是否有信号。
+- `scripts/run_ltr_rerank.py`：完整训练/验证/出包脚本，支持 `validate`、`oof-dev`、`dev`、`blind`。
+
+核心验证结果：
+
+- 单折 held-out dev：LTR head0 nDCG@20 `0.1829`，legacy head20 `0.0864`。
+- 五折 OOF dev：官方 nDCG@20 `0.18095`，catalog diversity `0.52096`。
+- Blind-A-shaped 500-panel：LTR mean nDCG@20 `0.16737`，legacy head20 `0.08648`，平均增量 `+0.08088`。
+
+新的 Blind A 推荐提交包：
+
+```text
+experiments/goalflow_ltr_head0_polished_v3/blindset_A/submission.zip
+```
+
+它的本地 Blind A gold-free 检查：
+
+- rows: `80`
+- unique tracks: `1497 / 1600`
+- catalog diversity: `0.031803`，接近 Blind A 理论上限 `0.033991`
+- Distinct-2: `0.451235`
+
+同时保留两个备份：
+
+- `experiments/goalflow_ltr_head0_compact_broad/blindset_A/submission.zip`：同一套 LTR 排名，Distinct-2 更高 `0.699961`，但文字更像机器日志。
+- `experiments/goalflow_head20_compact_broad/blindset_A/submission.zip`：保守 legacy-rank 备份。
+
+这改变了之前的提交判断：旧策略是“保护 BM25 head，只优化 response”；现在 OOF 验证说明学习型重排已经足够强，第一优先应改为 LTR head0。

@@ -1,0 +1,556 @@
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import zipfile
+from collections import Counter
+from pathlib import Path
+from typing import Iterable
+
+import lightgbm as lgb
+import numpy as np
+import pandas as pd
+from datasets import load_dataset
+from tqdm import tqdm
+
+from export_ltr_dataset import candidate_features
+from goalflow.data import BLIND_A_DATASET, CONVERSATION_DATASET, TrackCatalog
+from goalflow.fusion import CandidateScore, rrf_fuse
+from goalflow.pipeline import (
+    GoalFlowConfig,
+    default_index_weights,
+    default_query_weights,
+    prepare_retriever,
+    top_k_by_index,
+    write_run_summary,
+)
+from goalflow.response import generate_response
+from goalflow.state import build_state_for_blind_item, build_state_for_dev_turn, query_variants
+from goalflow.validation import validate_predictions
+
+
+LTR_CATEGORICAL = ["intent", "category", "specificity"]
+META_COLUMNS = {"session_id", "user_id", "track_id", "label"}
+
+
+def dcg_at_20(gold_track_id: str | None, ranked_track_ids: list[str]) -> float:
+    if not gold_track_id:
+        return 0.0
+    for rank, track_id in enumerate(ranked_track_ids[:20], start=1):
+        if track_id == gold_track_id:
+            return 1.0 / math.log2(rank + 1)
+    return 0.0
+
+
+def load_dev_states(config: GoalFlowConfig):
+    dataset = load_dataset(config.conversation_dataset_name, split="test")
+    if config.dev_limit:
+        dataset = dataset.select(range(min(config.dev_limit, len(dataset))))
+    states = []
+    for item in tqdm(dataset, desc="Build dev states"):
+        for turn_number in range(1, 9):
+            state = build_state_for_dev_turn(item, turn_number)
+            if state.gold_track_id:
+                states.append(state)
+    return states
+
+
+def load_blind_states(config: GoalFlowConfig):
+    dataset = load_dataset(config.blind_dataset_name, split="test")
+    return [build_state_for_blind_item(item) for item in tqdm(dataset, desc="Build blind states")]
+
+
+def legacy_order_from_sources(sources) -> list[str]:
+    for source_name, _index_name, _weight, results in sources:
+        if source_name == "legacy_metadata:legacy_history":
+            return [result.track_id for result in results]
+    return []
+
+
+def build_candidate_frames(
+    *,
+    states,
+    config: GoalFlowConfig,
+    catalog: TrackCatalog,
+    retriever,
+    max_candidates_per_group: int,
+) -> tuple[pd.DataFrame, dict[int, list[str]], dict[int, object]]:
+    variants = [query_variants(state, catalog) for state in states]
+    source_rows = retriever.batch_search(
+        query_variants_per_state=variants,
+        top_k_by_index=top_k_by_index(config),
+        query_weights=default_query_weights(),
+        index_weights=default_index_weights(),
+    )
+
+    rows = []
+    legacy_by_group: dict[int, list[str]] = {}
+    state_by_group: dict[int, object] = {}
+    for group_id, (state, sources) in enumerate(
+        tqdm(list(zip(states, source_rows)), desc="Build LTR candidates")
+    ):
+        legacy_by_group[group_id] = legacy_order_from_sources(sources)
+        state_by_group[group_id] = state
+        fused = rrf_fuse(sources, rrf_k=config.rrf_k)
+        if len(fused) > config.rerank_pool_size:
+            fused = dict(
+                sorted(fused.items(), key=lambda item: item[1].score, reverse=True)[
+                    : config.rerank_pool_size
+                ]
+            )
+        candidates = sorted(fused.values(), key=lambda item: item.score, reverse=True)[
+            :max_candidates_per_group
+        ]
+        for candidate in candidates:
+            row = {
+                "group_id": group_id,
+                "session_id": state.session_id,
+                "user_id": state.user_id,
+                "turn_number": state.turn_number,
+                "track_id": candidate.track_id,
+                "label": 1 if candidate.track_id == state.gold_track_id else 0,
+            }
+            row.update(
+                candidate_features(
+                    state=state,
+                    catalog=catalog,
+                    track_id=candidate.track_id,
+                    rrf_score=candidate.score,
+                    source_ranks=dict(candidate.source_ranks),
+                )
+            )
+            rows.append(row)
+    return pd.DataFrame(rows), legacy_by_group, state_by_group
+
+
+def prepare_features(
+    df: pd.DataFrame,
+    *,
+    feature_cols: list[str] | None = None,
+    category_values: dict[str, list[str]] | None = None,
+) -> tuple[pd.DataFrame, list[str], list[str], dict[str, list[str]]]:
+    df = df.copy()
+    if "source_count" not in df:
+        df["source_count"] = 0.0
+
+    categorical = [column for column in LTR_CATEGORICAL if column in df.columns]
+    if category_values is None:
+        category_values = {}
+        for column in categorical:
+            values = sorted(str(value) for value in df[column].fillna("missing").unique())
+            category_values[column] = values or ["missing"]
+
+    if feature_cols is None:
+        ignored = set(META_COLUMNS) | {"group_id"}
+        feature_cols = [column for column in df.columns if column not in ignored]
+    else:
+        for column in feature_cols:
+            if column not in df:
+                df[column] = np.nan
+
+    for column in categorical:
+        values = category_values.get(column, ["missing"])
+        df[column] = pd.Categorical(df[column].fillna("missing").astype(str), categories=values)
+
+    for column in feature_cols:
+        if column in categorical:
+            continue
+        if column.startswith("rank_") or column == "best_source_rank":
+            df[column] = df[column].fillna(9999.0)
+        else:
+            df[column] = df[column].fillna(0.0)
+    return df, feature_cols, categorical, category_values
+
+
+def train_ltr(
+    df: pd.DataFrame,
+    train_groups: Iterable[int],
+    *,
+    n_estimators: int,
+) -> tuple[lgb.LGBMRanker, list[str], list[str], dict[str, list[str]], dict[str, int]]:
+    df, feature_cols, categorical, category_values = prepare_features(df)
+    train_groups = set(train_groups)
+    train_df = df[df["group_id"].isin(train_groups)].copy()
+    positive_groups = set(train_df.groupby("group_id")["label"].sum().loc[lambda s: s > 0].index)
+    train_df = train_df[train_df["group_id"].isin(positive_groups)].copy()
+    train_df = train_df.sort_values("group_id")
+    group_sizes = train_df.groupby("group_id", sort=False).size().to_list()
+    ranker = lgb.LGBMRanker(
+        objective="lambdarank",
+        metric="ndcg",
+        n_estimators=n_estimators,
+        learning_rate=0.04,
+        num_leaves=31,
+        min_child_samples=40,
+        subsample=0.9,
+        colsample_bytree=0.9,
+        random_state=2026,
+        force_row_wise=True,
+    )
+    ranker.fit(
+        train_df[feature_cols],
+        train_df["label"],
+        group=group_sizes,
+        eval_at=[20],
+        categorical_feature=categorical,
+        callbacks=[lgb.log_evaluation(period=100)],
+    )
+    stats = {
+        "train_groups_requested": len(train_groups),
+        "train_groups_with_positive": len(positive_groups),
+        "train_rows": len(train_df),
+    }
+    return ranker, feature_cols, categorical, category_values, stats
+
+
+def ltr_order_for_group(group: pd.DataFrame) -> list[str]:
+    return list(group.sort_values("model_score", ascending=False)["track_id"])
+
+
+def merge_with_legacy(
+    *,
+    legacy_order: list[str],
+    model_order: list[str],
+    preserve_head_k: int,
+    top_k: int = 20,
+) -> list[str]:
+    selected: list[str] = []
+    seen = set()
+    for track_id in legacy_order[: max(0, preserve_head_k)]:
+        if track_id not in seen:
+            selected.append(track_id)
+            seen.add(track_id)
+    for track_id in model_order:
+        if len(selected) >= top_k:
+            break
+        if track_id not in seen:
+            selected.append(track_id)
+            seen.add(track_id)
+    for track_id in legacy_order:
+        if len(selected) >= top_k:
+            break
+        if track_id not in seen:
+            selected.append(track_id)
+            seen.add(track_id)
+    return selected[:top_k]
+
+
+def evaluate_preserve_grid(
+    *,
+    df: pd.DataFrame,
+    groups: Iterable[int],
+    legacy_by_group: dict[int, list[str]],
+    state_by_group: dict[int, object],
+    preserve_values: list[int],
+) -> dict[str, dict[str, float]]:
+    groups = list(groups)
+    results: dict[str, dict[str, float]] = {}
+    grouped = {group_id: group for group_id, group in df[df["group_id"].isin(groups)].groupby("group_id")}
+    for preserve_head_k in preserve_values:
+        scores = []
+        changed = 0
+        for group_id in groups:
+            state = state_by_group[group_id]
+            legacy_order = legacy_by_group.get(group_id, [])
+            model_order = ltr_order_for_group(grouped[group_id]) if group_id in grouped else []
+            ranked = merge_with_legacy(
+                legacy_order=legacy_order,
+                model_order=model_order,
+                preserve_head_k=preserve_head_k,
+            )
+            scores.append(dcg_at_20(state.gold_track_id, ranked))
+            if ranked != legacy_order[:20]:
+                changed += 1
+        key = f"head{preserve_head_k}"
+        results[key] = {
+            "ndcg@20": float(np.mean(scores)) if scores else 0.0,
+            "changed_groups": changed,
+        }
+    baseline = [
+        dcg_at_20(state_by_group[group_id].gold_track_id, legacy_by_group.get(group_id, [])[:20])
+        for group_id in groups
+    ]
+    results["legacy_head20"] = {
+        "ndcg@20": float(np.mean(baseline)) if baseline else 0.0,
+        "changed_groups": 0,
+    }
+    return results
+
+
+def write_predictions(
+    *,
+    config: GoalFlowConfig,
+    mode: str,
+    states,
+    df: pd.DataFrame,
+    legacy_by_group: dict[int, list[str]],
+    catalog: TrackCatalog,
+    preserve_head_k: int,
+    zip_submission: bool,
+) -> Path:
+    grouped = {group_id: group for group_id, group in df.groupby("group_id")}
+    predictions = []
+    for group_id, state in enumerate(states):
+        model_order = ltr_order_for_group(grouped[group_id]) if group_id in grouped else []
+        track_ids = merge_with_legacy(
+            legacy_order=legacy_by_group.get(group_id, []),
+            model_order=model_order,
+            preserve_head_k=preserve_head_k,
+        )
+        predictions.append(
+            {
+                "session_id": state.session_id,
+                "user_id": state.user_id,
+                "turn_number": state.turn_number,
+                "predicted_track_ids": track_ids,
+                "predicted_response": generate_response(state, catalog, track_ids, style=config.response_style),
+            }
+        )
+
+    validation = validate_predictions(predictions, catalog, expected_count=len(states))
+    if not validation["ok"]:
+        raise ValueError(f"Invalid predictions: {validation}")
+
+    if mode == "blind":
+        out_dir = config.experiments_dir / "blindset_A"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        pred_path = out_dir / "prediction.json"
+        pred_path.write_text(json.dumps(predictions, ensure_ascii=False), encoding="utf-8")
+        if zip_submission:
+            zip_path = out_dir / "submission.zip"
+            with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                zf.write(pred_path, arcname="prediction.json")
+            return zip_path
+        return pred_path
+
+    out_dir = config.experiments_dir / "devset"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"{config.tid}.json"
+    out_path.write_text(json.dumps(predictions, ensure_ascii=False), encoding="utf-8")
+    return out_path
+
+
+def copy_dev_prediction_to_official(config: GoalFlowConfig, output: Path) -> None:
+    if config.dev_limit:
+        return
+    official = config.project_root.parent / "music-crs-evaluator" / "exp" / "inference" / "devset"
+    official.mkdir(parents=True, exist_ok=True)
+    official_path = official / f"{config.tid}.json"
+    official_path.write_text(output.read_text(encoding="utf-8"), encoding="utf-8")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Train and apply a protected LightGBM LTR reranker.")
+    parser.add_argument("--mode", choices=["validate", "oof-dev", "dev", "blind"], required=True)
+    parser.add_argument("--tid", default="goalflow_ltr_probe")
+    parser.add_argument("--project-root", default=str(Path(__file__).resolve().parents[1]))
+    parser.add_argument("--conversation-dataset-name", default=CONVERSATION_DATASET)
+    parser.add_argument("--blind-dataset-name", default=BLIND_A_DATASET)
+    parser.add_argument("--retrieval-top-k", type=int, default=260)
+    parser.add_argument("--rerank-pool-size", type=int, default=1200)
+    parser.add_argument("--max-candidates-per-group", type=int, default=300)
+    parser.add_argument("--rrf-k", type=int, default=60)
+    parser.add_argument("--valid-mod", type=int, default=5)
+    parser.add_argument("--n-estimators", type=int, default=260)
+    parser.add_argument("--preserve-head-k", type=int, default=18)
+    parser.add_argument(
+        "--preserve-grid",
+        default="0,1,3,5,10,15,18,19,20",
+        help="Comma-separated head sizes for validate mode.",
+    )
+    parser.add_argument(
+        "--response-style",
+        choices=["compact", "compact_broad", "concise", "setwise", "natural", "polished"],
+        default="compact_broad",
+    )
+    parser.add_argument("--dev-limit", type=int, default=None)
+    parser.add_argument("--rebuild-cache", action="store_true")
+    parser.add_argument("--no-train-augmentation", action="store_true")
+    parser.add_argument("--no-zip", action="store_true")
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    config = GoalFlowConfig(
+        project_root=Path(args.project_root),
+        tid=args.tid,
+        conversation_dataset_name=args.conversation_dataset_name,
+        blind_dataset_name=args.blind_dataset_name,
+        use_train_augmentation=not args.no_train_augmentation,
+        rebuild_cache=args.rebuild_cache,
+        retrieval_top_k=args.retrieval_top_k,
+        rerank_pool_size=args.rerank_pool_size,
+        rrf_k=args.rrf_k,
+        response_style=args.response_style,
+        dev_limit=args.dev_limit,
+    )
+    catalog = TrackCatalog(config.track_metadata_name)
+    retriever = prepare_retriever(config, catalog)
+
+    dev_states = load_dev_states(config)
+    dev_df, dev_legacy, dev_state_by_group = build_candidate_frames(
+        states=dev_states,
+        config=config,
+        catalog=catalog,
+        retriever=retriever,
+        max_candidates_per_group=args.max_candidates_per_group,
+    )
+    all_groups = sorted(dev_df["group_id"].unique())
+    valid_groups = {group_id for group_id in all_groups if group_id % args.valid_mod == 0}
+    train_groups = [group_id for group_id in all_groups if group_id not in valid_groups]
+
+    if args.mode == "validate":
+        ranker, feature_cols, _categorical, category_values, train_stats = train_ltr(
+            dev_df,
+            train_groups,
+            n_estimators=args.n_estimators,
+        )
+        valid_df, _, _, _ = prepare_features(
+            dev_df[dev_df["group_id"].isin(valid_groups)].copy(),
+            feature_cols=feature_cols,
+            category_values=category_values,
+        )
+        valid_df["model_score"] = ranker.predict(valid_df[feature_cols])
+        preserve_values = [int(value) for value in args.preserve_grid.split(",") if value.strip()]
+        grid = evaluate_preserve_grid(
+            df=valid_df,
+            groups=valid_groups,
+            legacy_by_group=dev_legacy,
+            state_by_group=dev_state_by_group,
+            preserve_values=preserve_values,
+        )
+        summary = {
+            "mode": "validate",
+            "tid": args.tid,
+            "valid_mod": args.valid_mod,
+            "max_candidates_per_group": args.max_candidates_per_group,
+            "n_estimators": args.n_estimators,
+            "train": train_stats,
+            "valid_groups": len(valid_groups),
+            "valid_groups_with_positive_candidates": int(
+                (valid_df.groupby("group_id")["label"].sum() > 0).sum()
+            ),
+            "grid": grid,
+        }
+        out_dir = config.experiments_dir / "ltr"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / "ltr_validate_summary.json"
+        out_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+        print(json.dumps(summary, indent=2))
+        print(f"summary={out_path}")
+        return
+
+    if args.mode == "oof-dev":
+        scored_frames = []
+        fold_stats = []
+        for fold in range(args.valid_mod):
+            fold_valid_groups = {group_id for group_id in all_groups if group_id % args.valid_mod == fold}
+            fold_train_groups = [group_id for group_id in all_groups if group_id not in fold_valid_groups]
+            ranker, feature_cols, _categorical, category_values, train_stats = train_ltr(
+                dev_df,
+                fold_train_groups,
+                n_estimators=args.n_estimators,
+            )
+            fold_df, _, _, _ = prepare_features(
+                dev_df[dev_df["group_id"].isin(fold_valid_groups)].copy(),
+                feature_cols=feature_cols,
+                category_values=category_values,
+            )
+            fold_df["model_score"] = ranker.predict(fold_df[feature_cols])
+            fold_scores = evaluate_preserve_grid(
+                df=fold_df,
+                groups=fold_valid_groups,
+                legacy_by_group=dev_legacy,
+                state_by_group=dev_state_by_group,
+                preserve_values=[args.preserve_head_k],
+            )
+            fold_stats.append(
+                {
+                    "fold": fold,
+                    "valid_groups": len(fold_valid_groups),
+                    "valid_groups_with_positive_candidates": int(
+                        (fold_df.groupby("group_id")["label"].sum() > 0).sum()
+                    ),
+                    "train": train_stats,
+                    "scores": fold_scores,
+                }
+            )
+            scored_frames.append(fold_df)
+
+        apply_df = pd.concat(scored_frames, ignore_index=False).sort_index()
+        output = write_predictions(
+            config=config,
+            mode="dev",
+            states=dev_states,
+            df=apply_df,
+            legacy_by_group=dev_legacy,
+            catalog=catalog,
+            preserve_head_k=args.preserve_head_k,
+            zip_submission=False,
+        )
+        copy_dev_prediction_to_official(config, output)
+        summary = {
+            "mode": "oof-dev",
+            "tid": args.tid,
+            "valid_mod": args.valid_mod,
+            "max_candidates_per_group": args.max_candidates_per_group,
+            "n_estimators": args.n_estimators,
+            "preserve_head_k": args.preserve_head_k,
+            "output": str(output),
+            "folds": fold_stats,
+        }
+        out_dir = config.experiments_dir / "ltr"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / "ltr_oof_summary.json"
+        out_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+        print(json.dumps(summary, indent=2))
+        print(f"summary={out_path}")
+        return
+
+    train_groups_for_output = all_groups if args.mode == "blind" else train_groups
+    ranker, feature_cols, _categorical, category_values, train_stats = train_ltr(
+        dev_df,
+        train_groups_for_output,
+        n_estimators=args.n_estimators,
+    )
+
+    if args.mode == "blind":
+        states = load_blind_states(config)
+        apply_df, legacy_by_group, _state_by_group = build_candidate_frames(
+            states=states,
+            config=config,
+            catalog=catalog,
+            retriever=retriever,
+            max_candidates_per_group=args.max_candidates_per_group,
+        )
+    else:
+        states = dev_states
+        apply_df = dev_df
+        legacy_by_group = dev_legacy
+
+    apply_df, _, _, _ = prepare_features(
+        apply_df,
+        feature_cols=feature_cols,
+        category_values=category_values,
+    )
+    apply_df["model_score"] = ranker.predict(apply_df[feature_cols])
+    output = write_predictions(
+        config=config,
+        mode=args.mode,
+        states=states,
+        df=apply_df,
+        legacy_by_group=legacy_by_group,
+        catalog=catalog,
+        preserve_head_k=args.preserve_head_k,
+        zip_submission=not args.no_zip,
+    )
+    if args.mode == "dev":
+        copy_dev_prediction_to_official(config, output)
+    summary = write_run_summary(config, output, args.mode)
+    print(json.dumps({"output": str(output), "summary": str(summary), "train": train_stats}, indent=2))
+
+
+if __name__ == "__main__":
+    main()

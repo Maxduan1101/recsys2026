@@ -23,6 +23,8 @@ Development-set scores from the official evaluator.
 | `goalflow_head20_cf_tail19` | 0.009625 | 0.067601 | 0.085927 | 0.392216 | 0.175710 | Experimental seed-CF tail rescue; tiny full-dev gain, blind-like neutral. |
 | `goalflow_taildiv_head19_cf_tail19` | 0.009875 | 0.067536 | 0.085701 | 0.504982 | 0.175699 | CF rescue stacked on head19 was worse than head19 alone. |
 | `goalflow_taildiv_head18_cf_tail18` | 0.009875 | 0.067536 | 0.085299 | 0.611077 | 0.175699 | CF rescue stacked on head18 gives tiny nDCG gain but lower diversity. |
+| `goalflow_ltr_head0_oof_compact_broad` | 0.067500 | 0.159372 | 0.180947 | 0.520958 | 0.220660 | Five-fold out-of-fold LTR validation; each dev row scored by a model that did not train on it. |
+| `goalflow_ltr_head0_oof_polished_v3` | 0.067500 | 0.159372 | 0.180947 | 0.520958 | 0.136947 | Same OOF LTR ranking, more natural response text for LLM judge. |
 
 Immediate interpretation:
 
@@ -30,7 +32,7 @@ Immediate interpretation:
 - They do improve response diversity and candidate diversity.
 - Real Blind A feedback suggests the conservative ranking anchor is strong, while response quality/diversity is the biggest immediate score bottleneck.
 - Blind A has only 80 rows, so catalog diversity is capped at `1600 / 47071 = 0.0340`; improving catalog by a few hundred unique tail tracks has a small composite effect compared with preserving nDCG and improving response text.
-- Next useful work is response quality validation, safer tail diversity if extra submissions remain, source-level calibration, and then LightGBM or dense retrieval.
+- LightGBM LambdaRank is now the strongest local ranking path; next useful work is response judge validation, candidate-feature caching, and richer dense/embedding recall.
 
 ## Public Blind A Feedback
 
@@ -65,6 +67,8 @@ These are gold-free checks from `scripts/summarize_predictions.py`; they do not 
 | `goalflow_taildiv_head19_compact_broad` | 1244 | 0.7775 | 0.026428 | 0.033991 | 0.664176 | Middle backup: small tail diversity gain, lower full-dev nDCG risk than head18. |
 | `goalflow_taildiv_head18_compact_broad` | 1268 | 0.7925 | 0.026938 | 0.033991 | 0.664176 | Stronger diversity backup; blind-like panels favor it, full-dev nDCG is lower. |
 | `goalflow_head20_cf_tail19` | 1217 | 0.7606 | 0.025855 | 0.033991 | 0.664176 | Experimental only: seed-CF changes just 1 Blind A row. |
+| `goalflow_ltr_head0_compact_broad` | 1497 | 0.9356 | 0.031803 | 0.033991 | 0.699961 | Same LTR ranking as current candidate; higher Distinct-2, more mechanical response. |
+| `goalflow_ltr_head0_polished_v3` | 1497 | 0.9356 | 0.031803 | 0.033991 | 0.451235 | Current first-choice package: LTR ranking plus more judge-friendly natural response. |
 
 ## Blind-Like Dev Panels
 
@@ -80,6 +84,7 @@ Latest 500-panel result, baseline `head20`:
 | `head18` | 0.087183 | 0.086981 | 0.066606 | +0.000698 | +0.000437 | Best blind-like tail-diversity signal. |
 | `head19` | 0.086794 | 0.086925 | 0.065330 | +0.000309 | +0.000182 | More conservative middle option. |
 | `head17` | 0.084748 | 0.085102 | 0.062943 | -0.001737 | -0.001721 | Rejected. |
+| `ltr_oof` | 0.167368 | 0.166469 | 0.132476 | +0.080883 | +0.080768 | OOF LTR head0, evaluated on Blind-A-shaped panels. |
 
 CF-tail blind-like follow-up:
 
@@ -138,6 +143,28 @@ Smoke run: `ltr_export_smoke`
 
 This is intended as the handoff format for LightGBM/CatBoost: one JSONL row per `(session-turn, candidate_track)` with label, source ranks, RRF score, rule boost, intent/category/specificity, track priors, and seed/profile-derived features.
 
+## LightGBM LTR Reranking
+
+Scripts:
+
+- `scripts/probe_lgbm_ltr.py`
+- `scripts/run_ltr_rerank.py`
+
+Key validation:
+
+- Candidate pool: top 300 fused candidates per dev turn.
+- Model: LightGBM LambdaRank, binary exact-track labels, group = session turn.
+- Training excludes dev rows whose gold track is not naturally present in the candidate pool.
+- Five-fold OOF official dev score: `nDCG@20=0.180947`, catalog diversity `0.520958`.
+- Blind-A-shaped 500-panel mean nDCG@20: `0.167368` versus `0.086485` for the legacy head20 baseline.
+- Blind A local summary for `goalflow_ltr_head0_polished_v3`: 1497 unique tracks out of 1600 recommendation slots, catalog diversity `0.031803`, Distinct-2 `0.451235`.
+
+Current submission recommendation:
+
+1. `experiments/goalflow_ltr_head0_polished_v3/blindset_A/submission.zip`
+2. `experiments/goalflow_ltr_head0_compact_broad/blindset_A/submission.zip`
+3. `experiments/goalflow_head20_compact_broad/blindset_A/submission.zip`
+
 ## Progress Label Audit
 
 Script: `scripts/audit_progress_labels.py`
@@ -164,9 +191,11 @@ Interpretation:
 - Recommended current package: `experiments/goalflow_head20_compactresp_v2/blindset_A/submission.zip`
 - Safer diversity backup: `experiments/goalflow_taildiv_head18_compactresp_v2/blindset_A/submission.zip`
 - Aggressive diversity backup: `experiments/goalflow_taildiv_head15_compactresp_v2/blindset_A/submission.zip`
-- Current first-choice package: `experiments/goalflow_head20_compact_broad/blindset_A/submission.zip`
-- Current middle backup: `experiments/goalflow_taildiv_head19_compact_broad/blindset_A/submission.zip`
-- Current diversity backup: `experiments/goalflow_taildiv_head18_compact_broad/blindset_A/submission.zip`
+- Current first-choice package: `experiments/goalflow_ltr_head0_polished_v3/blindset_A/submission.zip`
+- Current high-lexical LTR backup: `experiments/goalflow_ltr_head0_compact_broad/blindset_A/submission.zip`
+- Current conservative legacy-rank backup: `experiments/goalflow_head20_compact_broad/blindset_A/submission.zip`
+- Current legacy middle backup: `experiments/goalflow_taildiv_head19_compact_broad/blindset_A/submission.zip`
+- Current legacy diversity backup: `experiments/goalflow_taildiv_head18_compact_broad/blindset_A/submission.zip`
 - Experimental CF-tail package: `experiments/goalflow_head20_cf_tail19/blindset_A/submission.zip`
 
 The `head20_compactresp_v2` package keeps `legacy_head_k=20` and therefore preserves the safe ranking anchor while replacing the weak response text with compact metadata-grounded explanations.
