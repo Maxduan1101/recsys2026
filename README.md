@@ -102,10 +102,18 @@ The upload file is:
 Current recommended Blind A package:
 
 ```text
+/Users/bytedance/generated_problems/recsys2026_music_crs/goalflow_musiccrs/experiments/goalflow_ltr120_lambda2_head0_judge_compact_mix_clean/blindset_A/submission.zip
+```
+
+This package uses the same full-dev LightGBM LambdaRank ranking as the conservative L2 package, then generates a higher-lexical controlled mix of `judge_v2`, `judge_brief`, `compact_broad`, `natural`, `concise`, and `setwise` responses. OOF dev ranking stays at official `nDCG@20=0.18302`; lexical diversity improves from `0.14874` for fixed `judge_v2` and `0.15926` for `judge_mix` to `0.19493`, while Blind A local Distinct-2 rises from `0.48531` to `0.61160`.
+
+Lower-risk mixed response package:
+
+```text
 /Users/bytedance/generated_problems/recsys2026_music_crs/goalflow_musiccrs/experiments/goalflow_ltr120_lambda2_head0_judge_mix_clean/blindset_A/submission.zip
 ```
 
-This package uses the same full-dev LightGBM LambdaRank ranking as the conservative L2 package, then generates mixed judge-focused responses that rotate among `judge_v2`, `natural`, `concise`, and `setwise` wording. OOF dev ranking stays at official `nDCG@20=0.18302`; lexical diversity improves from `0.14874` for `judge_v2` to `0.15926`, and Blind A local Distinct-2 rises from `0.48531` to `0.52209`.
+This keeps the same ranking but avoids the more mechanical `compact_broad` templates. It is a text-safety fallback if the LLM judge appears to punish compact metadata-heavy wording.
 
 Conservative fixed-style response package:
 
@@ -122,10 +130,10 @@ This keeps the exact same ranking but uses only the shorter `judge_v2` response 
 OOF-max micro-gain ensemble package:
 
 ```text
-/Users/bytedance/generated_problems/recsys2026_music_crs/goalflow_musiccrs/experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_mix_clean/blindset_A/submission.zip
+/Users/bytedance/generated_problems/recsys2026_music_crs/goalflow_musiccrs/experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_compact_mix_clean/blindset_A/submission.zip
 ```
 
-This package RRF-ensembles the 120/140/200-tree `reg_lambda=2` LTR rankings with `rrf_k=60` and uses the same mixed response style. The ranking gives a tiny OOF gain (`nDCG@20=0.18325` versus `0.18302`), so keep it as a micro-gain backup. Its high-lexical backup is:
+This package RRF-ensembles the 120/140/200-tree `reg_lambda=2` LTR rankings with `rrf_k=60` and uses the same compact mixed response style. The ranking gives a tiny OOF gain (`nDCG@20=0.18325` versus `0.18302`) and official dev lexical diversity is `0.19455`, so keep it as a micro-gain backup. Its high-lexical backup is:
 
 ```text
 /Users/bytedance/generated_problems/recsys2026_music_crs/goalflow_musiccrs/experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_broad_clean/blindset_A/submission.zip
@@ -276,8 +284,8 @@ python goalflow_musiccrs/scripts/run_ltr_rerank.py \
 python goalflow_musiccrs/scripts/refresh_responses.py \
   --mode blind \
   --input goalflow_musiccrs/experiments/goalflow_ltr120_lambda2_head0_judge_v2_clean/blindset_A/prediction.json \
-  --tid goalflow_ltr120_lambda2_head0_judge_mix_clean \
-  --response-style judge_mix \
+  --tid goalflow_ltr120_lambda2_head0_judge_compact_mix_clean \
+  --response-style judge_compact_mix \
   --zip
 
 python goalflow_musiccrs/scripts/refresh_responses.py \
@@ -327,6 +335,6 @@ This is Phase 1/2 infrastructure. It deliberately avoids direct dependence on ga
 
 The current recommended setting uses unprotected LightGBM LambdaRank with `preserve_head_k=0`, `n_estimators=120`, `colsample_bytree=0.9`, and `reg_lambda=2`. Same-family RRF ensembling gives a tiny OOF gain and is kept as a submission-budget backup. Category-segmented selection has the highest non-nested dev score but fails stricter nested segment validation, so it is high-risk. The older `legacy_head_k=20` package is now only a conservative fallback: it preserves the strongest BM25-style head ranking, but its local dev validation is far below the tuned LTR path.
 
-Public Blind A feedback from one conservative submission was `nDCG@20=0.1935`, `catalog_diversity=0.0257`, `lexical_diversity=0.0125`, and `llm_judge_score=1.0`. Blind A currently has only 80 rows, so the maximum possible catalog diversity is `1600 / 47071 = 0.0340`; catalog is not the main bottleneck. After OOF validation and LTR tuning, the immediate single-model candidate is `goalflow_ltr120_lambda2_head0_judge_mix_clean`, the fixed-style conservative text fallback is `goalflow_ltr120_lambda2_head0_judge_v2_clean`, the micro-gain ensemble candidate is `goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_mix_clean`, `goalflow_ltr120_lambda2_head0_compact_broad_clean` is the higher-Distinct-2 mechanical text backup, `goalflow_segcat_ltr120_140_200_ens_judge_v2_clean` is a high-risk segment-selection experiment, and `goalflow_head20_compact_broad` remains the conservative legacy-rank backup.
+Public Blind A feedback from one conservative submission was `nDCG@20=0.1935`, `catalog_diversity=0.0257`, `lexical_diversity=0.0125`, and `llm_judge_score=1.0`. Blind A currently has only 80 rows, so the maximum possible catalog diversity is `1600 / 47071 = 0.0340`; catalog is not the main bottleneck. After OOF validation and LTR tuning, the immediate single-model candidate is `goalflow_ltr120_lambda2_head0_judge_compact_mix_clean`, the lower-risk mixed text fallback is `goalflow_ltr120_lambda2_head0_judge_mix_clean`, the fixed-style conservative text fallback is `goalflow_ltr120_lambda2_head0_judge_v2_clean`, the micro-gain ensemble candidate is `goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_compact_mix_clean`, `goalflow_ltr120_lambda2_head0_compact_broad_clean` is the higher-Distinct-2 mechanical text backup, `goalflow_segcat_ltr120_140_200_ens_judge_v2_clean` is a high-risk segment-selection experiment, and `goalflow_head20_compact_broad` remains the conservative legacy-rank backup.
 
 The newest diagnostics show the added sources are useful for recall but not yet calibrated for rank fusion: the best single source per dev state reaches hit@20 `0.4715` / nDCG@20 `0.2600`, while the current RRF fusion reaches hit@20 `0.2595` / nDCG@20 `0.1015`. Legacy-vs-fused deltas show `446` gained top-20 hits but `212` lost hits and `642` demotions, so the next implementation step is source gating or a learning-to-rank model rather than simply adding more BM25 sources.

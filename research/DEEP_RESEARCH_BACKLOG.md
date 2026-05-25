@@ -34,6 +34,7 @@ This file tracks questions and optimization directions that deserve a dedicated 
    - Current diversity backup: `experiments/goalflow_taildiv_head18_compact_broad/blindset_A/submission.zip`; Blind-A-shaped dev panels favor head18, while full dev favors head19.
    - Previous first-choice package after 120-tree LTR tuning: `experiments/goalflow_ltr120_head0_judge_v2_clean/blindset_A/submission.zip`.
    - Conservative single-model package after L2 LTR tuning: `experiments/goalflow_ltr120_lambda2_head0_judge_v2_clean/blindset_A/submission.zip`.
+   - Current primary after response-mix tuning: `experiments/goalflow_ltr120_lambda2_head0_judge_compact_mix_clean/blindset_A/submission.zip`.
    - High-risk non-nested local-score leader after category-segmented LTR selection: `experiments/goalflow_segcat_ltr120_140_200_ens_judge_v2_clean/blindset_A/submission.zip`.
    - Current high-lexical backup after L2 LTR tuning: `experiments/goalflow_ltr120_lambda2_head0_compact_broad_clean/blindset_A/submission.zip`.
 
@@ -99,6 +100,8 @@ This file tracks questions and optimization directions that deserve a dedicated 
    - Implemented `scripts/select_segmented_predictions.py` for broad segment-level model selection. Category-based selection over the 120/140/200-tree L2 LTR models plus their RRF ensemble reaches the best non-nested local OOF score at `nDCG@20=0.184069`, but a stricter nested segment-selection check drops to about `0.18235`.
    - Tested direct train-split mixing for LTR with the optional `--extra-train-sessions` path. It hurt the same held-out fold: 50 sampled train sessions scored `0.18274`, 500 sampled train sessions scored `0.17101`, versus about `0.18489` for dev-only 120-tree L2.
    - Implemented `judge_mix` response style. It keeps the 120-tree L2 ranking unchanged, raises official dev lexical diversity from `0.14874` to `0.15926`, and raises Blind A local Distinct-2 from `0.48531` to `0.52209`.
+   - Implemented `judge_brief` and `judge_compact_mix` response styles. `judge_compact_mix` keeps the same ranking, raises official dev lexical diversity to `0.19493`, and raises Blind A local Distinct-2 to `0.61160`; the ensemble variant reaches official dev lexical `0.19455` and Blind A local Distinct-2 `0.61589`.
+   - Browser/Pro note: Chrome DevTools could not attach to the existing Chrome window in this run (`DevToolsActivePort` was missing), so the LLM-judge-vs-Distinct tradeoff question still needs either manual Pro prompting or a Chrome launch with remote debugging enabled.
    - Rejected `max_candidates_per_group=200`: held-out nDCG@20 fell to `0.18156` and valid groups with positive candidates dropped from `787` to `737`; the accepted candidate pool remains 300.
    - Rejected `lambdarank_truncation_level=100`: fold 0 rose very slightly, but five-fold official OOF fell to `nDCG@20=0.18244`; default 30 remains the accepted setting.
    - Deep research question: why do LTR hyperparameters show fold-specific wins that fail OOF, and can we design a more reliable early-stopping/model-selection protocol for only 80-row Blind A?
@@ -107,6 +110,7 @@ This file tracks questions and optimization directions that deserve a dedicated 
    - Deep research question: does broad category-level model selection transfer to Blind A/B, or is even category-level selection overfitting dev OOF?
    - Deep research question: how should labeled train-split conversations be used without hurting dev/Blind transfer: sample weighting, distillation into augmentation text, stratified sampling, or train-only pretraining followed by dev calibration?
    - Deep research question: should response generation optimize explicit Distinct-2, naturalness, explanation completeness, or controlled style mixing for Gemini judging, and how can we simulate that locally?
+   - Deep research question: given inferred composite weights, is `judge_compact_mix` more likely than `judge_mix` to transfer on Blind A/B once Gemini judge risk is considered, or should the safer `judge_mix` remain primary despite lower lexical diversity?
 
 7. **Cross-encoder reranking**
    - Compare `bge-reranker-v2-m3`, DeBERTa, and Qwen reranker-style LoRA for top-100 reranking.

@@ -1167,6 +1167,126 @@ def _generate_judge_mix_response(state: ConversationState, catalog: TrackCatalog
     return _generate_setwise_response(state, catalog, track_ids)
 
 
+def _generate_judge_brief_response(state: ConversationState, catalog: TrackCatalog, track_ids: list[str]) -> str:
+    if not track_ids:
+        return "I found a few tracks that should fit the direction you described."
+
+    first_phrase = _track_phrase(catalog, track_ids[0])
+    second_phrase = _track_phrase(catalog, track_ids[1]) if len(track_ids) > 1 else ""
+    third_phrase = _track_phrase(catalog, track_ids[2]) if len(track_ids) > 2 else ""
+    intent = infer_intent(state)
+    focus = _request_focus(state, max_words=14)
+    evidence = _judge_v2_evidence(catalog, track_ids[0])
+    feedback_clause = _judge_v2_feedback_clause(state, catalog)
+    profile = _judge_profile_phrase(state)
+
+    opener = _pick(
+        state,
+        [
+            f"Lead pick: {first_phrase} for \"{focus}\".",
+            f"I would check {first_phrase} first for \"{focus}\".",
+            f"First answer: {first_phrase}, aimed at \"{focus}\".",
+            f"{first_phrase} is the front-runner for \"{focus}\".",
+            f"For this {intent.replace('_', ' ')} request, I put {first_phrase} first.",
+        ],
+        salt=f"judge-brief-opener-{intent}",
+    )
+    reason = _pick(
+        state,
+        [
+            f"Reason: {evidence}.",
+            f"Catalog signal: {evidence}.",
+            f"Grounding: {evidence}.",
+            f"Verified cue: {evidence}.",
+            f"Best visible evidence: {evidence}.",
+        ],
+        salt="judge-brief-reason",
+    )
+
+    context = ""
+    if feedback_clause and profile:
+        context = _pick(
+            state,
+            [
+                f"It also {feedback_clause}; {profile} only breaks close ties.",
+                f"The list {feedback_clause}, with {profile} as a secondary cue.",
+            ],
+            salt="judge-brief-context-both",
+        )
+    elif feedback_clause:
+        context = _pick(
+            state,
+            [
+                f"The rest of the list {feedback_clause}.",
+                f"I used the history because it {feedback_clause}.",
+            ],
+            salt="judge-brief-context-feedback",
+        )
+    elif profile:
+        context = _pick(
+            state,
+            [
+                f"{profile.capitalize()} only breaks close ties.",
+                f"I used {profile} as a secondary cue.",
+            ],
+            salt="judge-brief-context-profile",
+        )
+
+    backup = ""
+    if second_phrase and third_phrase:
+        backup = _pick(
+            state,
+            [
+                f"Next checks: {second_phrase}; {third_phrase}.",
+                f"Backups: {second_phrase}, then {third_phrase}.",
+                f"If it misses, try {second_phrase} and {third_phrase}.",
+            ],
+            salt="judge-brief-backups",
+        )
+    elif second_phrase:
+        backup = f"Next check: {second_phrase}."
+
+    return " ".join(part for part in [opener, reason, context, backup] if part)
+
+
+def _generate_judge_compact_mix_response(
+    state: ConversationState,
+    catalog: TrackCatalog,
+    track_ids: list[str],
+) -> str:
+    bucket = int(
+        hashlib.md5(
+            f"{state.session_id}:{state.turn_number}:judge_compact_mix".encode("utf-8")
+        ).hexdigest()[:8],
+        16,
+    ) % 12
+    style = [
+        "judge_v2",
+        "judge_v2",
+        "judge_v2",
+        "judge_brief",
+        "judge_brief",
+        "compact_broad",
+        "compact_broad",
+        "compact_broad",
+        "concise",
+        "natural",
+        "setwise",
+        "setwise",
+    ][bucket]
+    if style == "judge_v2":
+        return _generate_judge_v2_response(state, catalog, track_ids)
+    if style == "judge_brief":
+        return _generate_judge_brief_response(state, catalog, track_ids)
+    if style == "compact_broad":
+        return _generate_compact_response(state, catalog, track_ids, require_good_words=False)
+    if style == "concise":
+        return _generate_concise_response(state, catalog, track_ids)
+    if style == "natural":
+        return _generate_natural_response(state, catalog, track_ids)
+    return _generate_setwise_response(state, catalog, track_ids)
+
+
 def _generate_polished_response(state: ConversationState, catalog: TrackCatalog, track_ids: list[str]) -> str:
     if not track_ids:
         return "I found a few tracks that should fit the direction you described."
@@ -1292,4 +1412,8 @@ def generate_response(
         return _generate_judge_v3_response(state, catalog, track_ids)
     if style == "judge_mix":
         return _generate_judge_mix_response(state, catalog, track_ids)
+    if style == "judge_brief":
+        return _generate_judge_brief_response(state, catalog, track_ids)
+    if style == "judge_compact_mix":
+        return _generate_judge_compact_mix_response(state, catalog, track_ids)
     raise ValueError(f"Unsupported response style: {style!r}")

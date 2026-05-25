@@ -11,7 +11,7 @@
 当前优先提交包：
 
 ```text
-experiments/goalflow_ltr120_lambda2_head0_judge_mix_clean/blindset_A/submission.zip
+experiments/goalflow_ltr120_lambda2_head0_judge_compact_mix_clean/blindset_A/submission.zip
 ```
 
 ## 1. 比赛任务一句话
@@ -1320,10 +1320,14 @@ L2 正则可以理解成“不要让树的判断太激进”。单折里 `lambda
 | Run | nDCG@20 | Lexical Diversity | 说明 |
 |---|---:|---:|---|
 | 120-tree polished | 0.182098 | 0.137308 | 自然，但词汇多样性低 |
-| 120-tree judge_v2_clean | 0.182098 | 0.148765 | 当前主回复 |
+| 120-tree judge_v2_clean | 0.182098 | 0.148765 | 旧主回复 |
 | 120-tree lambda2 judge_v2 | 0.183021 | 0.148741 | 固定模板回复 |
-| 120-tree lambda2 judge_mix | 0.183021 | 0.159260 | 当前主回复，ranking 不变但 lexical 更高 |
+| 120-tree lambda2 judge_mix | 0.183021 | 0.159260 | 低风险混合回复，ranking 不变 |
+| 120-tree lambda2 judge_brief | 0.183021 | 0.174312 | 更短的 grounded 回复 |
+| 120-tree lambda2 judge_compact_mix | 0.183021 | 0.194935 | 当前主回复，兼顾 lexical 和解释质量 |
+| 120-tree lambda2 compact_broad | 0.183021 | 0.220792 | 最高 lexical，但更机械 |
 | 120/140/200 lambda2 RRF ensemble | 0.183253 | 0.148741 | 微小排序提升 |
+| 120/140/200 lambda2 RRF judge_compact_mix | 0.183253 | 0.194546 | ensemble ranking + 当前混合回复 |
 | 120-tree lambda2 judge_v3 | 0.183021 | 0.125937 | 回复更像完整解释，但 lexical 下降 |
 
 Blind A gold-free 检查：
@@ -1334,9 +1338,11 @@ Blind A gold-free 检查：
 | `goalflow_ltr120_head0_compact_broad_clean` | 1500 | 0.031867 | 0.702228 |
 | `goalflow_ltr120_lambda2_head0_judge_v2_clean` | 1496 | 0.031782 | 0.485312 |
 | `goalflow_ltr120_lambda2_head0_judge_mix_clean` | 1496 | 0.031782 | 0.522089 |
+| `goalflow_ltr120_lambda2_head0_judge_compact_mix_clean` | 1496 | 0.031782 | 0.611604 |
 | `goalflow_ltr120_lambda2_head0_compact_broad_clean` | 1496 | 0.031782 | 0.696674 |
 | `goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v2_clean` | 1494 | 0.031739 | 0.485312 |
 | `goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_mix_clean` | 1494 | 0.031739 | 0.524761 |
+| `goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_compact_mix_clean` | 1494 | 0.031739 | 0.615890 |
 | `goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_broad_clean` | 1494 | 0.031739 | 0.700198 |
 | `goalflow_ltr120_lambda2_head0_judge_v3_clean` | 1496 | 0.031782 | 0.434335 |
 | `goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v3_clean` | 1494 | 0.031739 | 0.437063 |
@@ -1382,21 +1388,29 @@ OOF 结果：
 
 因为提升非常小，而且 Blind A unique tracks 从 `1496` 降到 `1494`，我把 ensemble 放在“有提交预算时可以试”的位置，而不是直接替代主包。
 
-### 17.5 judge_mix 和 judge-v3 回复实验
+### 17.5 judge_mix、judge_compact_mix 和 judge-v3 回复实验
 
-`judge_mix` 是这轮新的文本首选。它不改排名，只把回复在几种已经验证过的自然模板之间稳定切换：
+`judge_mix` 是一个低风险文本增强包。它不改排名，只把回复在几种已经验证过的自然模板之间稳定切换：
 
 - `judge_v2`：最稳的解释模板；
 - `natural`：更像自然推荐语；
 - `concise`：短解释；
 - `setwise`：解释前几首歌作为一个 shortlist。
 
-它的结果比 `judge_v3` 更稳：
+随后我又做了 `judge_brief` 和 `judge_compact_mix`。可以理解成：
+
+- `judge_brief`：更短，但仍然写第一首歌、请求焦点、可验证证据、历史/profile 线索；
+- `judge_compact_mix`：把 `judge_v2`、`judge_brief`、`compact_broad`、`natural`、`concise`、`setwise` 稳定混合。它比纯 `compact_broad` 自然一点，又比 `judge_mix` 有明显更高的 Distinct-2。
+
+结果：
 
 | Style | Official dev lexical | Blind A Distinct-2 | 结论 |
 |---|---:|---:|---|
 | `judge_v2` | 0.148741 | 0.485312 | 固定模板，稳但略重复 |
-| `judge_mix` | 0.159260 | 0.522089 | 当前主回复 |
+| `judge_mix` | 0.159260 | 0.522089 | 低风险混合回复 |
+| `judge_brief` | 0.174312 | - | 短解释 probe |
+| `judge_compact_mix` | 0.194935 | 0.611604 | 当前主回复 |
+| `compact_broad` | 0.220792 | 0.696674 | 最高 lexical，但更机械 |
 | `judge_v3` | 0.125937 | 0.434335 | 更完整，但 lexical 指标更低 |
 
 `judge_v3` 是一个更像自然解释的版本。它会明确写：
@@ -1407,7 +1421,7 @@ OOF 结果：
 - 历史正/负反馈和用户画像如何作为辅助信号；
 - 第二、第三首歌为什么作为备选。
 
-所以 `judge_v3` 不是主版本，只作为 LLM judge 备选。如果 Gemini 更喜欢解释完整度，`judge_v3` 可能有机会；如果 Gemini 同时惩罚重复表达，`judge_mix` 更稳。
+所以 `judge_v3` 不是主版本，只作为 LLM judge 备选。如果 Gemini 更喜欢解释完整度，`judge_v3` 可能有机会；如果 Gemini 同时惩罚重复表达，`judge_compact_mix` 更稳。`compact_broad` 的数字最高，但文本最像工程化报告，因此只作为“如果只想冲 Distinct-2”的备份。
 
 ### 17.6 当前提交顺序
 
@@ -1435,28 +1449,36 @@ OOF 结果：
 第一优先：
 
 ```text
+experiments/goalflow_ltr120_lambda2_head0_judge_compact_mix_clean/blindset_A/submission.zip
+```
+
+理由：最稳的单一 LTR ranking，Blind A 覆盖度接近理论上限，回复比 judge_v2 / judge_mix 更不重复，同时仍然是 metadata-grounded 解释。
+
+第二备选：
+
+```text
 experiments/goalflow_ltr120_lambda2_head0_judge_mix_clean/blindset_A/submission.zip
 ```
 
-理由：最稳的单一 LTR ranking，Blind A 覆盖度接近理论上限，回复比 judge_v2 更不重复，同时仍然是 metadata-grounded 解释。
+理由：同一套 ranking，低风险混合回复，文本风险更低但 lexical 也更低。
 
-第二备选：
+第三备选：
 
 ```text
 experiments/goalflow_ltr120_lambda2_head0_judge_v2_clean/blindset_A/submission.zip
 ```
 
-理由：同一套 ranking，固定 judge_v2 回复，文本风险更低但 lexical 也更低。
+理由：同一套 ranking，固定 judge_v2 回复，最保守但 lexical 最低。
 
-第三备选：
+第四备选：
 
 ```text
-experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_mix_clean/blindset_A/submission.zip
+experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_compact_mix_clean/blindset_A/submission.zip
 ```
 
 理由：比单 120-tree 有微小 OOF 增益，Blind A 覆盖度略低。适合在有提交预算时试。
 
-高风险备选：
+第五备选，高风险：
 
 ```text
 experiments/goalflow_segcat_ltr120_140_200_ens_judge_v2_clean/blindset_A/submission.zip
@@ -1464,7 +1486,7 @@ experiments/goalflow_segcat_ltr120_140_200_ens_judge_v2_clean/blindset_A/submiss
 
 理由：非嵌套 OOF 最高，但嵌套 segment 验证回落，可能是分段选择过拟合。
 
-第四备选：
+第六备选，高风险高 lexical：
 
 ```text
 experiments/goalflow_segcat_ltr120_140_200_ens_compact_broad_clean/blindset_A/submission.zip
@@ -1472,7 +1494,7 @@ experiments/goalflow_segcat_ltr120_140_200_ens_compact_broad_clean/blindset_A/su
 
 理由：同一套 category 分段 ranking，换成高 Distinct-2 回复。
 
-第五备选：
+第七备选：
 
 ```text
 experiments/goalflow_ltr120_lambda2_head0_compact_broad_clean/blindset_A/submission.zip
@@ -1480,7 +1502,7 @@ experiments/goalflow_ltr120_lambda2_head0_compact_broad_clean/blindset_A/submiss
 
 理由：同一套 ranking，Distinct-2 更高。如果 judge 对自然度不敏感、主要奖励词汇多样性，这个包可能更好。
 
-第六备选：
+第八备选：
 
 ```text
 experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_broad_clean/blindset_A/submission.zip
@@ -1488,7 +1510,7 @@ experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_broad_clean/blinds
 
 理由：同一套 ensemble ranking，换成高 Distinct-2 回复。
 
-第七备选：
+第九备选：
 
 ```text
 experiments/goalflow_ltr120_lambda2_head0_judge_v3_clean/blindset_A/submission.zip
@@ -1496,7 +1518,7 @@ experiments/goalflow_ltr120_lambda2_head0_judge_v3_clean/blindset_A/submission.z
 
 理由：同一套 120-tree lambda2 ranking，换成更完整的自然解释。Distinct-2 低于 judge_v2，所以仅作为 LLM judge 试验。
 
-第八备选：
+第十备选：
 
 ```text
 experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v3_clean/blindset_A/submission.zip

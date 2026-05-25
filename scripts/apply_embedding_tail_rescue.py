@@ -214,7 +214,15 @@ def parse_args():
     parser.add_argument("--embedding-top-k", type=int, default=80)
     parser.add_argument("--min-score", type=float, default=0.02)
     parser.add_argument("--use-user-cf", action="store_true")
-    parser.add_argument("--response-style", choices=["compact", "compact_broad", "concise", "setwise", "natural", "polished", "judge_v1", "judge_v2", "judge_v3", "judge_mix"], default="compact_broad")
+    parser.add_argument(
+        "--response-style",
+        choices=[
+            "compact", "compact_broad", "concise", "setwise", "natural", "polished",
+            "judge_v1", "judge_v2", "judge_v3", "judge_mix", "judge_brief",
+            "judge_compact_mix",
+        ],
+        default="compact_broad",
+    )
     parser.add_argument("--copy-to-official-evaluator", action="store_true")
     parser.add_argument("--zip", action="store_true")
     return parser.parse_args()
