@@ -8,10 +8,10 @@
 /Users/bytedance/generated_problems/recsys2026_music_crs/goalflow_musiccrs
 ```
 
-当前安全提交包：
+当前优先提交包：
 
 ```text
-experiments/goalflow_safe_bm25_response_shifted_feedback/blindset_A/submission.zip
+experiments/goalflow_head20_compactresp_v2/blindset_A/submission.zip
 ```
 
 ## 1. 比赛任务一句话
@@ -699,7 +699,9 @@ label 更可能是下一轮用户对上一轮推荐的反馈。
 | GoalFlow v2 nDCG@20 | 0.07450 | 加权后仍不够 |
 | head10 nDCG@20 | 0.08378 | 接近 baseline |
 | head20 nDCG@20 | 0.08587 | 完全保住 baseline |
-| head20 lexical diversity | 0.08298 | 回复文本明显改善 |
+| head20 compact response lexical diversity | 0.17580 | 回复文本大幅改善，同时不动排名 |
+| head18 tail diversity nDCG@20 | 0.08527 | 只动最后 2 个位置，排名损失很小 |
+| head18 tail diversity catalog diversity | 0.61433 | 比 head20 更覆盖曲库 |
 | best-source hit@20 | 0.4715 | 说明召回源有潜力 |
 | RRF hit@20 | 0.2595 | 融合还不够会选 |
 | RRF gained/lost | 446 / 212 | 有净收益 |
@@ -707,22 +709,30 @@ label 更可能是下一轮用户对上一轮推荐的反馈。
 
 ## 11. 当前安全提交策略
 
-当前最安全 Blind A 包：
+当前最推荐 Blind A 包：
 
 ```text
-experiments/goalflow_safe_bm25_response_shifted_feedback/blindset_A/submission.zip
+experiments/goalflow_head20_compactresp_v2/blindset_A/submission.zip
 ```
 
 特点：
 
 - 推荐 ID 仍由强 BM25 baseline top20 锚定；
 - 修正了 progress label shifted feedback；
-- response 更丰富；
+- response 改成 compact metadata-grounded v2；
 - 校验通过。
 
 为什么安全：
 
-我们还没有证明多源融合能稳定超过 baseline，所以不冒险替换 top20。
+你上一次公共提交说明这个 ranking anchor 是有用的，所以这次第一优先只测试“文本质量大幅改善”，不冒险替换 top20。
+
+当前第二备选 Blind A 包：
+
+```text
+experiments/goalflow_taildiv_head18_compactresp_v2/blindset_A/submission.zip
+```
+
+它只改最后 2 个推荐位置，dev nDCG@20 从 `0.08587` 轻微降到 `0.08527`，Blind A unique track 从 `1216` 提升到 `1268`。
 
 ## 12. 下一步路线
 
@@ -953,8 +963,8 @@ feature table 里列：
 这组数的直观含义是：
 
 - 推荐排序不是最差的地方，甚至比本地 dev 指标看起来更有希望。
-- 系统太爱重复同一批歌，导致 catalog diversity 很低。
 - 回复文本太模板化，导致 lexical diversity 和 LLM judge 都很弱。
+- catalog diversity 看起来数值很小，但 Blind A 只有 80 条、每条 20 首，所以理论上限只有 `1600 / 47071 = 0.0340`；上次 `0.0257` 其实已经用了大约 76% 的可用 unique slots。
 
 所以这一轮我没有继续盲目加更多召回源，而是做了两个更低风险的改动。
 
@@ -1002,14 +1012,15 @@ legacy/BM25 头部先保护住
 |---|---:|---:|---:|---|
 | `goalflow_taildiv_head10` | 0.0721 | 0.8323 | 0.1019 | 太激进，排名掉太多 |
 | `goalflow_taildiv_head15` | 0.0818 | 0.7676 | 0.1019 | 当前最稳的多样性候选 |
+| `goalflow_taildiv_head18_compactresp_v2` | 0.0853 | 0.6143 | 0.1758 | 更适合作为第二备选，只动最后 2 位 |
 
-当前可提交候选包：
+保留的激进多样性候选包：
 
 ```text
 experiments/goalflow_taildiv_head15/blindset_A/submission.zip
 ```
 
-这个包不是替代安全包的绝对答案，而是一个“用最后 5 个位置换多样性”的线上实验版本。
+这个包不是第一优先提交，而是一个“用最后 5 个位置换多样性”的线上实验版本。
 
 ### 16.3 Response 多样化
 
@@ -1023,7 +1034,40 @@ experiments/goalflow_taildiv_head15/blindset_A/submission.zip
 
 这把 dev lexical diversity 从约 `0.0830` 提高到 `0.1019`。
 
-### 16.4 新一批 Pro 问题
+### 16.4 Compact Response v2
+
+后面我发现 Blind A 的 catalog diversity 上限很低，真正最值得先修的是 response。于是又做了 compact response v2：
+
+```text
+当前用户请求短片段 + lead track + tags/year/album grounding + profile/feedback cue + 1-2 个 backup tracks
+```
+
+它有几个约束：
+
+- 不调用付费 API，完全本地模板生成；
+- 只引用官方 metadata 和当前对话，不编造不存在的信息；
+- 过滤 metadata tag 里的明显脏词，避免 Gemini judge 被奇怪标签影响；
+- 使用当前 turn 的用户话术，而不是总重复 conversation_goal。
+
+效果：
+
+| Run | nDCG@20 | Catalog Diversity | Lexical Diversity |
+|---|---:|---:|---:|
+| `goalflow_head20_compactresp_v2` | 0.08587 | 0.38897 | 0.17580 |
+| `goalflow_taildiv_head18_compactresp_v2` | 0.08527 | 0.61433 | 0.17579 |
+| `goalflow_taildiv_head15_compactresp_v2` | 0.08180 | 0.76763 | 0.17579 |
+
+Blind A 本地无 gold 摘要：
+
+| Package | Unique Tracks | Catalog Diversity | Distinct-2 |
+|---|---:|---:|---:|
+| `goalflow_head20_compactresp_v2` | 1216 | 0.02583 | 0.66542 |
+| `goalflow_taildiv_head18_compactresp_v2` | 1268 | 0.02694 | 0.66542 |
+| `goalflow_taildiv_head15_compactresp_v2` | 1348 | 0.02864 | 0.66542 |
+
+结论：第一优先提交 `head20_compactresp_v2`，因为它不动已经有公共反馈支持的 ranking；`head18` 是更稳的多样性备选；`head15` 暂时不要优先交。
+
+### 16.5 新一批 Pro 问题
 
 我又把 5 个研究问题发给网页端 Pro：
 
@@ -1037,5 +1081,8 @@ experiments/goalflow_taildiv_head15/blindset_A/submission.zip
 
 ```text
 research/pro_answers/round3/tab1_blind_postprocessing_strategy.txt
+research/pro_answers/round3/tab2_next_step_modeling_roi.txt
+research/pro_answers/round3/tab4_dev_blind_evaluation_analysis.txt
 research/pro_answers/round3/tab5_metadata_grounded_response_design.txt
+research/pro_answers/round4/tab1_submission_package_decision.txt
 ```

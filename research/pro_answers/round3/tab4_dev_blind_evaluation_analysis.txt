@@ -1,0 +1,219 @@
+You are advising offline evaluation for RecSys Challenge 2026 Music-CRS. My local dev experiments show nDCG@20 around 0.08 for BM25-style systems, but a public blind submission scored nDCG@20=0.1935. Research question: diagnose plausible causes of this dev/blind mismatch and propose a robust validation protocol. Include checks for turn alignment, goal_progress alignment, catalog split leakage, official evaluator assumptions, query distribution shift, and how to build better local holdouts or grouped diagnostics.
+
+
+我会先对齐公开的挑战与评测细节，再把可能原因分成评测/格式问题、数据划分或泄漏、真实分布偏移，并整理成可本地执行的验证清单。
+
+一个关键锚点是，你的约 0.08 与官方 dev BM25 基线约 0.0815 对齐；更大的嫌疑是 Blind A 只按部分前缀的单目标轮评测，而 dev 展开完整会话的 1–8 轮。
+
+已思考 11m 16s
+
+Your dev score around nDCG@20 ≈ 0.08 is not obviously wrong. The official evaluator README reports LLaMA-1B + BM25 nDCG@20 = 0.0815 on the dev set, essentially the same scale you are seeing. The public blind score of 0.1935 is therefore a sign that the two measurements may not be comparable, not necessarily that your local BM25 is broken. 
+GitHub
+
+Most plausible causes
+1. Dev and blind are likely evaluated on different “example units”
+
+The local dev evaluator expands the 1k dev/test sessions into all 8 turns and macro-averages over turns/sessions; the evaluator README explicitly says retrieval metrics are nDCG@{1,10,20} across all 8 turns and macro-averaged over sessions and turns. 
+GitHub
+
+Blind A, however, is currently exposed as 80 rows, and each row contains a variable-length prefix: conversations length ranges from 1 to 22, which corresponds to one current target turn rather than all 8 turns for every session. 
+Hugging Face
+ The public blind inference script also predicts only the last exposed turn per blind row, not turns 1–8 for each session. 
+GitHub
+
+So a dev score averaged over ~8,000 turn examples and a blind score averaged over 80 current-turn examples can differ a lot. With one relevant item per example, a single rank-1 hit moves an 80-row mean by 0.0125, so Blind A is a high-variance calibration set.
+
+2. Turn serialization differs between dev and blind scripts
+
+The dev inference script constructs each target turn using history < target_turn_number, then takes the current turn’s first row as the user query. It also converts prior music track IDs into track metadata strings before appending them to history. 
+GitHub
+
+The blind inference script defines the current query as conversations[-1]["content"] and the history as conversations[:-1]; in that code path, prior music entries are passed through as raw conversation objects rather than being normalized by the dev parser. 
+GitHub
+ For a BM25 retriever, this matters: metadata text like “track_name: … artist_name: …” is searchable, while a UUID-like track ID usually is not. Your local dev harness should therefore reproduce the exact blind serialization, or you should deliberately normalize both dev and blind the same way.
+
+The safest invariant for blind-style prefixes is:
+
+Python
+运行
+assert conversations[-1]["role"] == "user"
+t = conversations[-1]["turn_number"]
+assert len(conversations) == 3 * (t - 1) + 1
+# prior full turns: user, music, assistant
+# current target turn: user only
+
+Then score against the hidden/current music item for turn t.
+
+3. Ground truth extraction is exact-track, not “good recommendation” relevance
+
+The dev ground-truth script extracts the recommendation for each turn from the current turn’s music row, and the evaluator computes nDCG against that exact ground_truth_track_id. 
+GitHub
+ The metric is binary: rel_i = 1 only if the predicted track matches the ground-truth track; order matters; IDCG is computed accordingly. 
+GitHub
+
+That means artist-level, album-level, genre-level, or semantically reasonable alternatives get zero. If your local evaluator treats multiple tracks as relevant, uses album/artist equivalence, de-duplicates differently, or averages flat over examples instead of turn-macro/session-macro, it will not match the official score.
+
+4. goal_progress_assessments are easy to misalign
+
+The dataset includes goal_progress_assessments, with the first turn usually null and later turns containing labels such as MOVES_TOWARD_GOAL or DOES_NOT_MOVE_TOWARD_GOAL. 
+Hugging Face
+ These labels should be treated as feedback context, not as the official retrieval label. The official dev evaluator ignores them and scores the exact music item for each target turn. 
+GitHub
+
+A likely alignment is: the progress label visible at turn t describes the user’s reaction to earlier recommendations, especially the previous turn, not the hidden item you are about to recommend at turn t. So for local holdouts, never let goal_progress[t+1] leak into features for predicting turn t. Use progress labels only up to the current visible prefix.
+
+Diagnostic check:
+
+Python
+运行
+# For target turn t:
+visible_conversations = all full turns < t plus the user row at t
+visible_progress = progress entries with turn_number <= t
+
+# Do not include:
+# - music row for turn t
+# - assistant row for turn t
+# - progress after turn t
+
+Then build grouped metrics by previous progress state: last label MOVES_TOWARD_GOAL, last label DOES_NOT_MOVE_TOWARD_GOAL, mixed history, or no prior feedback.
+
+5. Catalog split handling can create artificial gaps
+
+The official baseline README warns that inference must retrieve from the entire track catalog and not restrict candidates using track_split_types; configs should use all_tracks. 
+GitHub
+ The track metadata dataset itself exposes all_tracks and test_tracks splits, so it is easy to accidentally evaluate on the wrong candidate pool. 
+Hugging Face
+
+For this challenge, “use all item metadata as the retrieval catalog” is not leakage if the official rules/config require it. Leakage would be using hidden target labels, future conversation turns, blind ground truth, or a target-specific candidate subset. Keep these two concepts separate:
+
+Allowed catalog index: all official track metadata / embeddings
+Training labels: train split only, unless the challenge explicitly permits more
+Validation labels: local holdout only
+Blind labels: never available, never inferred from split names
+
+A necessary check for every validation split:
+
+Python
+运行
+assert gt_track_id in all_tracks_index
+assert len(predicted_track_ids) <= 20
+assert len(predicted_track_ids) == len(set(predicted_track_ids))
+assert all(pid in all_tracks_index for pid in predicted_track_ids)
+6. Blind A may be distribution-shifted and easier for lexical retrieval
+
+The dev set is 1k full sessions from the challenge dataset, while Blind A is only 80 prefix rows with user_split: "challenge" and variable target turns. 
+Hugging Face
++1
+ Blind examples also visibly include detailed conversation_goal fields and sometimes very specific user queries, including artist names, album names, cover-art clues, genre eras, or “find the specific song…” language. 
+Hugging Face
+ BM25 benefits disproportionately from exact entities, years, album names, and artist names, so a blind subset with more high-specificity/entity-rich prompts can score much higher than an 8-turn macro dev average.
+
+Audit this explicitly rather than guessing. For each example, compute whether the target track’s track_name, artist_name, or album_name appears in the current query, prior assistant text, prior music metadata, or conversation_goal. Then report nDCG by those groups.
+
+Robust validation protocol
+Step 1: Reproduce the official dev baseline exactly
+
+Run the official BM25 dev config and official evaluator unchanged. You should get approximately the reported dev baseline: nDCG@20 = 0.0815. 
+GitHub
+ If you do not, stop and diff the scorer, candidate catalog, JSON format, and turn construction before interpreting any model result.
+
+Also validate the submission-format assumptions: one prediction per required session_id/turn_number, valid track IDs, no duplicates, rank order preserved. The official README lists these as required conditions. 
+GitHub
+
+Step 2: Build a “blind-format dev” set
+
+Do not only evaluate the standard dev macro over all 8 turns. From train or dev full sessions, construct examples that look exactly like Blind A:
+
+Python
+运行
+def make_blind_prefix(full_conversations, target_turn):
+    prefix = []
+    for c in full_conversations:
+        if c["turn_number"] < target_turn:
+            prefix.append(c)
+        elif c["turn_number"] == target_turn and c["role"] == "user":
+            prefix.append(c)
+            break
+    return prefix
+
+For each target turn t, the input is prior full turns plus the current user message only. The label is the music item at turn t. Evaluate one prefix row per example, not necessarily all 8 turns per session. Maintain variants:
+
+A. one random target turn per session
+B. turn-balanced: equal rows for t=1..8
+C. blind-matched: target-turn distribution matched to visible Blind A
+D. high-specificity / low-specificity balanced
+E. category-balanced using conversation_goal.category
+
+Keep the official 8-turn dev score, but treat it as a broad diagnostic. Treat blind-format validation as the leaderboard proxy.
+
+Step 3: Use grouped diagnostics, not only aggregate nDCG
+
+For every model, produce a dashboard with:
+
+turn_number: 1..8
+prefix length: 1, 4, 7, ..., 22
+conversation_goal.specificity: HH, HL, LH, LL
+conversation_goal.category: A..K
+last goal_progress label: none / moves / does_not / mixed
+current-query entity match: track / artist / album / none
+history entity match: prior music metadata / assistant text / none
+target track popularity decile
+target artist frequency in train
+release decade
+user_split / warm-vs-challenge / country / musical culture
+candidate inclusion: gt in all_tracks index
+rank bucket: 1, 2–3, 4–10, 11–20, miss
+
+This will tell you whether 0.1935 is coming from a real improvement or from a concentration of easy lexical cases.
+
+Step 4: Run ablations that isolate leakage and alignment
+
+Use the same blind-format holdout and compare:
+
+current user query only
+current query + prior assistant text
+current query + prior music IDs only
+current query + prior music metadata
+current query + user profile
+current query + conversation_goal
+current query + visible goal_progress
+full visible prefix, no future fields
+
+If conversation_goal or future goal_progress causes a large jump, decide whether it is allowed by the official rules and whether it will generalize. If it is not part of the intended input contract, exclude it from model selection even if it helps a public blind score.
+
+Step 5: Separate candidate-catalog checks from supervised-training checks
+
+Use all_tracks as the retrieval catalog, because the official baseline requires that for inference. 
+GitHub
+ But when fitting supervised components, do grouped splits to avoid overly optimistic validation:
+
+user-grouped holdout: no same user across train/validation
+session-grouped holdout: all turns from a session stay together
+track-grouped holdout: target tracks disjoint across train/validation
+artist/album-grouped holdout: harder generalization split
+time/session-date split: train earlier, validate later
+blind-matched split: match Blind A visible distributions
+
+For BM25-style retrieval, the most important distinction is not whether a track exists in the catalog; it should. The important distinction is whether your ranking logic has seen that exact target as a labeled positive for a similar query.
+
+Step 6: Calibrate with public leaderboard sparingly
+
+Submit a few controls, not many leaderboard-tuned variants:
+
+official BM25 baseline
+your local BM25 using exact blind script
+your local BM25 using normalized prior music metadata
+query-only BM25
+with/without conversation_goal if allowed
+with/without goal_progress context
+
+If the official BM25 baseline also lands near the high blind score, the cause is mostly dataset/unit shift. If only your system jumps, inspect features and serialization. If a single ablation explains the jump, freeze that finding and test it on your local blind-format holdouts before trusting it.
+
+Bottom line
+
+The most likely explanation is a combination of non-comparable evaluation units, Blind A’s small/easier/current-turn distribution, and turn-prefix serialization differences. Your local 0.08 is consistent with the published official BM25 dev baseline, so do not treat 0.1935 as the new expected dev score. Build a blind-format validation set, assert turn and goal-progress alignment, always retrieve from all_tracks, and report grouped diagnostics before using public blind feedback for model selection.
+
+来源
+
+进阶专业
+ChatGPT 也可能会犯错。请核查重要信息。

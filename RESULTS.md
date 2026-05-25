@@ -12,13 +12,17 @@ Development-set scores from the official evaluator.
 | `goalflow_gated_head5` | 0.009875 | 0.055209 | 0.078712 | 0.471161 | 0.073882 | Source-gated fusion. Higher diversity, but still loses too much ranking. |
 | `goalflow_taildiv_head10` | 0.009875 | 0.067536 | 0.072093 | 0.832253 | 0.101913 | Aggressive tail diversification after rank 10. Useful stress test, too much nDCG loss. |
 | `goalflow_taildiv_head15` | 0.009875 | 0.067536 | 0.081796 | 0.767628 | 0.101913 | Current diversity candidate: preserves first 15, diversifies last 5. |
+| `goalflow_head20_compactresp_v2` | 0.009625 | 0.067601 | 0.085870 | 0.388966 | 0.175800 | Recommended public submission candidate: unchanged safe ranking, compact grounded response. |
+| `goalflow_taildiv_head18_compactresp_v2` | 0.009875 | 0.067536 | 0.085271 | 0.614327 | 0.175789 | Safer diversity backup: preserves first 18, diversifies final 2. |
+| `goalflow_taildiv_head15_compactresp_v2` | 0.009875 | 0.067536 | 0.081796 | 0.767628 | 0.175789 | More aggressive backup; not recommended before head20/head18 because nDCG loss is larger. |
 
 Immediate interpretation:
 
 - Goal/document/augmentation sources are not yet calibrated enough to improve ranking.
 - They do improve response diversity and candidate diversity.
-- Real Blind A feedback suggests the conservative ranking anchor is strong, while catalog and response diversity are the immediate score bottlenecks.
-- Next useful work is safer diversity post-processing, source-level calibration, and then LightGBM or dense retrieval.
+- Real Blind A feedback suggests the conservative ranking anchor is strong, while response quality/diversity is the biggest immediate score bottleneck.
+- Blind A has only 80 rows, so catalog diversity is capped at `1600 / 47071 = 0.0340`; improving catalog by a few hundred unique tail tracks has a small composite effect compared with preserving nDCG and improving response text.
+- Next useful work is response quality validation, safer tail diversity if extra submissions remain, source-level calibration, and then LightGBM or dense retrieval.
 
 ## Public Blind A Feedback
 
@@ -35,8 +39,19 @@ User-submitted public Blind A score before the latest tail-diversity work:
 Interpretation:
 
 - The conservative BM25/legacy-head ranking is materially useful on the public blind split.
-- The public bottlenecks are severe global track repetition and highly templated responses.
-- `goalflow_taildiv_head15` is the first candidate built specifically for that failure mode: keep the first 15 positions close to the safe ranking and use only positions 16-20 for global-repeat-aware diversification.
+- The public bottleneck is highly templated/weak response text. Catalog diversity looked small numerically, but Blind A's 80-row ceiling is only `0.0340`, and the previous package already used about 76% of its available unique slots.
+- The composite score is consistent with `0.5 * nDCG + 0.1 * catalog_diversity + 0.1 * lexical_diversity + 0.3 * ((llm_judge_score - 1) / 4)`. This is an inference, but it exactly explains the reported `0.1006`.
+- Pro sanity check saved at `research/pro_answers/round4/tab1_submission_package_decision.txt`: submit `head20_compactresp_v2` first; use `head18` as a later backup.
+
+## Blind A Local Diversity Summaries
+
+These are gold-free checks from `scripts/summarize_predictions.py`; they do not estimate nDCG.
+
+| Package | Unique Tracks | Unique Slot Ratio | Catalog Diversity | Catalog Ceiling | Distinct-2 | Recommendation |
+|---|---:|---:|---:|---:|---:|---|
+| `goalflow_head20_compactresp_v2` | 1216 | 0.7600 | 0.025833 | 0.033991 | 0.665424 | Submit first: preserves known ranking. |
+| `goalflow_taildiv_head18_compactresp_v2` | 1268 | 0.7925 | 0.026938 | 0.033991 | 0.665424 | Backup if one more submission is available. |
+| `goalflow_taildiv_head15_compactresp_v2` | 1348 | 0.8425 | 0.028638 | 0.033991 | 0.665424 | Useful experiment, but nDCG risk is likely too high for first retry. |
 
 ## Retrieval Source Diagnostics
 
@@ -112,10 +127,13 @@ Interpretation:
 - Original safe package: `experiments/goalflow_safe_bm25_response/blindset_A/submission.zip`
 - Shifted-feedback safe package: `experiments/goalflow_safe_bm25_response_shifted_feedback/blindset_A/submission.zip`
 - Tail-diversity candidate package: `experiments/goalflow_taildiv_head15/blindset_A/submission.zip`
+- Recommended current package: `experiments/goalflow_head20_compactresp_v2/blindset_A/submission.zip`
+- Safer diversity backup: `experiments/goalflow_taildiv_head18_compactresp_v2/blindset_A/submission.zip`
+- Aggressive diversity backup: `experiments/goalflow_taildiv_head15_compactresp_v2/blindset_A/submission.zip`
 
-The shifted-feedback package keeps `legacy_head_k=20` and therefore preserves the safe ranking anchor while using the corrected feedback interpretation in state construction and response generation.
+The `head20_compactresp_v2` package keeps `legacy_head_k=20` and therefore preserves the safe ranking anchor while replacing the weak response text with compact metadata-grounded explanations.
 
-The tail-diversity package uses `legacy_head_k=15`, `tail_diversity_start=15`, and `global_repeat_penalty=0.06`. It is a controlled online experiment candidate for improving catalog diversity and lexical diversity while limiting nDCG risk to the last five positions.
+The `head18` tail-diversity package uses `legacy_head_k=18`, `tail_diversity_start=18`, and `global_repeat_penalty=0.06`. It changes only the final two positions and is the safer diversity experiment. The `head15` package is more aggressive and should be held back unless the first response-focused retry already succeeds.
 
 ## Embedding Schema
 
@@ -154,8 +172,11 @@ Saved answers:
 - `research/pro_answers/round2/tab4_recsys_2026_response_generation.txt`
 - `research/pro_answers/round2/tab5_recsys_2026_report_outline.txt`
 - `research/pro_answers/round3/tab1_blind_postprocessing_strategy.txt`
+- `research/pro_answers/round3/tab2_next_step_modeling_roi.txt`
 - `research/pro_answers/round3/tab3_catalog_diversity_optimization.txt`
+- `research/pro_answers/round3/tab4_dev_blind_evaluation_analysis.txt`
 - `research/pro_answers/round3/tab5_metadata_grounded_response_design.txt`
+- `research/pro_answers/round4/tab1_submission_package_decision.txt`
 
 Operational takeaways:
 
@@ -164,4 +185,4 @@ Operational takeaways:
 - Embedding work should start with seed metadata/attributes/cf and user-cf channels using Challenge embeddings, with per-channel masks and normalization.
 - Track document augmentation dev reporting must stay train-only; train+dev augmentation is only a separately marked final blind retrain after freezing choices.
 - LambdaRank groups are `session_id × turn_number`, with binary exact-track labels and hard negatives from per-source top candidates.
-- Public blind feedback shifts the immediate priority toward controlled tail diversification and richer metadata-grounded response realization before expensive reranking.
+- Public blind feedback shifts the immediate priority toward richer metadata-grounded response realization. Tail diversification is secondary on 80-row Blind A because catalog diversity has a low ceiling.

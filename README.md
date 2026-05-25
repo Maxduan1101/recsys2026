@@ -19,7 +19,7 @@ The first runnable system implements:
 - lightweight entity, era, tag, profile, and seed-feedback boosts;
 - conservative top-20 diversity post-processing;
 - optional source-gated fusion and tail-only global-repeat diversification;
-- non-constant, metadata-grounded response templates;
+- compact, metadata-grounded response templates with user-query, profile, and feedback cues;
 - devset prediction, official evaluator compatibility, Blind A `submission.zip` generation.
 
 ## Run
@@ -96,6 +96,18 @@ The upload file is:
 /Users/bytedance/generated_problems/recsys2026_music_crs/goalflow_musiccrs/experiments/goalflow_taildiv_head15/blindset_A/submission.zip
 ```
 
+Current recommended Blind A package:
+
+```text
+/Users/bytedance/generated_problems/recsys2026_music_crs/goalflow_musiccrs/experiments/goalflow_head20_compactresp_v2/blindset_A/submission.zip
+```
+
+This package preserves the previously strong BM25-head ranking and only changes the response text. A safer diversity backup is:
+
+```text
+/Users/bytedance/generated_problems/recsys2026_music_crs/goalflow_musiccrs/experiments/goalflow_taildiv_head18_compactresp_v2/blindset_A/submission.zip
+```
+
 Source-level retrieval diagnostics:
 
 ```bash
@@ -133,6 +145,13 @@ Official embedding schema check:
 python goalflow_musiccrs/scripts/inspect_embeddings.py
 ```
 
+Prediction diversity summary without gold labels:
+
+```bash
+python goalflow_musiccrs/scripts/summarize_predictions.py \
+  goalflow_musiccrs/experiments/goalflow_head20_compactresp_v2/blindset_A/prediction.json
+```
+
 Important: use `talkpl-ai/TalkPlayData-Challenge-Track-Embeddings`, not the older `TalkPlayData-2-Track-Embeddings` from the baseline tips. The Challenge embedding `all_tracks` split has full overlap with the Challenge track catalog.
 
 ## Current Scope
@@ -141,6 +160,6 @@ This is Phase 1/2 infrastructure. It deliberately avoids direct dependence on ga
 
 The current safe submission setting uses `legacy_head_k=20`: recommendation IDs exactly preserve the strongest known BM25 dev ranking while GoalFlow upgrades response generation. Experimental settings with lower `legacy_head_k` are useful for research, but currently reduce nDCG.
 
-Public Blind A feedback from one conservative submission was `nDCG@20=0.1935`, `catalog_diversity=0.0257`, `lexical_diversity=0.0125`, and `llm_judge_score=1.0`. That means ranking is promising but diversity and response quality are the visible bottlenecks. The `goalflow_taildiv_head15` candidate keeps the first 15 ranks protected and diversifies only the final five tracks.
+Public Blind A feedback from one conservative submission was `nDCG@20=0.1935`, `catalog_diversity=0.0257`, `lexical_diversity=0.0125`, and `llm_judge_score=1.0`. Blind A currently has only 80 rows, so the maximum possible catalog diversity is `1600 / 47071 = 0.0340`; catalog is not the main bottleneck. The immediate best submission is therefore `goalflow_head20_compactresp_v2`: keep the ranking fixed and test the stronger text generator. The `goalflow_taildiv_head18_compactresp_v2` package is a backup that changes only the final two ranks.
 
 The newest diagnostics show the added sources are useful for recall but not yet calibrated for rank fusion: the best single source per dev state reaches hit@20 `0.4715` / nDCG@20 `0.2600`, while the current RRF fusion reaches hit@20 `0.2595` / nDCG@20 `0.1015`. Legacy-vs-fused deltas show `446` gained top-20 hits but `212` lost hits and `642` demotions, so the next implementation step is source gating or a learning-to-rank model rather than simply adding more BM25 sources.

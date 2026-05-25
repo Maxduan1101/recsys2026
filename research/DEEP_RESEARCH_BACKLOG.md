@@ -17,12 +17,17 @@ This file tracks questions and optimization directions that deserve a dedicated 
 
 0.5. **Public blind diversity bottleneck**
    - Public Blind A submission reported by user: nDCG@20 `0.1935`, catalog diversity `0.0257`, lexical diversity `0.0125`, LLM judge `1.0`, composite `0.1006`.
-   - This indicates the ranking anchor is valuable on blind data, but global repetition and templated responses are major bottlenecks.
+   - This indicates the ranking anchor is valuable on blind data, but templated responses are the major immediate bottleneck.
+   - New interpretation: Blind A has only 80 rows, so catalog diversity is capped at `1600 / 47071 = 0.0340`; the previous `0.0257` already represents about 76% unique slots.
+   - Composite formula appears to be `0.5 * nDCG + 0.1 * catalog + 0.1 * lexical + 0.3 * ((judge - 1) / 4)`, inferred from the reported `0.1006`.
    - Implemented `goalflow_taildiv_head15`: protect first 15 ranks, diversify only positions 16-20 with global repeat penalties and artist/album soft caps.
    - Dev result: nDCG@20 `0.0818`, catalog diversity `0.7676`, lexical diversity `0.1019`.
    - Blind candidate package: `experiments/goalflow_taildiv_head15/blindset_A/submission.zip`.
    - Pro answers saved at `research/pro_answers/round3/tab1_blind_postprocessing_strategy.txt` and `research/pro_answers/round3/tab5_metadata_grounded_response_design.txt`.
-   - Open research: estimate online composite risk of `head15` vs `head20`, and try `head17/head18` if one more safer submission is needed.
+   - Implemented compact response v2. Dev lexical diversity rises to `0.1758`; Blind A local Distinct-2 rises to `0.6654`.
+   - Recommended first retry: `experiments/goalflow_head20_compactresp_v2/blindset_A/submission.zip`.
+   - Safer diversity backup: `experiments/goalflow_taildiv_head18_compactresp_v2/blindset_A/submission.zip`; dev nDCG@20 `0.08527`, Blind A unique tracks `1268`.
+   - Pro answer saved at `research/pro_answers/round4/tab1_submission_package_decision.txt`: submit head20 compact response first, not head15.
 
 1. **Progress-label semantics**
    - Is `goal_progress_assessment[turn_number]` judging the recommendation in the same turn, or the transition into the next turn?
@@ -64,7 +69,7 @@ This file tracks questions and optimization directions that deserve a dedicated 
    - Hard negatives should include BM25, dense, same-artist wrong-track, same-album wrong-track, and popularity negatives.
    - First feature export is implemented in `scripts/export_ltr_dataset.py`; it writes JSONL rows grouped by dev session-turn with source-rank, RRF, rule boost, profile, seed, and track prior features.
    - Pro answer saved at `research/pro_answers/round2/tab3_recsys_challenge_2026_plan.txt`.
-   - Round 3 Pro question is running in Chrome tab 2: prioritize LTR, embeddings, CF, cross-encoder, or response/diversity under limited time.
+   - Round 3 Pro answer saved at `research/pro_answers/round3/tab2_next_step_modeling_roi.txt`: first fix response/diversity and use LTR after the safe public retry.
    - Next: decide feature matrix encoding, candidate sampling, and whether missed gold rows should be included for training or only diagnostics.
 
 7. **Cross-encoder reranking**
@@ -99,6 +104,7 @@ This file tracks questions and optimization directions that deserve a dedicated 
 15. **LLM-as-a-Judge response optimization**
    - Establish prompts and self-critique criteria for personalization and explanation quality without hallucinating metadata.
    - Implemented metadata-grounded response variants keyed by session/turn. This raises dev lexical diversity from `0.0830` to `0.1019`.
+   - Implemented compact response v2 with current-query snippets, profile cues, feedback cues, album/year/tag grounding, and tag profanity filtering. This raises dev lexical diversity to `0.1758` and Blind A local Distinct-2 to `0.6654` on the 80-row split.
    - Pro answers saved at `research/pro_answers/round2/tab4_recsys_2026_response_generation.txt` and `research/pro_answers/round3/tab5_metadata_grounded_response_design.txt`.
 
 16. **Distinct-2 vs. naturalness tradeoff**
@@ -108,6 +114,8 @@ This file tracks questions and optimization directions that deserve a dedicated 
    - Current top-5 is protected and positions 6-20 are lightly diversified. Research stronger xQuAD/MMR settings without damaging nDCG.
    - `taildiv_head10` reached dev catalog diversity `0.8323` but nDCG@20 only `0.0721`.
    - `taildiv_head15` reached dev catalog diversity `0.7676` with nDCG@20 `0.0818`; this is the current best diversity/ranking tradeoff candidate.
+   - `taildiv_head18_compactresp_v2` reached dev nDCG@20 `0.08527` and catalog diversity `0.6143`; it is a safer backup than head15.
+   - On Blind A, catalog diversity gains are small in composite terms because the 80-row ceiling is only `0.0340`; do not sacrifice head ranking for catalog unless public feedback specifically shows ranking is unchanged.
    - Pro answer saved at `research/pro_answers/round3/tab3_catalog_diversity_optimization.txt`.
 
 ## Evaluation Research
@@ -115,7 +123,7 @@ This file tracks questions and optimization directions that deserve a dedicated 
 21. **Dev/blind mismatch**
    - Local dev nDCG around `0.08` aligns with the official baseline expectation, while public Blind A feedback showed `0.1935`.
    - Possible causes include Blind A containing only selected/prefix turns, distribution shift, or different public split difficulty.
-   - Round 3 Pro question is running in Chrome tab 4 to design a robust validation protocol and grouped diagnostics.
+   - Round 3 Pro answer saved at `research/pro_answers/round3/tab4_dev_blind_evaluation_analysis.txt`.
 
 ## Engineering
 
