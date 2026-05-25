@@ -1,0 +1,944 @@
+[0] [user]
+You are advising a lightweight learning-to-rank implementation for RecSys Challenge 2026 Music-CRS under limited local dependencies. We have JSONL candidate features with per-source ranks, RRF score, rule boost, intent/category/specificity, track priors, seed features. LightGBM is not installed but scipy/numpy are available. Should we install LightGBM or implement a simple logistic/pairwise ranker? Give robust feature encoding, train/dev split, leakage risks, and how to use the model safely with legacy-head protection.
+
+---
+
+[1] [assistant]
+主人，我会把结论先定成“能装 LightGBM 就装，但必须有一个 scipy/numpy 备选 ranker”，然后重点放在不会把 BM25 头部弄崩的训练与上线方案。
+
+---
+
+[2] [assistant]
+我查了下当前官方文档：LightGBM 的 LGBMRanker 默认就是 ranking/lambdarank 路线，并且训练接口原生接受 query/group 信息；scipy 这边可以用 minimize/L-BFGS-B 实现一个线性 ranker 备胎。
+
+---
+
+[3] [assistant]
+主人，结论：先尝试装 LightGBM；同时实现一个 scipy/numpy 线性 pairwise ranker 作为保底。真正提交时不要让模型全量接管排序，而是用它 rerank 11–20 或 16–20，并保留 legacy BM25 head。
+
+LightGBM 值得装，因为 LGBMRanker 原生是 learning-to-rank 工具，默认 ranker objective 是 lambdarank，训练接口接受 group/query 信息，正好对应你的 session-turn group。
+LightGBM
+ 但如果安装环境麻烦，scipy 的 minimize 支持 L-BFGS-B 这类可带梯度和边界的优化器，足够实现一个稳定的线性 pairwise ranker。
+SciPy 文档
+
+1. 推荐路线
+
+优先级如下：
+
+尝试 LightGBM LambdaRank
+
+最可能吃到非线性收益。
+
+能自动利用：source rank interaction、intent gate、specificity、exact-match、seed similarity、popularity prior。
+
+训练和推理代码更短。
+
+但不要直接全量替换 BM25 排名。
+
+同时保留 numpy/scipy pairwise ranker
+
+作为无依赖 fallback。
+
+适合做“保守排序校准器”。
+
+线性模型可解释，容易加权重边界，比如强制 BM25/rule/exact-match 权重非负。
+
+不要先做 pointwise logistic
+
+pointwise logistic 可以当 baseline，但它优化的是“这个候选是不是 gold”，不是“同一 turn 内谁排前面”。
+
+你这个数据是每个 group 一个或少数正例，pairwise 更自然。
+
+2. 特征编码：重点是 rank 变换和 group 内标准化
+
+每条 JSONL 应该至少有：
+
+group_id = session_id + turn_id
+track_id
+label = 1 if gold else 0
+legacy_rank
+source_ranks
+rrf_score
+rule_boost
+intent
+category
+specificity
+track_priors
+seed_features
+exact_match_features
+per-source rank 特征
+
+不要直接只喂 rank=37。每个 source 做这组：
+
+source_present = 0/1
+source_recip = 1 / (rank + 60)      # RRF style
+source_inv_rank = 1 / rank
+source_log_rank = -log1p(rank)
+source_top1 = rank <= 1
+source_top3 = rank <= 3
+source_top5 = rank <= 5
+source_top10 = rank <= 10
+source_top20 = rank <= 20
+
+missing rank 不要填 999 后直接训练。更稳的是：
+
+source_present = 0
+source_recip = 0
+source_inv_rank = 0
+source_log_rank = 0
+top flags = 0
+
+这样模型不会把“missing=999”学成奇怪的线性数值。
+
+legacy anchor 特征
+
+BM25 是已知强 anchor，所以专门强化：
+
+legacy_present
+legacy_rank
+legacy_recip = 1 / (legacy_rank + 60)
+legacy_top1/top3/top5/top10/top15/top20
+legacy_score_z_in_group
+legacy_rank_percentile
+
+如果有多个 BM25 版本，例如 metadata_all, title_artist, train_context, goal_query，要保留：
+
+num_sources_present
+best_source_rank
+mean_recip_across_sources
+max_recip_across_sources
+source_consensus_top20_count
+
+这些能让模型知道“一个 item 是单源偶然命中，还是多源一致命中”。
+
+score 类特征
+
+对这些做 group 内 z-score 或 percentile：
+
+rrf_score
+rule_boost
+bm25_score
+embedding_score
+seed_similarity
+popularity
+
+因为不同 turn 的 BM25/RRF 分布不一样，原始分数跨 group 不可比。推荐同时保留：
+
+raw_score
+score_z = (score - group_mean) / group_std
+score_pct_rank
+score_gap_to_group_best
+categorical 特征
+
+intent/category/specificity 用固定 one-hot：
+
+intent_exact_title
+intent_artist
+intent_album
+intent_mood
+intent_genre
+intent_contextual
+intent_similar_to_seed
+intent_negative_feedback
+intent_unknown
+
+不要做 target encoding，尤其不要按 track_id 做“历史命中率编码”，很容易变成泄漏或过拟合。
+
+specificity 可以编码成：
+
+specificity_num = {vague:0, medium:1, specific:2}
+is_specific
+is_broad
+entity/exact-match 特征
+
+这是低风险 nDCG 提升来源：
+
+title_exact_match
+artist_exact_match
+album_exact_match
+title_alias_match
+artist_alias_match
+query_contains_title
+query_contains_artist
+seed_artist_match
+seed_album_match
+seed_genre_match
+negative_artist_match
+negative_track_match
+
+并加少量交互：
+
+artist_exact_match * intent_artist
+title_exact_match * intent_exact_title
+album_exact_match * intent_album
+seed_artist_match * intent_similar_to_seed
+legacy_top20 * exact_match_any
+track prior 特征
+
+可以用，但必须小心：
+
+log_train_popularity = log1p(train_recommend_count)
+artist_train_popularity
+album_train_popularity
+release_year
+is_recent
+is_classic
+global_repeat_count_in_batch
+previously_recommended_in_session
+
+风险点：popularity 很容易把模型推回热门老歌，提升局部 dev 但伤 catalog diversity，也可能伤 broad intent。建议对 popularity 加上限，或者只允许在 tail rerank 中作为 tie-breaker。
+
+3. 训练 / dev split
+
+必须按 user/session 分组切分，不要按 row 随机切：
+
+train sessions: 80%
+dev sessions: 20%
+
+原则：
+
+同一个 session 的所有 turns 必须在同一 split
+同一个 group_id 的所有 candidates 必须在同一 split
+candidate generation 必须 train/dev 独立复现
+dev 上不能 positive-inject 后再报主指标
+
+如果你有 official train/dev：
+
+train official train
+tune official dev
+blind-like validation = 从 train 内再切一个 session-level holdout
+
+原因是你现在已经发现 local dev 和 blind 有明显 mismatch，所以不能只相信一个 dev 数。
+
+4. 泄漏风险清单
+
+最危险的是这些：
+
+positive injection 泄漏
+如果训练或 dev candidate pool 里强行注入 gold，可以用于诊断“reranker 上限”，但不能作为 honest end-to-end 指标。
+
+track document augmentation 泄漏
+只能用 train turns 给 track 文档加用户 query / assistant explanation / selected reason。不能用 dev gold，更不能用 blind 相关信息。
+
+goal_progress 对齐错误
+goal_progress_assessment[turn_number] 必须先确认它评价的是同 turn 的 music item，还是 transition 到下一个 turn。没确认前，只能把它作为弱反馈，不要强行当 positive/negative label。
+
+future-history leakage
+previously_recommended, user_feedback, session_seed 只能来自当前 turn 之前，不能看未来 turns。
+
+track_id memorization
+不要 one-hot track_id。可以用 smoothed train popularity，但不要让模型记住“这个 track 经常是答案”。
+
+dev-tuned postprocess 过拟合
+如果你对 dev 调了很多 alpha/K/gate，要再用一个 blind-like holdout 复核。
+
+5. LightGBM 方案
+
+训练数据必须按 group 连续排列：
+
+Python
+运行
+# pseudo
+rows = sorted(rows, key=lambda r: r["group_id"])
+
+X = np.array([make_features(r) for r in rows], dtype=np.float32)
+y = np.array([r["label"] for r in rows], dtype=np.int32)
+group = group_sizes_in_same_order(rows)
+
+推荐初始参数：
+
+Python
+运行
+from lightgbm import LGBMRanker
+
+model = LGBMRanker(
+    objective="lambdarank",
+    metric="ndcg",
+    n_estimators=300,
+    learning_rate=0.03,
+    num_leaves=15,
+    max_depth=4,
+    min_child_samples=30,
+    reg_lambda=5.0,
+    reg_alpha=0.2,
+    subsample=0.8,
+    colsample_bytree=0.8,
+    random_state=2026,
+    n_jobs=-1,
+)
+
+先别用太强的树。你现在最大风险不是欠拟合，而是 reranker 把 BM25 头部打乱。
+
+训练时看：
+
+eval_at = [1, 3, 5, 10, 20]
+primary = nDCG@20
+secondary = hit@20, nDCG@5, protected-head nDCG
+
+不要只看全量 rerank nDCG。你需要专门评估：
+
+legacy top20 unchanged
+rerank all candidates
+protect top5, rerank 6-20
+protect top10, rerank 11-20
+protect top15, rerank 16-20
+6. scipy/numpy pairwise ranker 方案
+
+实现一个线性 RankNet 风格模型：
+
+对每个 group，取 gold candidate p 和若干 negatives n，构造：
+
+d = x_pos - x_neg
+loss = log(1 + exp(-w · d)) + λ ||w||²
+
+也就是希望：
+
+w · x_pos > w · x_neg
+
+负例采样优先取 hard negatives：
+
+legacy top20 negatives
+RRF top20 negatives
+exact/source-consensus false positives
+currently outranking gold negatives
+random tail negatives
+
+每个 positive 配 20–50 个 negatives 就够了。
+
+推荐加入权重边界：
+
+legacy_recip weight >= 0
+rrf_score weight >= 0
+rule_boost weight >= 0
+exact_match weight >= 0
+negative_feedback_match weight <= 0
+previously_recommended weight <= 0
+popularity weight in [-0.2, 0.2]
+
+因为 scipy 的 L-BFGS-B 支持 bound-constrained optimization，所以这个很适合做“安全线性模型”。
+SciPy 文档
+
+推理时不要直接用：
+
+final_score = model_score
+
+而是用：
+
+final_score = z_legacy + alpha * clip(z_model, -2, 2) + beta * exact_match_bonus
+
+alpha 从小到大试：
+
+0.05, 0.10, 0.15, 0.20, 0.30
+
+只要 dev 上 top5/top10 开始掉，就不要再加。
+
+7. 安全上线：legacy-head protection
+
+我建议第一版提交级策略是：
+
+K = 15
+final[1:15] = legacy_bm25[1:15] unchanged
+final[16:20] = model rerank from candidate pool excluding protected items
+
+如果 dev 非常稳，再试：
+
+K = 10
+final[1:10] = legacy unchanged
+final[11:20] = model rerank
+
+不要一开始 rerank 全 top20。
+
+允许进 head 的例外
+
+只有这些情况允许模型把 item 提到 1–10：
+
+title_exact_match and intent_exact_title
+artist_exact_match and intent_artist
+album_exact_match and intent_album
+source_consensus_top20_count >= 3 and model_margin very high
+negative_feedback demands replacing repeated/bad item
+
+否则模型只能动 tail。
+
+final ranking 公式
+
+推荐：
+
+base = legacy_recip_z
+model = model_margin_z
+exact = exact_entity_bonus
+repeat = repeat_penalty
+pop = clipped_popularity_prior
+
+final_score =
+    base
+  + alpha * clip(model, -2, 2)
+  + beta * exact
+  - gamma * repeat
+  + delta * pop
+
+其中：
+
+alpha = 0.05 ~ 0.20
+beta = 0.2 ~ 0.8
+gamma = 0.1 ~ 0.5
+delta = 0.00 ~ 0.05
+
+popularity 只做 tie-breaker，不要让它主导。
+
+8. ordered experiment plan
+Experiment 0：冻结基线
+
+先固定三个东西：
+
+candidate exporter
+local evaluator
+legacy BM25 submission reproduction
+
+确认同一份 JSONL 每次输出完全一致。
+
+Experiment 1：feature sanity
+
+训练前先做单特征诊断：
+
+legacy_rank bucket vs label rate
+source_present vs label rate
+exact_match vs label rate
+intent distribution
+gold candidate recall@20/50/100
+
+如果 gold 不在 candidate pool，reranker 没救，只能靠 retrieval。
+
+Experiment 2：linear pairwise ranker
+
+先实现 scipy pairwise ranker。
+
+评估：
+
+all-candidate rerank
+protect top10
+protect top15
+protect top20 unchanged sanity
+
+如果 linear 模型全量 rerank 都不如 BM25，但 protect top15 后 nDCG 不掉，说明它仍可用于 tail improvement。
+
+Experiment 3：LightGBM LambdaRank
+
+装得上就跑：
+
+small model: max_depth=3/4, num_leaves=7/15
+medium model: max_depth=5, num_leaves=31
+
+只接受满足以下条件的模型：
+
+protect top15 nDCG@20 >= legacy - tiny_tolerance
+exact-intent subset improves
+broad/mood subset不明显崩
+catalog diversity不恶化
+Experiment 4：gate by intent
+
+分别测：
+
+specific title/artist/album query
+genre/mood/context query
+similar-to-seed query
+negative-feedback query
+vague query
+
+推荐规则：
+
+specific intent: allow exact-match promotion
+broad intent: protect top10/15, model only tail
+negative feedback: allow demote repeated/disliked artist
+vague intent: almost fully trust BM25/popular prior, tiny model alpha
+Experiment 5：submission candidate
+
+优先提交顺序：
+
+1. BM25 head unchanged + better response generator
+2. protect top15 + model rerank 16-20
+3. protect top10 + model rerank 11-20 only if blind-like dev stable
+4. full model rerank only as diagnostic, not first submission
+最终建议
+
+装 LightGBM，但不要赌 LightGBM。
+真正低风险方案是：
+
+LightGBM LambdaRank = main reranker
+scipy pairwise linear ranker = dependency-free fallback
+legacy BM25 top10/top15 = protected anchor
+LTR model = tail reranker / exact-match promoter / tie-breaker
+
+在你当前状态下，最可能安全涨分的不是“强模型全量重排”，而是：
+
+BM25 top15 不动
+16–20 用 LTR 从 multi-source candidates 中挑更像 gold 的
+specific entity query 开 exact-match promotion
+broad query 禁止模型大幅改 head
+popularity 只做弱 prior
+所有收益用 blind-like holdout 复核
+
+---
+
+[4] [user]
+We have official RecSys 2026 Music-CRS track embeddings: metadata-qwen3, lyrics-qwen3, attributes-qwen3, audio CLAP, image SigLIP2, track cf-bpr, and user cf-bpr. Current production path does not yet use them because BM25 head is strong. One question: design a minimal embedding/CF shadow experiment that can be implemented in a few hours and either proves safe tail value or conclusively rejects it. Include exact retrieval channels, freeze positions, metrics, and rollback criteria.
+
+---
+
+[5] [assistant]
+主人，这个实验应该被设计成“影子系统”，不碰已知强 BM25 head，只回答一个问题：embedding/CF 能不能在 16–20 位安全替换弱尾部。下面我给一个几小时内能做完、结果可判定的版本。
+
+---
+
+[6] [assistant]
+主人，最小实验目标只有一个：
+
+embedding/CF 不负责打 BM25 head，只测试它能不能在 16–20 位安全贡献尾部价值。
+
+不要一上来做全量融合。实验成功，才进入提交候选；实验失败，就明确 rollback，不再浪费时间。
+
+0. 实验结论标准先定死
+
+这次 shadow experiment 只回答：
+
+在 BM25 top15 完全冻结的情况下，
+embedding/CF 能否替换 16–20 位，
+并且不损害 nDCG@20，同时提高 tail recall / catalog diversity？
+
+上线候选只允许这类结果：
+
+final[1:15] = legacy BM25[1:15] unchanged
+final[16:20] = embedding/CF gated rerank
+
+全量 rerank、top10 promotion、embedding 接管 BM25 head 都不做。
+
+1. 使用的 retrieval channels
+
+不要一次性把 7 个 embedding 全混进去。最小安全版本只用 4 个主通道：
+
+Channel A：seed_metadata
+
+用历史正向 seed tracks 的 metadata-qwen3 向量求均值。
+
+query_vec = mean(L2(track_metadata_vec[positive_seed_tracks]))
+score = dot(query_vec, track_metadata_vec[candidate])
+topN = 200
+
+作用：补 BM25 在自然语言语义上的同类歌曲召回。
+
+Channel B：seed_attributes
+
+用历史正向 seed tracks 的 attributes-qwen3 向量求均值。
+
+query_vec = mean(L2(track_attributes_vec[positive_seed_tracks]))
+score = dot(query_vec, track_attributes_vec[candidate])
+topN = 200
+
+作用：补 mood / genre / vibe / activity 类请求。
+
+Channel C：seed_track_cf
+
+用历史正向 seed tracks 的 track cf-bpr 向量求均值。
+
+query_vec = mean(L2(track_cf_vec[positive_seed_tracks]))
+score = dot(query_vec, track_cf_vec[candidate])
+topN = 200
+
+作用：协同过滤式“喜欢这个，也可能喜欢那个”。
+
+Channel D：user_cf
+
+如果当前 session / user 有 user cf-bpr：
+
+score = dot(user_cf_vec[user], track_cf_vec[candidate])
+topN = 200
+
+作用：个性化 prior。
+
+2. 第一版不要启用的 channels
+
+这些先只做 shadow diagnostics，不进最终 tail rerank：
+
+lyrics-qwen3
+audio CLAP
+image SigLIP2
+
+原因不是它们没用，而是几小时内最容易引入噪声。
+第一轮只在日志里看它们有没有 incremental recall。
+
+可以记录：
+
+lyrics_top200_contains_gold
+audio_top200_contains_gold
+image_top200_contains_gold
+
+但不要让它们改提交结果。
+
+后续只有在分组诊断明确有效时再启用：
+
+lyrics-qwen3: 用户请求歌词、主题、叙事、words、meaning 时启用
+audio CLAP: 用户请求 sound / energy / acoustic / instrumental / danceability 时启用
+image SigLIP2: 默认不进 ranking，除非比赛数据明确显示封面视觉有强信号
+3. seed track 提取规则
+
+只用当前 turn 之前的信息。
+
+positive_seed_tracks =
+    previous music tracks in same session
+    excluding tracks with explicit negative feedback
+    excluding tracks after DOES_NOT_MOVE_TOWARD_GOAL if alignment is verified
+
+如果 goal_progress_assessment 对齐还没完全确认，就不要强依赖它。更安全的第一版：
+
+positive_seed_tracks = previous recommended / played tracks before current turn
+negative_seed_tracks = only explicit user rejection, skip, dislike, not that, too X
+
+最多取最近 5 个 seed：
+
+recent weights:
+last seed      1.00
+2nd previous   0.80
+3rd previous   0.60
+4th previous   0.40
+5th previous   0.30
+
+如果没有 seed：
+
+use user_cf only if available
+else embedding system abstains
+
+这个 abstain 很重要。不要为了覆盖率硬上 embedding。
+
+4. candidate union
+
+对每个 group / session-turn：
+
+legacy_candidates = BM25 top100
+metadata_candidates = seed_metadata top200
+attributes_candidates = seed_attributes top200
+track_cf_candidates = seed_track_cf top200
+user_cf_candidates = user_cf top200
+
+合并去重：
+
+pool = union(
+    legacy top100,
+    metadata top200,
+    attributes top200,
+    track_cf top200,
+    user_cf top200
+)
+
+但最终只能从 pool 里挑 16–20。
+
+5. channel score normalization
+
+每个 turn 内，每个 channel 单独归一化：
+
+z_channel_score =
+    (score - mean(topN_scores)) / std(topN_scores)
+
+missing channel 记为 0，并加 present flag：
+
+metadata_present
+attributes_present
+track_cf_present
+user_cf_present
+
+不要直接混 raw dot product，因为不同 embedding 通道的分布不可比。
+
+6. 最小融合公式
+
+第一版不用训练模型，直接 deterministic scoring：
+
+embedding_score =
+    0.35 * z_metadata
+  + 0.25 * z_attributes
+  + 0.25 * z_track_cf
+  + 0.15 * z_user_cf
+
+如果没有 seed，只剩 user_cf：
+
+embedding_score = z_user_cf
+
+最终 tail score：
+
+tail_score =
+    0.60 * legacy_tail_score_z
+  + 0.30 * embedding_score
+  + 0.10 * rule_boost_z
+  - 0.20 * repeat_penalty
+
+其中：
+
+legacy_tail_score_z = BM25/RRF group-normalized score
+repeat_penalty = same track / same artist overused in batch or session
+
+这不是为了最强，而是为了安全。BM25 仍然主导。
+
+7. freeze positions
+
+做三个版本，但提交候选只看后两个：
+
+Variant 0：shadow only
+final = legacy BM25 top20 unchanged
+
+只记录 embedding 是否能找到 gold。
+
+用途：判断 embedding 有没有理论价值。
+
+Variant 1：protect top15
+final[1:15] = legacy[1:15]
+final[16:20] = top 5 by tail_score from pool excluding final[1:15]
+
+这是主实验。
+
+Variant 2：protect top18
+final[1:18] = legacy[1:18]
+final[19:20] = top 2 by tail_score from pool excluding final[1:18]
+
+这是极保守提交候选。
+
+不要做：
+
+protect top10
+full rerank top20
+embedding item enters top5
+
+除非这个实验已经显著正收益。
+
+8. hard gates：什么候选允许进 16–20
+
+embedding 候选必须满足至少一个条件：
+
+appears in legacy top100
+or appears in at least 2 embedding channels top200
+or user_cf rank <= 50
+or seed_cf rank <= 50
+or metadata/attributes rank <= 30
+
+否则不准进最终 top20。
+
+再加 negative filters：
+
+if track was already recommended in same session: block
+if artist explicitly rejected: block
+if exact negative feedback match: block
+if candidate has no metadata/id alignment check: block
+
+这个能防止单通道偶然高分污染尾部。
+
+9. 必须输出的 diagnostics
+
+每个实验输出一张表：
+
+variant
+nDCG@20
+hit@20
+MRR
+catalog_diversity
+unique_tracks
+unique_artists
+avg_repeated_artist_per_session
+changed_positions_count
+changed_groups_count
+gained_hits
+lost_hits
+net_hits
+
+还要输出分组指标：
+
+specific title/artist/album query
+genre/mood query
+similar-to-seed query
+negative-feedback query
+vague query
+turn 1-2
+turn 3-5
+turn 6-8
+has positive seed
+no positive seed
+has user_cf
+no user_cf
+
+尤其看这几个核心诊断：
+
+9.1 incremental oracle recall
+legacy_miss_but_embedding_pool_hit@200
+
+也就是：
+
+gold not in legacy top20
+but gold in metadata/attributes/track_cf/user_cf top200
+
+如果这个几乎为 0，embedding 没有 tail value。
+
+9.2 tail swap gain/loss
+
+只看被改动的 16–20：
+
+gained_hits = legacy top20 missed, new final top20 hits
+lost_hits = legacy top20 hit, new final top20 misses
+net_hits = gained_hits - lost_hits
+
+如果 lost_hits 明显大于 gained_hits，直接 reject。
+
+9.3 protected nDCG delta
+delta_ndcg20 = ndcg20_variant - ndcg20_legacy
+
+这个是最终判定。
+
+10. 接受标准
+可作为提交候选
+
+满足全部：
+
+protect top15 nDCG@20 >= legacy nDCG@20 - 0.001 absolute
+protect top18 nDCG@20 >= legacy nDCG@20 - 0.0005 absolute
+net_hits >= 0
+lost_hits <= gained_hits
+catalog_diversity >= legacy
+unique_tracks >= legacy * 1.03
+specific-intent subset nDCG 不下降超过 0.002
+has-seed subset 有正收益
+
+如果 protect top15 轻微波动，但 protect top18 稳：
+
+提交 protect top18
+
+如果 protect top15 明确正收益：
+
+提交 protect top15
+11. 拒绝标准 / rollback criteria
+
+满足任一条就 rollback，不进 production path：
+
+protect top15 nDCG@20 < legacy - 0.002
+protect top18 nDCG@20 < legacy - 0.001
+lost_hits > gained_hits
+specific title/artist/album queries 明显下降
+has-seed subset 没有任何正收益
+embedding incremental oracle recall@200 < 1% of groups
+changed groups 中超过 55% 是负向或无效替换
+catalog_diversity 没提升，nDCG 还掉
+
+更直接一点：
+
+如果 embedding 只能提高 unique_tracks，但不能带来 net_hits >= 0，
+那它不是 ranking improvement，只是 diversity perturbation。
+
+这种情况下不要用 embedding 改 ranking，最多用于 response explanation 或未来 LTR features。
+
+12. 几小时实现顺序
+Step 1：加载和校验 embedding
+
+必须先做 id 对齐检查：
+
+catalog_track_id count == 47071
+embedding_track_id set == catalog_track_id set
+missing vector count per channel
+norm mean/std
+duplicate id count
+
+所有向量 L2 normalize：
+
+Python
+运行
+vec = vec / (np.linalg.norm(vec, axis=1, keepdims=True) + 1e-12)
+Step 2：写 topK retrieval function
+Python
+运行
+def topk_by_dot(query_vec, matrix, k=200):
+    scores = matrix @ query_vec
+    idx = np.argpartition(-scores, k)[:k]
+    idx = idx[np.argsort(-scores[idx])]
+    return idx, scores[idx]
+
+47k tracks 很小，直接 numpy dot 全量扫就够，不需要 FAISS。
+
+Step 3：为每个 turn 生成 shadow candidates
+
+输出：
+
+JSON
+{
+  "group_id": "...",
+  "metadata_top": [...],
+  "attributes_top": [...],
+  "track_cf_top": [...],
+  "user_cf_top": [...],
+  "embedding_pool": [...]
+}
+Step 4：跑 Variant 0 shadow metrics
+
+先不改 ranking，只看：
+
+gold in each channel top50/top100/top200
+gold in union top200
+incremental over legacy top20/top100
+
+如果这里就没信号，直接停。
+
+Step 5：跑 protect top18 / top15 tail swap
+
+输出 final top20，再跑官方 evaluator / 本地 evaluator。
+
+Step 6：做分组诊断
+
+特别看：
+
+has seed vs no seed
+specific vs vague
+early turn vs late turn
+
+如果收益只来自 has-seed late turns，可以加 gate：
+
+only enable embedding tail rerank when positive_seed_count >= 1
+13. 最推荐的最终实验矩阵
+
+只跑 6 个就够：
+
+B0: legacy unchanged
+
+S0: shadow only, no ranking change
+
+E1: protect top18, channels = metadata + attributes + track_cf
+E2: protect top18, channels = metadata + attributes + track_cf + user_cf
+
+E3: protect top15, channels = metadata + attributes + track_cf
+E4: protect top15, channels = metadata + attributes + track_cf + user_cf
+
+判断逻辑：
+
+如果 E2/E4 比 E1/E3 差，user_cf 太 noisy，关掉。
+如果 E1/E2 都没收益，embedding 不适合直接 rerank。
+如果 protect top18 稳但 top15 不稳，只用 top18。
+如果 shadow oracle 有收益但 actual rerank 没收益，说明需要 LTR，不适合规则融合。
+14. 最终建议
+
+第一轮不要证明“embedding 很强”，而是证明：
+
+embedding/CF 在 BM25 top15 之后有没有安全边际收益。
+
+我会这样落地：
+
+默认提交候选：
+BM25 top15 frozen
+16–20 从 BM25 top100 ∪ metadata top200 ∪ attributes top200 ∪ track_cf top200 ∪ user_cf top200 中选择
+必须通过 2-channel / top50 / legacy-top100 gate
+tail_score = 0.60 legacy + 0.30 embedding + 0.10 rule - repeat_penalty
+
+最保守版本：
+
+BM25 top18 frozen
+只替换 19–20
+只在 positive_seed_count >= 1 的 turns 启用
+
+如果这个实验不能满足：
+
+nDCG 几乎不掉
+net_hits >= 0
+catalog diversity 上升
+has-seed subset 有收益
+
+那就conclusively reject embedding/CF as a direct ranking component for this submission cycle，保留它们作为未来 LTR features，而不是现在强行融合。

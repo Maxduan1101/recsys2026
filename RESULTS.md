@@ -49,6 +49,8 @@ Development-set scores from the official evaluator.
 | `goalflow_ens_oof_ltr120_140_200_lambda2_rrf60_judge_clean_mix` | 0.071000 | 0.163316 | 0.183253 | 0.525695 | 0.199012 | Same ensemble ranking with the clean mixed response style. |
 | `goalflow_ens_oof_ltr120_140_200_lambda2_rrf60_compact_clean` | 0.071000 | 0.163316 | 0.183253 | 0.525695 | 0.209428 | Ensemble ranking with clean compact response. |
 | `goalflow_ens_oof_ltr120_140_200_col1_lambda2_rrf60_judge_clean_mix` | 0.071000 | 0.162823 | 0.183482 | 0.525547 | 0.200490 | Four-model ensemble ranking with clean mixed response style after title display cleanup. |
+| `goalflow_ens_oof_ltr120_140_200_col1_lambda2_rrf60_judge_balanced_mix` | 0.071000 | 0.162823 | 0.183482 | 0.525547 | 0.177104 | Same four-model ranking; more natural explanation mix, lower lexical diversity. |
+| `goalflow_ens_oof_ltr120_140_200_col1_lambda2_rrf60_judge_planned` | 0.071000 | 0.162823 | 0.183482 | 0.525547 | 0.114233 | Same four-model ranking; strongest prose-style explanation backup, much lower lexical diversity. |
 | `goalflow_ens_oof_ltr120_140_200_col1_lambda2_rrf60_compact_clean` | 0.071000 | 0.162823 | 0.183482 | 0.525547 | 0.211234 | Four-model ensemble ranking with clean compact response after title display cleanup. |
 | `goalflow_ens_oof_ltr120_140_200_col1_lambda2_rrf60_compact_broad_clean` | 0.071000 | 0.162823 | 0.183482 | 0.525547 | 0.222587 | Four-model ensemble ranking with highest-lexical compact-broad response after title display cleanup. |
 | `goalflow_segcat_ltr120_140_200_ens_judge_v2` | 0.072125 | 0.164281 | 0.184069 | 0.526481 | 0.148494 | High-risk segment-selection experiment: best non-nested OOF score, but nested segment validation regresses. |
@@ -113,6 +115,8 @@ These are gold-free checks from `scripts/summarize_predictions.py`; they do not 
 | `goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_clean` | 1494 | 0.9338 | 0.031739 | 0.033991 | 0.678379 | Same ensemble ranking; clean high-lexical template backup. |
 | `goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_broad_clean` | 1494 | 0.9338 | 0.031739 | 0.033991 | 0.700198 | Same ensemble ranking; high-lexical backup. |
 | `goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_judge_clean_mix_clean` | 1495 | 0.9344 | 0.031761 | 0.033991 | 0.608158 | New four-model ensemble primary: best OOF nDCG, middle Blind A coverage, cleaned duplicate/list-valued display titles. |
+| `goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_judge_balanced_mix` | 1495 | 0.9344 | 0.031761 | 0.033991 | 0.560360 | Same ranking; natural explanation backup if LLM judge rewards prose more than Distinct-2. |
+| `goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_judge_planned` | 1495 | 0.9344 | 0.031761 | 0.033991 | 0.398543 | Same ranking; highest-prose, low-lexical LLM-judge experiment. |
 | `goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_compact_clean` | 1495 | 0.9344 | 0.031761 | 0.033991 | 0.678513 | Four-model ensemble with clean high-lexical template backup after title display cleanup. |
 | `goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_compact_broad_clean` | 1495 | 0.9344 | 0.031761 | 0.033991 | 0.699616 | Four-model ensemble with highest-lexical compact-broad template backup after title display cleanup. |
 | `goalflow_ltr120_lambda2_head0_judge_v3_clean` | 1496 | 0.9350 | 0.031782 | 0.033991 | 0.434335 | Same 120-tree L2 ranking; fuller prose for LLM-judge testing, lower Distinct-2 than v2. |
@@ -227,6 +231,7 @@ Key validation:
 - `judge_mix` response style was added as a lower-risk text-upside package. It keeps the same ranking as `judge_v2`, raises official dev lexical diversity from `0.14874` to `0.15926`, and raises Blind A local Distinct-2 from `0.48531` to `0.52209`.
 - `judge_brief`, `judge_compact_mix`, and `judge_clean_mix` were added after the response probe. `judge_brief` reaches official dev lexical `0.17431`; `judge_compact_mix` reaches `0.19493`; after duplicate/list-valued title display cleanup, `judge_clean_mix` reaches `0.20061` on the single LTR ranking and `0.20049` on the four-model ensemble ranking. Blind A local Distinct-2 is `0.60453` / `0.60816` for the clean mix.
 - `judge_v3` response style was added as a fuller explanation style. It may help LLM-as-a-Judge because it reads more naturally, but local lexical diversity is lower than `judge_v2`, so it is only a text backup.
+- `judge_planned` and `judge_balanced_mix` were added after the Pro response-judge pass. They preserve the same ranking and make the explanations more natural; `judge_balanced_mix` keeps usable lexical diversity (`dev 0.17710`, Blind A `0.56036`), while `judge_planned` is more prose-like but too low-lexical for a first submission.
 
 Current submission recommendation:
 
@@ -234,21 +239,23 @@ Current submission recommendation:
 2. `experiments/goalflow_ltr120_lambda2_head0_judge_clean_mix_clean/blindset_A/submission.zip`
 3. `experiments/goalflow_ltr120_lambda2_head0_judge_mix_clean/blindset_A/submission.zip`
 4. `experiments/goalflow_ltr120_lambda2_head0_judge_v2_clean/blindset_A/submission.zip`
-5. `experiments/goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_compact_clean/blindset_A/submission.zip`
-6. `experiments/goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_compact_broad_clean/blindset_A/submission.zip`
-7. `experiments/goalflow_ltr120_lambda2_head0_judge_compact_mix_clean/blindset_A/submission.zip`
-8. `experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_clean_mix_clean/blindset_A/submission.zip`
-9. `experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_mix_clean/blindset_A/submission.zip`
-10. `experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v2_clean/blindset_A/submission.zip`
-11. `experiments/goalflow_ltr120_lambda2_head0_compact_clean/blindset_A/submission.zip`
-12. `experiments/goalflow_ltr120_lambda2_head0_compact_broad_clean/blindset_A/submission.zip`
-13. `experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_clean/blindset_A/submission.zip`
-14. `experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_broad_clean/blindset_A/submission.zip`
-15. `experiments/goalflow_ltr120_lambda2_head0_judge_v3_clean/blindset_A/submission.zip`
-16. `experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v3_clean/blindset_A/submission.zip`
-17. `experiments/goalflow_ltr120_head0_judge_v2_clean/blindset_A/submission.zip`
-15. `experiments/goalflow_ltr_head0_polished_v3/blindset_A/submission.zip`
-16. `experiments/goalflow_head20_compact_broad/blindset_A/submission.zip`
+5. `experiments/goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_judge_balanced_mix/blindset_A/submission.zip`
+6. `experiments/goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_compact_clean/blindset_A/submission.zip`
+7. `experiments/goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_compact_broad_clean/blindset_A/submission.zip`
+8. `experiments/goalflow_ltr120_lambda2_head0_judge_compact_mix_clean/blindset_A/submission.zip`
+9. `experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_clean_mix_clean/blindset_A/submission.zip`
+10. `experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_mix_clean/blindset_A/submission.zip`
+11. `experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v2_clean/blindset_A/submission.zip`
+12. `experiments/goalflow_ltr120_lambda2_head0_compact_clean/blindset_A/submission.zip`
+13. `experiments/goalflow_ltr120_lambda2_head0_compact_broad_clean/blindset_A/submission.zip`
+14. `experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_clean/blindset_A/submission.zip`
+15. `experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_broad_clean/blindset_A/submission.zip`
+16. `experiments/goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_judge_planned/blindset_A/submission.zip`
+17. `experiments/goalflow_ltr120_lambda2_head0_judge_v3_clean/blindset_A/submission.zip`
+18. `experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v3_clean/blindset_A/submission.zip`
+19. `experiments/goalflow_ltr120_head0_judge_v2_clean/blindset_A/submission.zip`
+20. `experiments/goalflow_ltr_head0_polished_v3/blindset_A/submission.zip`
+21. `experiments/goalflow_head20_compact_broad/blindset_A/submission.zip`
 
 ## Progress Label Audit
 

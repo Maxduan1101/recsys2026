@@ -33,6 +33,14 @@ experiments/goalflow_ltr120_lambda2_head0_judge_mix_clean/blindset_A/submission.
 
 Same single-model ranking as the conservative clean-mix fallback. It uses only judge-focused/natural/concise/setwise templates, so its Distinct-2 is lower (`0.52209`) but it is less compact-template-heavy than the clean mixed version.
 
+Natural explanation ensemble fallback:
+
+```text
+experiments/goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_judge_balanced_mix/blindset_A/submission.zip
+```
+
+Same four-model ensemble ranking as the primary package, but with a more natural response mix informed by the Pro response-judge pass. It has official dev lexical `0.17710` and local Blind A Distinct-2 `0.56036`, so use it only if the LLM judge seems to reward prose quality more than Distinct-2.
+
 Conservative fixed-style text fallback:
 
 ```text
@@ -126,11 +134,12 @@ Same ensemble ranking, with Distinct-2 `0.70020`.
 Fuller-prose LLM-judge backups:
 
 ```text
+experiments/goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_judge_planned/blindset_A/submission.zip
 experiments/goalflow_ltr120_lambda2_head0_judge_v3_clean/blindset_A/submission.zip
 experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v3_clean/blindset_A/submission.zip
 ```
 
-These use the same rankings as the `judge_v2` packages but longer, more natural explanations. They have lower local lexical diversity (`0.43434` / `0.43706` on Blind A), so use them only to test whether the LLM judge rewards fuller explanation quality more than Distinct-2.
+These use unchanged rankings but longer, more natural explanations. `judge_planned` has the lowest lexical diversity (`dev 0.11423`, Blind A `0.39854`) but reads closest to a direct explanation; use these only to test whether the LLM judge rewards fuller explanation quality more than Distinct-2.
 
 Previous LTR backup:
 

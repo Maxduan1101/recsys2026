@@ -1333,6 +1333,8 @@ L2 正则可以理解成“不要让树的判断太激进”。单折里 `lambda
 | 120/140/200 lambda2 RRF judge_clean_mix | 0.183253 | 0.199012 | ensemble ranking + clean 混合 |
 | 120/140/200 lambda2 RRF compact_clean | 0.183253 | 0.209428 | ensemble ranking + clean compact |
 | 120/140/200/col1 lambda2 RRF judge_clean_mix | 0.183482 | 0.200490 | 当前最高 OOF 主包，已清洗歌名展示 |
+| 120/140/200/col1 lambda2 RRF judge_balanced_mix | 0.183482 | 0.177104 | 更自然的 LLM judge 备份 |
+| 120/140/200/col1 lambda2 RRF judge_planned | 0.183482 | 0.114233 | 最自然但 lexical 低的解释备份 |
 | 120/140/200/col1 lambda2 RRF compact_clean | 0.183482 | 0.211234 | 当前最高 OOF 高 lexical 备份 |
 | 120/140/200/col1 lambda2 RRF compact_broad | 0.183482 | 0.222587 | 当前最高 OOF 最高 lexical 备份 |
 | 120-tree lambda2 judge_v3 | 0.183021 | 0.125937 | 回复更像完整解释，但 lexical 下降 |
@@ -1356,6 +1358,8 @@ Blind A gold-free 检查：
 | `goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_clean` | 1494 | 0.031739 | 0.678379 |
 | `goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_broad_clean` | 1494 | 0.031739 | 0.700198 |
 | `goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_judge_clean_mix_clean` | 1495 | 0.031761 | 0.608158 |
+| `goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_judge_balanced_mix` | 1495 | 0.031761 | 0.560360 |
+| `goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_judge_planned` | 1495 | 0.031761 | 0.398543 |
 | `goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_compact_clean` | 1495 | 0.031761 | 0.678513 |
 | `goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_compact_broad_clean` | 1495 | 0.031761 | 0.699616 |
 | `goalflow_ltr120_lambda2_head0_judge_v3_clean` | 1496 | 0.031782 | 0.434335 |
@@ -1501,12 +1505,20 @@ experiments/goalflow_ltr120_lambda2_head0_judge_v2_clean/blindset_A/submission.z
 第五备选：
 
 ```text
+experiments/goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_judge_balanced_mix/blindset_A/submission.zip
+```
+
+理由：同一套四模型 ranking，回复更像自然解释，但 lexical / Distinct-2 低于主包；适合 LLM judge 可能更看重 prose quality 时测试。
+
+第六备选：
+
+```text
 experiments/goalflow_ltr120_lambda2_head0_judge_compact_mix_clean/blindset_A/submission.zip
 ```
 
 理由：同一套 ranking，compact/broad 混合版本，Blind A 本地 Distinct-2 略高，但官方 dev lexical 低于 clean mix。
 
-第六备选：
+第七备选：
 
 ```text
 experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_clean_mix_clean/blindset_A/submission.zip
@@ -1514,7 +1526,7 @@ experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_clean_mix_clean/blin
 
 理由：旧三模型 ensemble，比单 120-tree 有微小 OOF 增益，Blind A 覆盖度略低；现在排在四模型之后。
 
-第七备选，高风险：
+第八备选，高风险：
 
 ```text
 experiments/goalflow_segcat_ltr120_140_200_ens_judge_v2_clean/blindset_A/submission.zip

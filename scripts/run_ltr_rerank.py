@@ -547,7 +547,7 @@ def parse_args() -> argparse.Namespace:
         choices=[
             "compact", "compact_broad", "concise", "setwise", "natural", "polished",
             "judge_v1", "judge_v2", "judge_v3", "judge_mix", "judge_brief",
-            "judge_compact_mix", "judge_clean_mix",
+            "judge_planned", "judge_compact_mix", "judge_clean_mix", "judge_balanced_mix",
         ],
         default="compact_broad",
     )

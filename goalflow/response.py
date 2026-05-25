@@ -200,6 +200,12 @@ def _display_profile_value(value: object) -> str:
     return text
 
 
+def _capitalize_first(value: str) -> str:
+    if not value:
+        return value
+    return value[0].upper() + value[1:]
+
+
 def _tag_list(catalog: TrackCatalog, track_id: str, limit: int = 3, require_good_words: bool = True) -> list[str]:
     tags = []
     seen = set()
@@ -934,7 +940,7 @@ def _generate_judge_response(state: ConversationState, catalog: TrackCatalog, tr
                 [
                     f"I also used {profile} only as a soft tie-breaker.",
                     f"When several candidates were close, {profile} helped order the safer options.",
-                    f"{profile.capitalize()} helped shape the final ordering without overriding the conversation.",
+                    f"{_capitalize_first(profile)} helped shape the final ordering without overriding the conversation.",
                 ],
                 salt="judge-profile",
             )
@@ -1117,7 +1123,7 @@ def _generate_judge_v2_response(state: ConversationState, catalog: TrackCatalog,
             state,
             [
                 f"I used {profile} only as a soft tie-breaker.",
-                f"{profile.capitalize()} nudged the ordering without overriding the request.",
+                f"{_capitalize_first(profile)} nudged the ordering without overriding the request.",
             ],
             salt="judge-v2-context-profile",
         )
@@ -1181,7 +1187,7 @@ def _generate_judge_v3_response(state: ConversationState, catalog: TrackCatalog,
                 state,
                 [
                     f"I only used {profile} after the conversation clues were matched.",
-                    f"{profile.capitalize()} helped break close ties, but did not override the request.",
+                    f"{_capitalize_first(profile)} helped break close ties, but did not override the request.",
                     f"I treated {profile} as a secondary signal for the final order.",
                 ],
                 salt="judge-v3-profile",
@@ -1313,6 +1319,136 @@ def _generate_judge_brief_response(state: ConversationState, catalog: TrackCatal
     return " ".join(part for part in [opener, reason, context, backup] if part)
 
 
+def _generate_judge_planned_response(state: ConversationState, catalog: TrackCatalog, track_ids: list[str]) -> str:
+    if not track_ids:
+        return "I found a few tracks that should fit the direction you described."
+
+    first_phrase = _track_phrase(catalog, track_ids[0])
+    second_phrase = _track_phrase(catalog, track_ids[1]) if len(track_ids) > 1 else ""
+    third_phrase = _track_phrase(catalog, track_ids[2]) if len(track_ids) > 2 else ""
+    intent = infer_intent(state)
+    focus = _request_focus(state, max_words=16)
+    evidence = _judge_v2_evidence(catalog, track_ids[0])
+    feedback_clause = _judge_v2_feedback_clause(state, catalog)
+    profile = _judge_profile_phrase(state)
+
+    if intent == "specific_track":
+        lead = _pick(
+            state,
+            [
+                f"I read this as an exact-song search around \"{focus}\", so I would start with {first_phrase}.",
+                f"For the specific track clue in \"{focus}\", {first_phrase} is the first answer I would test.",
+                f"The request sounds like a song-identification turn, and {first_phrase} is the tightest lead.",
+            ],
+            salt="judge-planned-specific",
+        )
+    elif intent == "album":
+        lead = _pick(
+            state,
+            [
+                f"I treated \"{focus}\" as an album-aware clue, so I would open with {first_phrase}.",
+                f"The request points more to record context than a loose mood, which makes {first_phrase} my first check.",
+                f"For the album-shaped hint, I would put {first_phrase} at the front of the list.",
+            ],
+            salt="judge-planned-album",
+        )
+    elif intent == "artist_exploration":
+        lead = _pick(
+            state,
+            [
+                f"I kept the artist direction in \"{focus}\" central and started with {first_phrase}.",
+                f"For this artist-led turn, {first_phrase} is the safest opener before widening the list.",
+                f"I would begin the discovery path with {first_phrase}, then use the next tracks for nearby artist or style options.",
+            ],
+            salt="judge-planned-artist",
+        )
+    elif intent == "cover_art":
+        lead = _pick(
+            state,
+            [
+                f"I treated \"{focus}\" as a visual clue and used {first_phrase} as the first catalog anchor.",
+                f"For the cover-art style hint, I would test {first_phrase} first and keep the next picks close.",
+                f"The image-related clue needs a cautious first guess, so I led with {first_phrase}.",
+            ],
+            salt="judge-planned-cover",
+        )
+    elif intent == "lyrics_theme":
+        lead = _pick(
+            state,
+            [
+                f"I read \"{focus}\" as a lyric or story cue, and {first_phrase} is the clearest first play.",
+                f"For the theme you described, I would start with {first_phrase} before trying looser matches.",
+                f"The request feels theme-driven, so I put {first_phrase} first and kept the rest nearby.",
+            ],
+            salt="judge-planned-lyrics",
+        )
+    else:
+        lead = _pick(
+            state,
+            [
+                f"I read \"{focus}\" as a mood and style request, so I would start with {first_phrase}.",
+                f"For the direction in \"{focus}\", {first_phrase} gives the cleanest first step.",
+                f"I put {first_phrase} first because it is the strongest entry point into the sound you described.",
+            ],
+            salt="judge-planned-mood",
+        )
+
+    reason = _pick(
+        state,
+        [
+            f"The safest evidence I can cite is {evidence}, so the explanation stays grounded in catalog data.",
+            f"It has a clearer catalog footing through {evidence}, rather than just a generic similarity claim.",
+            f"What makes the lead defensible is {evidence}; I avoided inventing details beyond the metadata.",
+        ],
+        salt="judge-planned-reason",
+    )
+
+    context = ""
+    if feedback_clause and profile:
+        context = _pick(
+            state,
+            [
+                f"The ordering {feedback_clause}, with {profile} used only after the conversation clues matched.",
+                f"I also let the list {feedback_clause}; {profile} only helps break close ties.",
+            ],
+            salt="judge-planned-context-both",
+        )
+    elif feedback_clause:
+        context = _pick(
+            state,
+            [
+                f"The rest of the list {feedback_clause} instead of resetting the session.",
+                f"I also used the session history because it {feedback_clause}.",
+            ],
+            salt="judge-planned-context-feedback",
+        )
+    elif profile:
+        context = _pick(
+            state,
+            [
+                f"I used {profile} as a secondary cue, not as a replacement for the request itself.",
+                f"{_capitalize_first(profile)} nudged the ordering only when the track evidence was close.",
+            ],
+            salt="judge-planned-context-profile",
+        )
+
+    backup = ""
+    if second_phrase and third_phrase:
+        backup = _pick(
+            state,
+            [
+                f"I kept {second_phrase} and {third_phrase} next so the top of the list can recover without drifting away.",
+                f"If the first pick misses, {second_phrase} is the nearest follow-up and {third_phrase} gives a slightly wider route.",
+                f"The next two checks, {second_phrase} and {third_phrase}, cover adjacent evidence rather than unrelated variety.",
+            ],
+            salt="judge-planned-backups",
+        )
+    elif second_phrase:
+        backup = f"If the first pick misses, {second_phrase} is the nearest follow-up."
+
+    return " ".join(part for part in [lead, reason, context, backup] if part)
+
+
 def _generate_judge_compact_mix_response(
     state: ConversationState,
     catalog: TrackCatalog,
@@ -1380,6 +1516,44 @@ def _generate_judge_clean_mix_response(
         return _generate_judge_v2_response(state, catalog, track_ids)
     if style == "judge_brief":
         return _generate_judge_brief_response(state, catalog, track_ids)
+    return _generate_compact_response(state, catalog, track_ids)
+
+
+def _generate_judge_balanced_mix_response(
+    state: ConversationState,
+    catalog: TrackCatalog,
+    track_ids: list[str],
+) -> str:
+    bucket = int(
+        hashlib.md5(
+            f"{state.session_id}:{state.turn_number}:judge_balanced_mix".encode("utf-8")
+        ).hexdigest()[:8],
+        16,
+    ) % 12
+    style = [
+        "judge_planned",
+        "judge_planned",
+        "judge_planned",
+        "judge_v2",
+        "judge_v2",
+        "judge_brief",
+        "judge_brief",
+        "compact",
+        "compact",
+        "compact",
+        "natural",
+        "setwise",
+    ][bucket]
+    if style == "judge_planned":
+        return _generate_judge_planned_response(state, catalog, track_ids)
+    if style == "judge_v2":
+        return _generate_judge_v2_response(state, catalog, track_ids)
+    if style == "judge_brief":
+        return _generate_judge_brief_response(state, catalog, track_ids)
+    if style == "natural":
+        return _generate_natural_response(state, catalog, track_ids)
+    if style == "setwise":
+        return _generate_setwise_response(state, catalog, track_ids)
     return _generate_compact_response(state, catalog, track_ids)
 
 
@@ -1510,8 +1684,12 @@ def generate_response(
         return _generate_judge_mix_response(state, catalog, track_ids)
     if style == "judge_brief":
         return _generate_judge_brief_response(state, catalog, track_ids)
+    if style == "judge_planned":
+        return _generate_judge_planned_response(state, catalog, track_ids)
     if style == "judge_compact_mix":
         return _generate_judge_compact_mix_response(state, catalog, track_ids)
     if style == "judge_clean_mix":
         return _generate_judge_clean_mix_response(state, catalog, track_ids)
+    if style == "judge_balanced_mix":
+        return _generate_judge_balanced_mix_response(state, catalog, track_ids)
     raise ValueError(f"Unsupported response style: {style!r}")

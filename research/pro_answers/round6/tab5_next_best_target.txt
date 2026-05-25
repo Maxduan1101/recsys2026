@@ -1,0 +1,2142 @@
+[0] [user]
+You are helping with RecSys Challenge 2026 Music-CRS. I now have full source diagnostics: best single source per state has dev hit@20 around 0.4715 / nDCG@20 around 0.2600, current weighted RRF has hit@20 around 0.2595 / nDCG@20 around 0.1015, and legacy-vs-fused delta shows RRF gained 446 top-20 hits, lost 212 hits, but demoted 642 legacy hits. Research question: design a practical source-gating / controlled-fusion algorithm that can beat legacy BM25 without full LambdaRank yet. Include formulas, intent-specific gates, head protection alternatives, calibration, ablation runs, and how to decide whether a candidate may enter top-5/top-20.
+
+
+---
+
+[1] [assistant]
+我会把你的诊断当作主约束，围绕“RRF虽增新命中但过度降级BM25头部”的失效模式，设计一个可落地的受控融合方案。重点会放在按意图/状态做源可靠性门控、候选入榜规则、校准公式、头部保护和能拆分收益与损失的消融。
+
+---
+
+[2] [assistant]
+除了调权，我会把“是否有资格扰动BM25头部”单独建成准入层：非BM25候选只有在状态级证据足够强时，才允许进入top-5或top-20。
+
+---
+
+[3] [assistant]
+I would replace the current weighted RRF with Calibrated Gated Fusion with Protected DCG Swaps. The main idea: BM25 remains the default ranking spine, while other sources must earn admission through intent gates, calibrated source reliability, and explicit demotion budgets.
+
+This fits your diagnostics: the fused system has useful evidence, because it gained 446 top-20 hits, but it is too destructive, because it demoted 642 legacy hits. So the problem is not “fusion is bad”; it is “uncontrolled admission is too cheap.”
+
+The official setup also makes this framing natural: Music-CRS is a multi-turn conversational music recommendation challenge with track recommendations and natural-language responses; the baseline retrieval stack includes BM25 and BERT-style retrieval over track metadata, and the evaluator scores ordered track IDs with nDCG@1/10/20, macro-averaged over turns and sessions. The evaluator requires ranked, duplicate-free lists of up to 20 tracks, so the algorithm should optimize position-sensitive expected DCG, not just hit@20. 
+NLP4MUSA
++2
+GitHub
++2
+
+0. Diagnosis: why weighted RRF is losing
+
+Standard RRF scores a candidate as:
+
+RRF(d)=
+s∈S
+∑
+	​
+
+k+r
+s
+	​
+
+(d)
+w
+s
+	​
+
+	​
+
+
+where r
+s
+	​
+
+(d) is the candidate’s rank in source s. The original RRF paper popularized the simple reciprocal-rank form, often with k=60. 
+cormack.uwaterloo.ca
+
+Your current result says global weighted RRF is doing this:
+
+many weak source votes⇒candidate enters too high
+
+and this causes:
+
+new top-20 hit gains<nDCG loss from demoting legacy hits
+
+The right objective is not:
+
+maxnew candidates
+
+but:
+
+maxΔexpected DCGsubject to bounded legacy damage
+
+The evaluator’s nDCG uses the usual discounted gain:
+
+DCG@k=
+i=1
+∑
+k
+	​
+
+log
+2
+	​
+
+(i+1)
+2
+rel
+i
+	​
+
+−1
+	​
+
+
+so demoting a hit from rank 3 to rank 18 is very costly even if hit@20 stays unchanged. 
+GitHub
+
+1. Proposed algorithm: CGF-PDS
+
+Name:
+
+CGF-PDS: Calibrated Gated Fusion with Protected DCG Swaps
+
+For each session-turn state x, you have:
+
+legacy BM25 list L
+
+source lists R
+s
+	​
+
+, for sources s∈S
+
+intent label or intent probabilities g(x)
+
+candidate track metadata
+
+optional raw source scores
+
+dev labels for calibration
+
+The algorithm has five stages:
+
+intent detection→source gating→candidate calibration→head protection→controlled insertion
+2. Intent-specific source gates
+
+You should not fuse all sources for all states. Build a lightweight multi-label intent classifier from the conversation turn.
+
+Use simple rules first. You do not need LambdaRank.
+
+Intent families
+A. Exact entity intent
+
+Examples:
+
+“Play something by Taylor Swift”
+
+“I want songs from the album X”
+
+“Recommend track Y”
+
+“more from this artist”
+
+Gate behavior:
+
+G
+BM25/name/artist/album
+	​
+
+=1
+G
+dense/user/history
+	​
+
+ only if entity-compatible
+
+Head protection should be strict.
+
+Recommended policy:
+
+preserve BM25 top-5, or at least top-3
+
+allow external candidates into top-5 only if they match the explicit entity
+
+allow external candidates into top-20 only if metadata constraints are satisfied
+
+B. Genre, mood, activity, tag intent
+
+Examples:
+
+“upbeat workout songs”
+
+“sad acoustic indie”
+
+“90s hip hop”
+
+“chill evening music”
+
+Gate behavior:
+
+G
+tag BM25
+	​
+
+=1
+G
+text embedding
+	​
+
+=1
+G
+audio/track embedding
+	​
+
+=1 if available
+
+Recommended policy:
+
+BM25 top-2 or top-3 protected
+
+allow 1 external candidate in top-5
+
+allow more external candidates in ranks 6–20
+
+C. Similar-to-seed intent
+
+Examples:
+
+“something like this”
+
+“more like the last song”
+
+“similar to Radiohead”
+
+“based on my previous picks”
+
+Gate behavior:
+
+G
+track embedding / co-listening / user-history
+	​
+
+=1
+G
+BM25
+	​
+
+=1 if seed entity was lexical
+
+Recommended policy:
+
+candidates must be compatible with the seed artist, genre, tags, embedding neighborhood, or listening-history cluster
+
+allow external candidates into top-5 only with strong calibrated probability or multi-source agreement
+
+D. Personalization intent
+
+Examples:
+
+“my usual taste”
+
+“based on my history”
+
+“something I would like”
+
+“for me”
+
+Gate behavior:
+
+G
+user embedding/history
+	​
+
+=1
+G
+popularity
+	​
+
+=1 only as fallback
+
+Recommended policy:
+
+less BM25 locking if the utterance has few lexical constraints
+
+stronger user-source admission into top-20
+
+top-5 still requires high confidence
+
+E. Discovery / diversity intent
+
+Examples:
+
+“surprise me”
+
+“new artists”
+
+“something different”
+
+“not the obvious choices”
+
+Gate behavior:
+
+G
+semantic
+	​
+
+=1
+G
+long-tail/diversity
+	​
+
+=1
+
+Recommended policy:
+
+allow more external candidates in ranks 11–20
+
+avoid pushing too many BM25 candidates out of top-10 unless calibrated gain is strong
+
+diversity should be a secondary rerank term, not a license to destroy the head
+
+F. Negative constraint intent
+
+Examples:
+
+“not country”
+
+“avoid Taylor Swift”
+
+“nothing too slow”
+
+“not from the 2010s”
+
+This should run before fusion.
+
+Define a hard constraint mask:
+
+H(d,x)={
+1
+0
+	​
+
+candidate satisfies explicit positive/negative constraints
+candidate violates hard constraints
+	​
+
+
+Then any candidate with H(d,x)=0 is ineligible, even if RRF likes it.
+
+3. Source gate formula
+
+For each source s, intent g, and state x, estimate source utility:
+
+U
+^
+s
+	​
+
+(x)=
+E
+[DCG@20(R
+s
+	​
+
+)∣x]
+
+You can fit this with a simple model:
+
+ridge regression
+
+logistic regression on “source contains a hit@20”
+
+small gradient-boosted tree
+
+decision tree with hand-built rules
+
+per-intent lookup table
+
+No LambdaRank needed.
+
+Then activate source s only when:
+
+G
+s
+	​
+
+(x)=1[
+U
+^
+s
+	​
+
+(x)−
+U
+^
+L
+	​
+
+(x)>Δ
+g
+	​
+
+]⋅1[Prec
+s,g,b
+	​
+
+>Prec
+min,g,b
+	​
+
+]
+
+where:
+
+L is legacy BM25
+
+g is intent
+
+b is source rank bucket
+
+Δ
+g
+	​
+
+ is an intent-specific margin
+
+Prec
+s,g,b
+	​
+
+ is calibrated dev precision for source s, intent g, rank bucket b
+
+Practical rule:
+
+S
+active
+	​
+
+(x)={L}∪top-M{s:G
+s
+	​
+
+(x)=1}
+
+Use:
+
+M=1 or 2
+
+Do not activate 5–10 sources at once. Your diagnostics already show that broad fusion is too noisy.
+
+4. Candidate calibration
+
+For each candidate d, build a calibrated relevance probability:
+
+p(d∣x)=P(rel=1∣d,x)
+
+Use features that are cheap and robust:
+
+ϕ(d,x)=[r
+L
+	​
+
+(d),r
+s
+	​
+
+(d),source agreement count,intent,entity match,metadata constraint match,legacy bucket,source score percentile,source top-score gap,turn number]
+
+A simple pointwise logistic model is enough:
+
+p(d∣x)=σ
+	​
+
+β
+0,g
+	​
+
++β
+L,g
+	​
+
+f
+L
+	​
+
+(r
+L
+	​
+
+(d))+
+s
+
+=L
+∑
+	​
+
+G
+s
+	​
+
+(x)β
+s,g
+	​
+
+f
+s
+	​
+
+(r
+s
+	​
+
+(d))+β
+A,g
+	​
+
+A(d)+β
+M,g
+	​
+
+M(d,x)−β
+C,g
+	​
+
+C(d,x)
+	​
+
+
+where:
+
+f
+s
+	​
+
+(r)=
+(k
+s
+	​
+
++r)
+γ
+s
+	​
+
+1
+	​
+
+A(d)=log(1+#active sources containing d)
+M(d,x)=metadata/entity match score
+C(d,x)=constraint violation or weak compatibility penalty
+
+If you want a more transparent version, use lookup-table calibration instead of logistic regression.
+
+For each source s, intent g, and rank bucket b:
+
+p
+~
+	​
+
+s,g,b
+	​
+
+=
+n
+s,g,b
+	​
+
++α
+h
+s,g,b
+	​
+
++αp
+0
+	​
+
+	​
+
+
+where:
+
+h
+s,g,b
+	​
+
+ = dev positives from that bucket
+
+n
+s,g,b
+	​
+
+ = total candidates from that bucket
+
+p
+0
+	​
+
+ = global candidate prior
+
+α = smoothing strength
+
+Then use log-odds contributions:
+
+ℓ(d,x)=ℓ
+0
+	​
+
+(g)+ℓ
+L
+	​
+
+(r
+L
+	​
+
+(d),g)+
+s
+
+=L
+∑
+	​
+
+G
+s
+	​
+
+(x)⋅clip(log
+1−
+p
+~
+	​
+
+s,g,b(d)
+	​
+
+p
+~
+	​
+
+s,g,b(d)
+	​
+
+	​
+
+,−c
+s
+	​
+
+,c
+s
+	​
+
+)+ρ
+g
+	​
+
+A(d)+μ
+g
+	​
+
+M(d,x)−ν
+g
+	​
+
+C(d,x)
+p(d∣x)=σ(ℓ(d,x))
+
+The clipping is important. Without it, correlated sources can double-count the same weak evidence.
+
+5. Controlled fusion score
+
+Do not rank by calibrated relevance alone. Rank by expected DCG gain under demotion cost.
+
+Let:
+
+w
+i
+	​
+
+=
+log
+2
+	​
+
+(i+1)
+1
+	​
+
+
+If inserting candidate d at position j shifts current candidates o
+j
+	​
+
+,o
+j+1
+	​
+
+,...,o
+20
+	​
+
+ down, the expected DCG delta is:
+
+ΔEDCG(d,j)=w
+j
+	​
+
+p(d)+
+m=j
+∑
+19
+	​
+
+w
+m+1
+	​
+
+p(o
+m
+	​
+
+)−
+m=j
+∑
+20
+	​
+
+w
+m
+	​
+
+p(o
+m
+	​
+
+)
+
+This is equivalent to:
+
+ΔEDCG(d,j)=w
+j
+	​
+
+p(d)−w
+20
+	​
+
+p(o
+20
+	​
+
+)−
+m=j
+∑
+19
+	​
+
+(w
+m
+	​
+
+−w
+m+1
+	​
+
+)p(o
+m
+	​
+
+)
+
+Now add a legacy-demotion penalty:
+
+Penalty(d,j)=λ
+g
+	​
+
+m=j
+∑
+20
+	​
+
+p(o
+m
+	​
+
+)⋅1[o
+m
+	​
+
+∈L
+1:20
+	​
+
+]⋅1[rank changes materially]
+
+Accept insertion only if:
+
+ΔEDCG(d,j)−Penalty(d,j)>τ
+j,g
+	​
+
+
+Use larger thresholds near the top:
+
+τ
+1,g
+	​
+
+>τ
+5,g
+	​
+
+>τ
+10,g
+	​
+
+>τ
+20,g
+	​
+
+
+This directly addresses your observed failure mode: non-BM25 sources may add hits, but they must not cheaply demote probable legacy hits.
+
+6. Head protection alternatives
+
+You should test these separately. Do not start with the most complex version.
+
+Alternative 1: prefix lock
+
+Hard preserve the legacy prefix:
+
+O
+1:K
+g
+	​
+
+	​
+
+=L
+1:K
+g
+	​
+
+	​
+
+
+Suggested starting values:
+
+Intent	K
+g
+	​
+
+
+exact track / artist / album	5
+genre / mood / activity	2–3
+similar-to-seed	2
+personalization	1–2
+discovery / diversity	0–1
+
+This is the safest first fix.
+
+Alternative 2: top-k external quotas
+
+Limit how many non-legacy candidates can enter each head region:
+
+#{d∈O
+1:5
+	​
+
+:d∈
+/
+L
+1:20
+	​
+
+}≤q
+5,g
+	​
+
+#{d∈O
+1:20
+	​
+
+:d∈
+/
+L
+1:20
+	​
+
+}≤q
+20,g
+	​
+
+
+Suggested starting values:
+
+Intent	q
+5,g
+	​
+
+	q
+20,g
+	​
+
+
+exact entity	0–1	2–4
+genre / mood	1	5–8
+similar-to-seed	1	6–10
+personalization	1–2	8–12
+discovery	1–2	10–14
+
+This is usually better than a fixed global RRF weight.
+
+Alternative 3: legacy floor
+
+Require that enough legacy candidates survive:
+
+#(O
+1:K
+	​
+
+∩L
+1:K
+′
+	​
+
+)≥m
+K,g
+	​
+
+
+Examples:
+
+#(O
+1:5
+	​
+
+∩L
+1:10
+	​
+
+)≥4
+#(O
+1:20
+	​
+
+∩L
+1:30
+	​
+
+)≥14
+
+This allows reordering and some injection, but prevents wholesale replacement.
+
+Alternative 4: pairwise replacement test
+
+A candidate d may replace candidate v only if:
+
+p(d∣x)−p(v∣x)>δ
+j,g
+	​
+
+
+where j is the proposed rank.
+
+Use:
+
+δ
+1,g
+	​
+
+>δ
+5,g
+	​
+
+>δ
+20,g
+	​
+
+
+This is simple and very effective.
+
+Alternative 5: promotion-only fusion in top-5
+
+For top-5:
+
+candidates already in BM25 top-20 may be promoted if other sources agree
+
+external-only candidates may not enter top-5 unless they pass a strict exception rule
+
+Formally:
+
+d∈O
+1:5
+	​
+
+⇒[d∈L
+1:20
+	​
+
+]∨[StrongExternalException(d,x)=1]
+
+This directly protects nDCG.
+
+Alternative 6: controlled tail fusion
+
+Use BM25 for the head, fusion for the tail:
+
+O
+1:K
+	​
+
+=L
+1:K
+	​
+
+O
+K+1:20
+	​
+
+=gated calibrated fusion
+
+Try:
+
+K∈{3,5,8,10}
+
+Given your current RRF nDCG collapse, this should be one of the first ablations.
+
+7. Top-5 admission rule
+
+Top-5 should be high precision. A candidate may enter top-5 only if all of these hold:
+
+Admit@5(d,x)=1
+
+iff:
+
+H(d,x)=1
+∃s
+
+=L:G
+s
+	​
+
+(x)=1∧r
+s
+	​
+
+(d)≤R
+s,g
+5
+	​
+
+p(d∣x)≥τ
+g
+5
+	​
+
+p(d∣x)−p(v
+5
+	​
+
+∣x)≥δ
+g
+5
+	​
+
+ΔEDCG(d,j)−Penalty(d,j)>0
+top5 external quota not exceeded
+
+where v
+5
+	​
+
+ is the candidate currently occupying the weakest protected top-5 slot.
+
+For external-only candidates, add one stricter condition:
+
+d∈
+/
+L
+1:20
+	​
+
+⇒[A(d)≥A
+g
+5
+	​
+
+∨M(d,x)≥M
+g
+5
+	​
+
+]
+
+In words: an external-only candidate needs either multi-source agreement or very strong metadata/entity compatibility.
+
+Practical starting settings:
+
+Intent	External-only top-5 rule
+exact entity	only if exact artist/track/album match
+genre / mood	source rank ≤ 3–5 and metadata/tag match
+similar-to-seed	source rank ≤ 5 and seed compatibility
+personalization	user/history rank ≤ 5 plus no hard conflict
+discovery	source rank ≤ 5–10, but max 1–2 external top-5
+8. Top-20 admission rule
+
+Top-20 can be more permissive, but still not free.
+
+Admit@20(d,x)=1
+
+iff:
+
+H(d,x)=1
+∃s
+
+=L:G
+s
+	​
+
+(x)=1∧r
+s
+	​
+
+(d)≤R
+s,g
+20
+	​
+
+p(d∣x)≥τ
+g
+20
+	​
+
+ΔEDCG(d,j)−Penalty(d,j)>τ
+g
+20
+	​
+
+top20 external quota not exceeded
+legacy demotion budget not exceeded
+
+For top-20, single-source evidence can be enough if that source is empirically strong for the detected intent. For top-5, I would usually require either legacy support, agreement, or exact metadata compatibility.
+
+9. Source routing before fusion
+
+Your “best single source per state” result is very important. It suggests that source selection may be more valuable than source blending.
+
+Add a route-first mode:
+
+s
+∗
+(x)=arg
+s
+max
+	​
+
+U
+^
+s
+	​
+
+(x)
+
+Then use:
+
+primary(x)={
+s
+∗
+(x)
+L
+	​
+
+if 
+U
+^
+s
+∗
+	​
+
+(x)−
+U
+^
+L
+	​
+
+(x)>Δ
+g
+	​
+
+otherwise
+	​
+
+
+Then the final ranking is:
+
+O=ProtectedMerge(L, R
+primary
+	​
+
+, R
+secondary active sources
+	​
+
+)
+
+This avoids the RRF pathology where mediocre sources collectively overwhelm the best source.
+
+A strong practical variant is winner-take-most:
+
+F(d,x)=λ
+primary
+	​
+
+f
+primary
+	​
+
+(d)+λ
+L
+	​
+
+f
+L
+	​
+
+(d)+
+s∈S
+secondary
+	​
+
+∑
+	​
+
+λ
+s
+	​
+
+f
+s
+	​
+
+(d)
+
+with:
+
+λ
+primary
+	​
+
+∈[0.6,0.85]
+λ
+L
+	​
+
+∈[0.15,0.35]
+s∈S
+secondary
+	​
+
+∑
+	​
+
+λ
+s
+	​
+
+≤0.15
+
+This is much safer than many-source RRF.
+
+10. Calibration procedure
+
+Use dev splits by session, not by row, to avoid leakage across turns.
+
+Recommended:
+
+\text{GroupKFold by session_id}
+
+For each fold:
+
+Generate all source rankings.
+
+Build candidate table: one row per (state,candidate).
+
+Add source-rank features.
+
+Add intent features.
+
+Add metadata compatibility features.
+
+Label candidate as relevant or not.
+
+Fit calibration model or lookup table.
+
+Tune admission thresholds on the training folds.
+
+Evaluate on the held-out fold.
+
+Important calibration tables:
+
+P(rel=1∣s,g,r
+s
+	​
+
+∈[1,5])
+P(rel=1∣s,g,r
+s
+	​
+
+∈[6,20])
+P(rel=1∣s,g,r
+s
+	​
+
+∈[21,50])
+P(rel=1∣s,g,r
+s
+	​
+
+∈[51,100])
+
+Also compute:
+
+P(rel=1∣d∈L
+1:20
+	​
+
+, d∈R
+s
+	​
+
+)
+P(rel=1∣d∈
+/
+L
+1:20
+	​
+
+, d∈R
+s
+	​
+
+)
+
+This distinction matters. A non-BM25 candidate at rank 8 in another source is not equivalent to a BM25 candidate that also appears at rank 8 in that source.
+
+11. Practical pseudocode
+Python
+运行
+def controlled_fusion(state, legacy, source_lists, params):
+    # state: session-turn context
+    # legacy: BM25 ranked list
+    # source_lists: dict[source_name] -> ranked list
+    # params: calibrated thresholds, gates, quotas, penalties
+
+    intent = detect_intent(state)
+    hard_constraints = build_constraint_checker(state)
+
+    # 1. Active source selection
+    active_sources = ["legacy"]
+    for s, ranking in source_lists.items():
+        u_s = predict_source_utility(s, state, intent)
+        u_l = predict_source_utility("legacy", state, intent)
+
+        if u_s - u_l > params.delta_source[intent][s]:
+            if source_is_reliable(s, intent, params):
+                active_sources.append(s)
+
+    active_sources = cap_sources(active_sources, max_nonlegacy=2)
+
+    # 2. Candidate pool
+    pool = set(legacy[:params.legacy_pool_size])
+    for s in active_sources:
+        if s == "legacy":
+            continue
+        pool.update(source_lists[s][:params.source_pool_size[intent][s]])
+
+    # 3. Remove hard violations
+    pool = [d for d in pool if hard_constraints(d)]
+
+    # 4. Calibrated pRel
+    p = {}
+    for d in pool:
+        features = build_candidate_features(
+            d, state, legacy, source_lists, active_sources, intent
+        )
+        p[d] = calibrated_relevance_probability(features, params)
+
+    # 5. Initialize output with legacy spine
+    output = list(legacy[:20])
+
+    # 6. Optional prefix lock
+    k_lock = params.prefix_lock[intent]
+    locked = set(output[:k_lock])
+
+    # 7. Candidate insertion
+    candidates = sorted(pool, key=lambda d: p[d], reverse=True)
+
+    for d in candidates:
+        if d in output:
+            # allow promotion only if it passes pairwise/DCG test
+            output = maybe_promote_existing(d, output, p, intent, params, locked)
+            continue
+
+        if not admission_precheck(d, state, intent, p, source_lists, params):
+            continue
+
+        best_move = None
+        best_gain = 0.0
+
+        for j in allowed_positions(intent, params):
+            if j < k_lock:
+                continue
+
+            gain = expected_dcg_delta_with_penalty(
+                d=d,
+                j=j,
+                output=output,
+                p=p,
+                legacy=legacy,
+                intent=intent,
+                params=params,
+            )
+
+            if gain > best_gain:
+                best_gain = gain
+                best_move = j
+
+        if best_move is not None and best_gain > params.insert_threshold[intent][best_move]:
+            if quota_ok(d, best_move, output, legacy, intent, params):
+                if demotion_budget_ok(d, best_move, output, legacy, p, intent, params):
+                    output = insert_at(output, d, best_move, max_len=20)
+
+    return dedupe_keep_order(output)[:20]
+12. Ablation plan
+
+Run these in order. Keep the same dev split and log source-level deltas.
+
+ID	Run	Purpose
+A0	Legacy BM25	baseline
+A1	Current weighted RRF	reproduce failure
+A2	Best single source per state oracle	upper bound from your diagnostic
+A3	Learned source selector only, no fusion	tests routing
+A4	BM25 prefix lock + tail RRF	tests whether head damage is the issue
+A5	Intent-specific source gates + RRF	tests gates alone
+A6	Calibrated pRel rerank, no protection	tests calibration
+A7	Calibrated pRel + prefix lock	safer rerank
+A8	Calibrated pRel + pairwise replacement	tests swap threshold
+A9	Calibrated pRel + quotas	controls external entry count
+A10	Full expected-DCG insertion with demotion penalty	final candidate
+A11	Full model without each source family	source ablation
+A12	Full model without each intent gate	intent-gate ablation
+
+For every run, log:
+
+hit@20
+nDCG@1, nDCG@5, nDCG@10, nDCG@20
+legacy hits preserved
+new hits gained
+legacy hits lost
+legacy hits demoted within top-20
+external candidates admitted@5
+external candidates admitted@20
+mean rank of relevant legacy items before/after
+top-20 Jaccard with BM25
+
+The most important diagnostic is:
+
+net DCG gain=DCG
+new
+	​
+
+−DCG
+legacy
+	​
+
+
+Do not choose a run only because hit@20 improves.
+
+13. Decision rules for deployment
+
+I would use these acceptance criteria:
+
+A candidate may enter top-5 only if:
+H(d,x)=1
+p(d∣x)≥q
+5,g
++
+	​
+
+p(d∣x)−p(v∣x)≥δ
+5,g
+	​
+
+ΔEDCG−demotion penalty>0
+
+and one of:
+
+d∈L
+1:20
+	​
+
+#active supporting sources(d)≥2
+exact metadata/entity match=1
+primary source rank≤R
+s,g
+5
+	​
+
+A candidate may enter top-20 if:
+H(d,x)=1
+p(d∣x)≥q
+20,g
++
+	​
+
+ΔEDCG−demotion penalty>τ
+20,g
+	​
+
+source rank≤R
+s,g
+20
+	​
+
+top20 quota and demotion budget are not exhausted
+
+Top-5 should be precision-first. Top-20 can be recall-seeking.
+
+14. Parameter defaults I would try first
+
+Start conservative.
+
+Parameter	Exact	Genre/mood	Similar	Personal	Discovery
+BM25 prefix lock K
+g
+	​
+
+	5	3	2	2	1
+max external in top-5	0–1	1	1	1	1–2
+max external in top-20	3	6	8	10	12
+active nonlegacy sources	1	2	2	2	2
+external top-5 needs agreement?	yes	yes	yes	preferably	preferably
+external top-20 needs agreement?	no, if calibrated	no	no	no	no
+
+Then gradually relax:
+
+Reduce prefix lock from 5 to 3 for exact/entity if nDCG@5 is stable.
+
+Increase top-20 external quota if hit@20 improves without nDCG loss.
+
+Permit external-only top-5 only for intents where calibration proves precision.
+
+15. Most likely winning sequence
+
+Given your numbers, I would implement in this order:
+
+Step 1: BM25 head + gated tail
+O
+1:5
+	​
+
+=L
+1:5
+	​
+
+O
+6:20
+	​
+
+=gated calibrated fusion
+
+This should recover much of the nDCG loss quickly.
+
+Step 2: promote BM25-supported candidates
+
+If candidate d∈L
+1:20
+	​
+
+ and another active source supports it, allow promotion:
+
+p
+boosted
+	​
+
+(d)=p
+L
+	​
+
+(d)+η
+g
+	​
+
+s
+∑
+	​
+
+G
+s
+	​
+
+(x)f
+s
+	​
+
+(r
+s
+	​
+
+(d))
+
+This improves rank ordering without adding external risk.
+
+Step 3: allow external top-20 candidates
+
+Only if calibrated and intent-compatible:
+
+d∈
+/
+L
+1:20
+	​
+
+⇒Admit@20(d,x)=1
+Step 4: allow rare external top-5 candidates
+
+Only after ablation proves that top-5 external precision is high.
+
+16. What would count as success
+
+Your first target should not be matching the oracle best-source result. It should be:
+
+nDCG@20>legacy BM25
+
+while maintaining:
+
+hit@20≥legacy BM25
+
+and reducing the destructive channel:
+
+demoted legacy hits≪642
+
+A good intermediate result would look like:
+
+keep a meaningful fraction of the 446 gained hits
+
+cut the 642 demoted legacy hits by at least half
+
+allow at most a small number of lost legacy hits
+
+improve nDCG@10/20, not just hit@20
+
+The guiding principle is:
+
+external candidates may supplement BM25, but only calibrated evidence may displace BM25.
+
+That should give you a practical path to beat legacy BM25 without training a full LambdaRank model.
+
+---
+
+[4] [user]
+We need further improvement for RecSys Challenge 2026 Music-CRS after a strong BM25-anchor ensemble. One question: what high-upside but still plausible optimization direction remains under the constraints of full official catalog, top-20 unique valid track IDs, limited submissions, and no blind labels? Compare entity exact-match promotion, train-context augmentation, protected LTR, embedding seed-CF, and response LLM judge optimization, then choose the next best engineering target.
+
+---
+
+[5] [assistant]
+主人，我会 treat this as a submission-risk decision, not just a modeling menu. The key is to find the remaining direction with enough upside to matter on blind while preserving the BM25-anchor advantage and not burning submissions on noisy changes.
+
+---
+
+[6] [assistant]
+My provisional conclusion: if your response judge is still near the floor, text optimization is the best composite-score target; if response is already acceptable, the next ranking target should be protected LTR, with embedding seed-CF as features/candidates rather than a standalone reranker.
+
+---
+
+[7] [assistant]
+主人，结论：下一步最值得做的是 response LLM judge optimization，不是继续强行动 ranking。
+
+理由很简单：你现在已经有一个强 BM25-anchor ensemble，在无 blind labels、提交次数有限、top-20 必须唯一有效 track ID 的约束下，继续改 ranking 的边际收益和风险都很不对称；而 response 优化几乎不碰 track ranking，可以在不牺牲 nDCG 的情况下冲 lexical diversity 和 LLM-as-a-Judge。官方评估确实同时看 nDCG@20、catalog diversity、lexical diversity 和 LLM-as-a-Judge，Codabench 页面也标了每天提交限制，所以这是典型的“少提交、低回滚风险”场景。
+Codabench
+
+Direction comparison
+Direction	Upside	Risk	Blind robustness	My judgment
+Entity exact-match promotion	Medium	Low	High	应该做，但像 bug fix / guardrail，不像大突破
+Train-context augmentation	Medium-high	Medium-high	Unstable	容易 dev 好、blind 不稳；除非协议极干净
+Protected LTR	High	Medium	Medium	ranking 里最有希望，但要严格 legacy-head protection
+Embedding seed-CF	High	Medium-high	Medium-low	不适合单独上，适合作为 LTR / gate 特征
+Response LLM judge optimization	Very high	Low-medium	Medium-high	下一步首选
+1. Why not entity exact-match promotion as the main target?
+
+Entity exact-match promotion is still worth做，但它更像安全补丁。
+
+它适合处理：
+
+“songs by X”
+
+“from album Y”
+
+“more like track Z”
+
+“not this artist”
+
+“same artist / same genre / same era”
+
+推荐规则：
+
+boost(d)=λ
+1
+	​
+
+⋅1[artist exact match]+λ
+2
+	​
+
+⋅1[album exact match]+λ
+3
+	​
+
+⋅1[track title exact match]
+
+但只能在这些条件下 promote：
+
+d∈BM25
+1:50
+	​
+
+ord∈trusted entity source
+1:20
+	​
+
+
+并且不要硬塞进 top-5，除非 query 明确是 entity query。
+
+它的优点是低风险，缺点是 BM25 本身通常已经很擅长 lexical/entity match，所以在你已经有强 BM25-anchor 的情况下，收益可能有限。
+
+结论：做，但不要把它当下一轮主攻方向。
+
+2. Why not train-context augmentation as the main target?
+
+Train-context augmentation 的思路是把训练集中某个 track 被推荐时对应的 user query、goal、assistant explanation、selection reason 拼进 track document，让 BM25 更容易匹配自然语言需求。
+
+它的潜在收益很高，因为 Music-CRS 本质是多轮自然语言音乐推荐任务，系统需要根据 dialogue history 和 user context 输出 ranked tracks 与 response text。
+RecSys
+
+但是它最大的问题是：看起来很像会赢 dev，实际上可能污染泛化判断。
+
+危险点：
+
+track document←training gold contexts
+
+这会让 item doc 更像训练答案索引，而不是稳健检索模型。特别是如果 dev / train session 分割不干净，或者后期不小心把 dev label 信息也折进 augmentation，local 分数会虚高。
+
+更安全的用法：
+
+只用 official train labels
+
+不用 dev labels
+
+按 session/user 分组验证
+
+augmentation 文本降权
+
+只让 augmented BM25 进入 candidate pool，不直接替代 legacy BM25 head
+
+例如：
+
+score(d)=score
+meta
+	​
+
+(d)+αscore
+aug
+	​
+
+(d)
+
+其中：
+
+α∈[0.1,0.35]
+
+不要让 α 太大。
+
+结论：有价值，但不适合作为当前最高优先级。它更适合做 recall source 或 LTR feature。
+
+3. Protected LTR: ranking-side best option, but not overall best
+
+如果只看 ranking，protected LTR 是最值得做的方向。
+
+你的现象是：
+
+单源 best-per-state 很强
+
+RRF 融合反而伤 head
+
+BM25 anchor 在 blind 上强
+
+盲测无 label，不能乱试
+
+这说明问题不是“没有信号”，而是“没有学会什么时候信哪个 source”。
+
+Protected LTR 的目标不是重排整个 top-20，而是学习：
+
+P(rel=1∣x,d,source features)
+
+然后只在安全区域替换 BM25。
+
+推荐结构：
+
+Final=ProtectedMerge(BM25,LTR)
+Safe version
+
+锁定 BM25 top-k：
+
+O
+1:K
+	​
+
+=BM25
+1:K
+	​
+
+
+其中：
+
+K∈{3,5,8}
+
+然后只在尾部做 LTR：
+
+O
+K+1:20
+	​
+
+=LTR_rerank(Candidates∖O
+1:K
+	​
+
+)
+Candidate features
+
+Use:
+
+BM25 rank
+
+entity-source rank
+
+augmented-BM25 rank
+
+embedding rank
+
+CF rank
+
+source agreement count
+
+intent type
+
+turn number
+
+specificity
+
+exact artist / album / title match
+
+seed similarity
+
+user-CF similarity
+
+popularity prior
+
+previously recommended flag
+
+negative constraint violation flag
+
+Admission rule
+
+A non-BM25 candidate enters top-20 only if:
+
+p
+LTR
+	​
+
+(d)−p
+LTR
+	​
+
+(v)>δ
+20
+	​
+
+
+A non-BM25 candidate enters top-5 only if:
+
+p
+LTR
+	​
+
+(d)−p
+LTR
+	​
+
+(v)>δ
+5
+	​
+
+
+with:
+
+δ
+5
+	​
+
+≫δ
+20
+	​
+
+
+That is, top-5 requires much stronger evidence.
+
+结论：如果你要继续冲 ranking，protected LTR 是第一选择。但它仍然有 blind risk。
+
+4. Embedding seed-CF: use it as evidence, not as final ranking
+
+Embedding seed-CF 很有潜力，但单独拿它重排很危险。
+
+它适合解决 BM25 不擅长的问题：
+
+“similar vibe”
+
+“more like this”
+
+“based on my taste”
+
+“less mainstream”
+
+“same listening cluster”
+
+implicit preference continuation
+
+但 embedding / CF 有一个典型问题：它可能语义相关，却不满足当前 turn 的显式约束。
+
+例如用户说：
+
+“I want upbeat 90s hip-hop, not too pop.”
+
+CF 可能推荐一个用户群体常听的 pop/rap track，但它不一定满足 “90s” 或 “not too pop”。
+
+所以 embedding seed-CF 应该这样用：
+
+score(d)=score
+BM25
+	​
+
+(d)+λ
+emb,g
+	​
+
+score
+emb
+	​
+
+(d)+λ
+cf,g
+	​
+
+score
+cf
+	​
+
+(d)
+
+其中 g 是 intent。
+
+不要全局固定 λ。按 intent gate：
+
+Intent	embedding / CF weight
+exact artist / album	low
+genre / mood	medium
+similar-to-seed	high
+personalization	high
+negative constraint	only after filtering
+
+更安全的做法：
+
+embedding 负责 candidate generation
+
+LTR / gate 决定是否入 top-20
+
+BM25 head 仍然保护
+
+结论：embedding seed-CF 是 protected LTR 的最佳燃料，但不是当前单独最优主线。
+
+5. Response LLM judge optimization: next best target
+
+这是我会选的下一步。
+
+原因：
+
+不动 track IDs
+你可以保持当前 strong BM25-anchor top-20，避免 nDCG 崩。
+
+官方确实评 response
+评估包括 recommendation quality 和 response generation metrics，包括 catalog diversity、lexical diversity、LLM-as-a-Judge。
+Codabench
+
+你的历史信号显示 response 是短板
+之前 public score 里 LLM judge 是 1.0，lexical diversity 也很低。如果这个问题还没完全修复，那么这里的 composite upside 比继续挤 nDCG 更大。
+
+可以本地验证大部分风险
+虽然 blind LLM judge 不可见，但你可以做 rule-based self-check：是否 grounded、是否 personalized、是否解释 top recommendations、是否避免 hallucination、是否不重复模板。
+
+Recommended target: metadata-grounded judge-optimized response generator
+
+核心目标：
+
+Better responsewithout changing ranking
+
+每条 response 应该做到：
+
+mention user intent
+
+connect 2–3 top tracks to that intent
+
+cite safe metadata only
+
+explain why these tracks fit
+
+vary wording across turns
+
+avoid fake claims
+
+avoid noisy tags like “cds I own”, “sleep”, “to live by” unless clearly meaningful
+
+Response template structure
+
+Use a controlled generator, not a single template.
+
+Template family A: direct preference match
+
+Use when user has explicit genre/mood/entity.
+
+Example skeleton:
+
+“I leaned into your request for {mood/genre/entity}. {Track 1} gives you {safe_reason_1}, while {Track 2} adds {safe_reason_2}. I’d start with these because they stay close to {constraint} without drifting into {negative_constraint}.”
+
+Template family B: continuation from history
+
+Use when user says “more like this” or has feedback.
+
+“Since you responded well to {previous_seed}, I kept the next picks in a similar lane: {shared_trait}. {Track 1} is the closest continuation, and {Track 2} gives a slightly different angle while keeping {trait}.”
+
+Template family C: discovery
+
+Use when user asks for surprise / new / different.
+
+“I kept the recommendations connected to your taste, but pushed them a bit less obvious. {Track 1} matches {known_preference}; {Track 2} is a broader discovery pick because of {metadata_trait}.”
+
+Template family D: constraint-sensitive
+
+Use when user gives exclusions.
+
+“I avoided {negative_constraint} and focused on {positive_constraint}. The top picks should fit because {reason}, especially {Track 1} and {Track 2}.”
+
+Safe metadata policy
+
+Only mention fields with high confidence:
+
+Safe:
+
+artist
+
+title
+
+album
+
+genre
+
+broad tags
+
+release decade/year if available
+
+seed similarity
+
+user-liked history
+
+previous feedback
+
+explicit user constraint
+
+Risky:
+
+emotions not in metadata
+
+“lyrics say…”
+
+“you liked this before” unless known
+
+obscure tags
+
+fabricated popularity claims
+
+fake artist background
+
+claims about audio texture if only metadata source exists
+
+Use this rule:
+
+mention(fact)=1only if fact appears in catalog metadata or conversation state
+Response scoring heuristic
+
+Before outputting a response, score it locally:
+
+Q=2.0⋅Grounding+1.5⋅Personalization+1.0⋅Explanation+0.8⋅Naturalness+0.5⋅Diversity−2.0⋅HallucinationRisk−1.0⋅Genericness
+
+Reject and regenerate if:
+
+HallucinationRisk>0
+
+or:
+
+Personalization=0
+
+or:
+
+response contains only generic praise
+Final choice
+Pick: response LLM judge optimization
+
+I would make this the next engineering target:
+
+Keep BM25-anchor ranking fixed, aggressively improve response generation.
+	​
+
+
+Then run one ranking-safe package:
+
+Package A: current best BM25-anchor ranking + improved response generator
+
+Package B: same ranking + slightly more diverse response templates
+
+Package C: protected LTR tail-only ranking + improved response generator
+
+Submission order:
+
+Submit A first because it has minimal nDCG risk.
+
+Submit B only if A improves lexical/judge or at least does not hurt.
+
+Submit C later only after protected LTR beats BM25 locally on blind-like validation.
+
+The ranking-side next best target is:
+
+protected LTR with embedding seed-CF as features/candidates
+	​
+
+
+But the overall next best engineering target is:
+
+metadata-grounded response LLM judge optimization
+	​
+
+
+Because it has the best combination of upside, controllability, and low risk under limited blind submissions.

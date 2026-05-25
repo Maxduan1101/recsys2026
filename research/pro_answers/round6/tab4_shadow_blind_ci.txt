@@ -1,0 +1,1203 @@
+[0] [user]
+You are advising offline validation for RecSys Challenge 2026 Music-CRS after public Blind A mismatch. Blind A has 80 rows with selected current turns, not all 8 turns per session. Current dev evaluates all 8000 turns. Design a blind-like local holdout selection and grouped diagnostics to choose between head20 response-only, head18 tail diversity, and future LTR/embedding changes. Include turn/category/specificity stratification and decision thresholds.
+
+---
+
+[1] [assistant]
+主人，我会把这个当成“不要再用全 8000 turn 的均值决策，而是构造像 Blind A 一样稀疏、偏抽样的本地评测”的问题来设计。核心会是：先建 blind-like holdout，再按 turn/category/specificity 分桶看哪些改动只在尾部安全。
+
+---
+
+[2] [assistant]
+我查了官方页面确认评测确实是“推荐排序 + 回复质量”的混合任务；所以本地验证不能只看全量 turn 的平均 nDCG，还要模拟提交文件里那种稀疏 sampled-row 行为。下面我直接给一个可落地的 holdout/诊断方案。
+
+---
+
+[3] [assistant]
+主人，结论先说：你的本地验证主指标不要再看全 8000 turns；应该看 80-row、按 Blind A 当前 turn 分布重采样的 paired shadow-blind panels。 全量 dev 只当诊断池，不当提交决策指标。
+
+官方任务本身就是多轮对话输入，输出 ranked tracks 和自然语言回复；评测也同时看推荐质量和回复质量，所以这个 mismatch 本质上是“row sampling distribution + ranking/response composite”的问题，而不是单纯模型强弱问题。
+RecSys
+ Codabench 页面也明确提到 nDCG@20、Catalog Diversity、Lexical Diversity、LLM-as-a-Judge 都会被评估。
+Codabench
+
+1. 先定义一个固定 anchor
+
+把你现在 public-safe 的 BM25/head20 ranking 当 anchor：
+
+anchor = head20_compactresp_v2
+ranking = public-safe BM25 top20 unchanged
+known Blind A nDCG@20 = 0.1935
+known catalog_diversity ≈ 0.0257 / 0.0258
+
+以后所有实验都做 paired comparison：
+
+delta_i = metric(candidate, row_i) - metric(anchor, row_i)
+
+不要看 candidate 单独分数。你现在的问题是 dev 分布不等于 Blind A 分布，所以 absolute dev nDCG 没意义，paired delta on blind-like rows 才有意义。
+
+2. 构造 blind-like local holdout
+Step A：从 Blind A input 反推抽样分布
+
+对 Blind A 80 rows 做同一套特征解析，不需要 label：
+
+row features:
+- turn_number: exact turn 1..8
+- turn_bucket: early / mid / late
+  early = 1-2
+  mid   = 3-5
+  late  = 6-8
+
+- request_category:
+  exact_track
+  artist_or_album
+  genre_style
+  mood_activity
+  era_language_region
+  similar_to_seed
+  feedback_refinement
+  broad_exploration
+  other
+
+- specificity:
+  S3 = exact entity request
+       e.g. title, artist, album, quoted track, “by X”
+  S2 = multi-constraint
+       e.g. genre + mood, era + artist, activity + language
+  S1 = broad but meaningful
+       e.g. “something upbeat”, “jazz recommendations”
+  S0 = weak / ambiguous / pure feedback
+       e.g. “not this”, “something else”, “continue”
+
+然后统计：
+
+P_blind(turn_number)
+P_blind(category)
+P_blind(specificity)
+P_blind(turn_bucket, category, specificity)
+
+关键是不要只按 turn stratify。Blind A 只有 80 rows，某些 turn 可能多，但真正影响 ranking 的往往是 specificity：exact artist/title 查询和 broad mood 查询完全不是同一种检索问题。
+
+Step B：从本地 8000-turn dev 里抽 80-row shadow panels
+
+构造候选池：
+
+eligible_pool = all labeled local rows
+               excluding any rows used for training / augmentation / LTR fitting
+               with valid gold track
+               with same inference format as Blind A
+
+如果 Blind A 每个 session 只抽一个 current turn，本地 panel 也强制：
+
+max 1 row per session per panel
+
+如果 Blind A 有 session 重复，则匹配它的 session multiplicity distribution。
+
+然后采样 200 到 1000 个 shadow panels，每个 panel 80 rows：
+
+For each panel seed:
+    for each stratum c = (turn_bucket, category, specificity):
+        quota_c = round_largest_remainder(80 * P_blind(c))
+        sample quota_c rows from eligible_pool[c]
+    if cell too small:
+        backoff order:
+          1. same turn_bucket + category
+          2. same category + specificity
+          3. same turn_bucket
+          4. global blind-like pool
+
+至少保留三类 panel：
+
+A. exact-blind panels
+   Match Blind A joint distribution as closely as possible.
+
+B. smoothed-blind panels
+   Laplace smooth rare strata:
+   P = 0.8 * P_blind + 0.2 * P_local_selected_like
+
+C. stress panels
+   Force fragile groups:
+   - exact entity
+   - broad mood/activity
+   - late feedback/refinement
+   - low-specificity S0/S1
+
+最终提交决策看：
+
+primary = exact-blind panels
+robustness = smoothed + stress panels
+3. 每个实验都输出 grouped diagnostics
+
+每个 candidate vs anchor 输出一张 row-level log：
+
+session_id
+turn_number
+turn_bucket
+category
+specificity
+gold_track_id
+
+anchor_rank
+candidate_rank
+delta_rank
+anchor_ndcg
+candidate_ndcg
+delta_ndcg
+
+gold_lost_top20
+gold_gained_top20
+gold_demoted_from_top10
+gold_promoted_into_top20
+
+changed_positions_1_5
+changed_positions_6_10
+changed_positions_11_20
+
+unique_track_delta_panel
+artist_repeat_delta_panel
+catalog_diversity_delta_panel
+
+response_distinct2
+response_bad_tag_flag
+response_grounded_entity_flag
+
+然后 group by：
+
+turn_number
+turn_bucket
+category
+specificity
+category × specificity
+turn_bucket × specificity
+
+每个 group 报：
+
+n
+anchor nDCG
+candidate nDCG
+mean ΔnDCG
+median ΔnDCG
+win rows
+loss rows
+gold gained @20
+gold lost @20
+gold demoted from <=10 to >20
+top10 churn
+top20 churn
+unique track delta
+
+最重要的红线不是 mean nDCG，而是：
+
+gold_lost_top20
+gold_demoted_from_top10
+exact_entity group ΔnDCG
+high-specificity S3 ΔnDCG
+
+如果一个方法提升 broad mood，但伤害 exact artist/title，它通常不值得冒险。
+
+4. 决策指标：不要被 catalog diversity 误导
+
+你给的 Blind A 设置是：
+
+80 rows × top20 = 1600 recommendation slots
+catalog size = 47071
+max possible catalog_diversity = 1600 / 47071 ≈ 0.0340
+
+你现在：
+
+head20 unique tracks ≈ 1216
+catalog ≈ 1216 / 47071 ≈ 0.0258
+
+head15/head18 tail diversity 这种方案如果把 unique tracks 提到 1348：
+
+catalog ≈ 1348 / 47071 ≈ 0.0286
+absolute gain ≈ +0.0028
+
+按你推测的 composite：
+
+composite ≈ 0.5*nDCG
+          + 0.1*catalog
+          + 0.1*lexical
+          + 0.3*((judge-1)/4)
+
+那么 catalog +0.0028 只贡献：
+
+0.1 * 0.0028 = +0.00028 composite
+
+这意味着只要 nDCG 掉：
+
+0.5 * ΔnDCG < -0.00028
+=> ΔnDCG < -0.00056
+
+catalog gain 就被抵消了。
+
+所以：tail diversity 只能在几乎零 nDCG 损失时提交。 你之前看到 dev nDCG 从 0.08587 掉到 0.08180，哪怕这个全量 dev 不 blind-like，也已经说明它不是天然安全方案。
+
+5. 三个候选的提交判定
+Candidate 1：head20 response-only
+
+这是当前最安全的一类。
+
+ranking unchanged
+=> ΔnDCG@20 = 0
+=> Δcatalog = 0 or tiny
+=> only bet response lexical / judge quality
+
+提交条件：
+
+must pass:
+- ranking exactly identical to anchor on all Blind A rows
+- no row has changed top20 order
+- local Distinct-2 clearly higher
+- bad/noisy tag leakage < 2%
+- hallucinated artist/title/genre < 1%
+- response mentions grounded profile/history/feedback when available
+- duplicate response template rate < 5%
+
+Decision:
+
+Submit first unless response generator has obvious hallucination/tag-leak problems.
+
+原因很简单：public anchor 的 nDCG 已经强，response-only 不会破坏它，而官方评测包含回复质量。
+Codabench
+
+Candidate 2：head18 tail diversity
+
+这里假设只改 positions 19-20，或者最多 18-20。它可以试，但必须过非常严格的 nDCG 安全线。
+
+在 200+ shadow panels 上要求：
+
+median ΔnDCG@20 >= -0.0005
+mean ΔnDCG@20   >= -0.0005
+P10 ΔnDCG@20    >= -0.0020
+P25 ΔnDCG@20    >= -0.0010
+
+median gold_lost_top20 <= 0 rows per 80-row panel
+P90 gold_lost_top20    <= 1 row per 80-row panel
+
+exact_entity ΔnDCG >= -0.001
+S3 specificity ΔnDCG >= -0.001
+artist_or_album ΔnDCG >= -0.001
+
+Diversity side must be meaningfully positive:
+
+unique tracks per 80-row panel +5% minimum
+catalog_diversity +0.0015 absolute minimum
+artist repeat count down at least 5-10%
+
+But even then，提交顺序也应该是：
+
+head20 response-only first
+head18 tail diversity second only if nDCG risk is basically flat
+
+如果 shadow panels 结果类似：
+
+ΔnDCG = -0.002 or worse
+catalog +0.002 to +0.003
+
+不要提交。catalog 权重太小，补不回来。
+
+Candidate 3：future LTR / embedding changes
+
+不要直接和 head20 submission 比最终榜分。先分两阶段验证。
+
+Phase 1：candidate recall only
+
+对 embedding / CF / LTR 前的 candidate union 看：
+
+gold_in_candidates@50
+gold_in_candidates@100
+gold_in_candidates@200
+gold_in_candidates@500
+
+在 blind-like panels 上要求：
+
+gold_in_candidates@100 +3pp minimum
+gold_in_candidates@200 +5pp preferred
+no drop in BM25 candidate coverage
+
+如果只是召回多了但 ranking 会乱，先不要进 top20。
+
+Phase 2：protected reranking
+
+LTR/embedding 一开始只能影响尾部：
+
+mode A: rerank positions 16-20 only
+mode B: rerank positions 11-20 only
+mode C: rerank positions 6-20 only
+mode D: full rerank, last resort
+
+上线阈值：
+
+For positions 16-20 rerank:
+    median ΔnDCG >= 0
+    P10 ΔnDCG >= -0.002
+    exact_entity ΔnDCG >= -0.001
+    gold_lost_top20 P90 <= 1
+
+For positions 11-20 rerank:
+    median ΔnDCG >= +0.0015
+    P10 ΔnDCG >= -0.0015
+    top10 gold demotion = 0 or near 0
+
+For positions 6-20 rerank:
+    median ΔnDCG >= +0.003
+    lower 80% bootstrap CI > 0
+    no major group negative
+
+For touching top5:
+    median ΔnDCG >= +0.005
+    P10 ΔnDCG >= 0
+    exact_entity and S3 both positive
+
+LTR/embedding 特别要看这些 group：
+
+likely helps:
+- broad_exploration
+- mood_activity
+- similar_to_seed
+- late feedback/refinement
+
+likely hurts:
+- exact_track
+- artist_or_album
+- high-specificity S3
+
+所以最安全策略是：
+
+if category in {exact_track, artist_or_album} or specificity == S3:
+    preserve BM25 top10 or top20
+
+if category in {mood_activity, broad_exploration, similar_to_seed} and specificity <= S2:
+    allow embedding/LTR insertion in positions 16-20 first
+6. Final experiment order
+
+按这个顺序跑，不要乱：
+
+E0 anchor
+   current public-safe BM25 head20
+
+E1 head20 response-only
+   same ranking, improved response generator
+
+E2 head19 tail diversity
+   only rank 20 replaceable
+
+E3 head18 tail diversity
+   ranks 19-20 replaceable
+
+E4 head15 tail diversity
+   ranks 16-20 replaceable
+   only for diagnostics, not likely first submit
+
+E5 embedding recall union
+   no final rerank, just measure candidate recall
+
+E6 embedding tail insert
+   only positions 16-20, gated by category/specificity
+
+E7 LTR protected rerank
+   preserve top10 or top15, rerank tail
+
+E8 LTR broader rerank
+   only if shadow panels strongly positive
+
+For each experiment produce:
+
+all-turn dev metrics
+blind-like exact panels
+blind-like smoothed panels
+stress panels
+grouped diagnostics
+row-level loss audit
+
+The actual decision should be based on this priority:
+
+1. Blind-like exact panel paired ΔnDCG
+2. high-specificity / exact-entity group safety
+3. gold_lost_top20 count
+4. catalog / lexical gains
+5. all-turn dev score
+
+All-turn dev is last. It is useful for finding bugs, not for selecting submissions.
+
+7. Practical submission recommendation
+
+Given your current facts:
+
+head20 response-only:
+    ranking unchanged
+    nDCG risk ≈ zero
+    likely improves lexical / judge
+    submit first
+
+head18 or head15 tail diversity:
+    only submit if blind-like panels show ΔnDCG basically flat
+    catalog gain alone is too small to justify even tiny nDCG loss
+
+future LTR / embeddings:
+    validate as recall/features first
+    deploy only behind top10/top15 protection
+    start with positions 16-20
+
+My default rule for your next submission choice:
+
+Submit head20 response-only first.
+
+Submit head18 tail-diversity only if:
+    median ΔnDCG >= -0.0005
+    P10 ΔnDCG >= -0.002
+    exact/S3 groups are not negative
+    gold_lost_top20 <= 1 row in at least 90% of panels
+    catalog_diversity gain >= +0.0015
+
+Otherwise keep the BM25 head and spend the next iteration on response quality + protected embedding/LTR tail features.
+
+---
+
+[4] [user]
+We are building a beginner-facing but competitive RecSys Challenge 2026 Music-CRS system. Current code has BM25/enriched docs/LTR/RRF/response cleaning, but blind mismatch suggests validation is fragile. One question: how should we structure a local 80-row Blind-A-like panel sampler and report so that future commits are accepted/rejected automatically? Please include strata, bootstrap/paired tests, and hard safety gates.
+
+---
+
+[5] [assistant]
+主人，我会把它设计成一个 CI-style “shadow blind evaluator”：固定 80-row panels、paired against current anchor、输出机器可读 PASS/WARN/FAIL，而不是只给人工看的表。
+
+---
+
+[6] [assistant]
+一个关键设计选择：sampler 本身只能用 input-side features，比如 turn、query category、specificity、history length；不要用 gold rank 或 gold popularity 来抽样，否则本地 panel 会被你“调成容易/困难样本”。这些 label-side 信息可以进诊断报告，但不要进抽样器。
+
+---
+
+[7] [assistant]
+主人，建议把它做成一个 Shadow Blind CI Evaluator，而不是一个临时 notebook。目标是：每次 commit 生成候选 submission 后，自动回答：
+
+ACCEPT: 可以替代当前 anchor
+WARN: 只适合人工看，不能自动提交
+REJECT: 不允许合并或提交
+
+官方任务同时评估 ranked tracks 和自然语言 response，指标包含 nDCG@20、Catalog Diversity、Lexical Diversity、LLM-as-a-Judge，所以你的本地 validator 必须同时保护 ranking head、tail diversity 和 response 质量，而不能只看全量 dev nDCG。
+推荐系统挑战赛
++1
+
+1. 总体结构
+
+推荐目录：
+
+validation/
+  blind_a_features.jsonl          # 从 Blind A input 解析出来的无标签特征
+  local_pool_features.jsonl       # 从本地 labeled dev 解析出来的特征
+  panels/
+    shadow_blind_v1/
+      primary_panels.jsonl
+      smoothed_panels.jsonl
+      stress_panels.jsonl
+      manifest.json
+  reports/
+    <commit_sha>/
+      decision.json
+      summary.md
+      panel_metrics.csv
+      group_metrics.csv
+      row_audit.csv
+      response_audit.csv
+
+核心原则：
+
+Sampler only uses input-side features.
+Evaluator may use labels.
+Decision is always paired against anchor.
+
+也就是：
+
+anchor = current public-safe system
+candidate = current commit output
+
+delta = candidate_metric - anchor_metric
+
+不要用 candidate 的 absolute dev score 决策。
+
+2. Local 80-row panel sampler
+2.1 Eligible pool
+
+先定义本地可抽样池：
+
+eligible_pool =
+    labeled local rows
+    - rows used for LTR training
+    - rows used for document enrichment from dev labels
+    - rows used for hyperparameter selection if you want a final clean panel
+
+强烈建议按 session/user 切：
+
+train_sessions
+calibration_sessions
+shadow_blind_sessions
+
+不要让同一个 session 同时出现在 LTR training 和 shadow blind validation 里。
+
+2.2 每一行解析 input-side strata
+
+每个 row 存这些特征：
+
+row_id
+session_id
+turn_number: 1..8
+turn_bucket: early / mid / late
+category
+specificity
+has_positive_seed
+has_negative_feedback
+history_len
+entity_count
+constraint_count
+
+推荐 strata 定义如下。
+
+Turn bucket
+early = turns 1-2
+mid   = turns 3-5
+late  = turns 6-8
+
+同时保留 exact turn_number，报告里两个都看。
+
+Category
+
+用 rule-based classifier 就够，不需要 LLM。
+
+exact_track
+artist_or_album
+genre_style
+mood_activity
+era_language_region
+similar_to_seed
+feedback_refinement
+broad_exploration
+continuation_or_other
+
+典型规则：
+
+exact_track:
+  quoted title, “song called X”, exact catalog title match
+
+artist_or_album:
+  “by X”, “from album Y”, known artist/album entity
+
+genre_style:
+  rock, jazz, ambient, hip-hop, metal, classical, etc.
+
+mood_activity:
+  chill, sad, workout, study, sleep, party, driving, etc.
+
+era_language_region:
+  90s, 2000s, Korean, Japanese, French, Latin, etc.
+
+similar_to_seed:
+  “like X”, “similar to”, “more like this”
+
+feedback_refinement:
+  “not this”, “too slow”, “more upbeat”, “less mainstream”
+
+broad_exploration:
+  “recommend something”, “surprise me”, “new music”
+Specificity
+S3 = exact entity
+     exact title / artist / album / quoted track / strong named entity
+
+S2 = multi-constraint
+     genre + mood, artist + era, activity + language, etc.
+
+S1 = broad but meaningful
+     one soft constraint, e.g. “upbeat”, “jazz”, “study music”
+
+S0 = weak / ambiguous / continuation
+     “something else”, “continue”, “not that”, “ok”
+
+This feature is more important than turn number. Exact artist/title requests should be protected much harder than broad mood requests.
+
+3. Match Blind A distribution
+
+From Blind A input, compute:
+
+P_blind(turn_number)
+P_blind(turn_bucket)
+P_blind(category)
+P_blind(specificity)
+P_blind(turn_bucket, category, specificity)
+
+Primary quota should use the joint stratum:
+
+stratum = (turn_bucket, category, specificity)
+
+For each 80-row panel:
+
+Python
+运行
+quota[stratum] = round_largest_remainder(80 * P_blind[stratum])
+
+Then sample from local eligible rows matching that stratum.
+
+Backoff if a cell is too small:
+
+1. same turn_bucket + category + specificity
+2. same category + specificity
+3. same turn_bucket + specificity
+4. same category
+5. same turn_bucket
+6. global eligible pool
+
+Hard rule:
+
+max 1 row per session per panel
+
+This matters because Blind A appears to be selected current turns, not all turns from every session. Your local panel should not contain 8 turns from the same dialogue.
+
+4. Use three panel suites
+
+Do not rely on one sampled set.
+
+Suite A: primary panels
+500-1000 panels
+80 rows each
+matched to Blind A distribution
+used for main ACCEPT/REJECT decision
+Suite B: smoothed panels
+
+Use:
+
+P_smoothed = 0.8 * P_blind + 0.2 * P_local
+
+Purpose: avoid overfitting to the exact 80 Blind A rows.
+
+Suite C: stress panels
+
+Create smaller but targeted panels:
+
+exact_entity_panel
+artist_album_panel
+broad_mood_panel
+late_feedback_panel
+low_specificity_panel
+similar_to_seed_panel
+
+These do not decide final score alone, but they trigger safety failure.
+
+Example:
+
+stress_exact_entity:
+  80 rows
+  category in {exact_track, artist_or_album}
+  specificity = S3
+
+If a candidate improves average score but breaks exact entity queries, reject it.
+
+5. Metrics to compute
+
+For every row:
+
+anchor_rank_gold
+candidate_rank_gold
+
+anchor_hit@20
+candidate_hit@20
+
+anchor_ndcg@20
+candidate_ndcg@20
+
+delta_ndcg
+delta_hit
+
+gold_gained_top20
+gold_lost_top20
+gold_demoted_top10_to_out20
+
+top5_churn
+top10_churn
+top20_jaccard
+
+category
+specificity
+turn_number
+turn_bucket
+
+For every 80-row panel:
+
+anchor_ndcg@20
+candidate_ndcg@20
+delta_ndcg@20
+
+anchor_hit@20
+candidate_hit@20
+delta_hit@20
+
+catalog_diversity
+unique_tracks
+artist_repeat_rate
+top20_duplicate_rate
+
+distinct_2
+response_length_mean
+bad_tag_rate
+hallucinated_entity_rate
+empty_or_template_response_rate
+
+For grouped diagnostics:
+
+group by turn_number
+group by turn_bucket
+group by category
+group by specificity
+group by category × specificity
+group by turn_bucket × specificity
+
+Each group report should include:
+
+n
+mean_delta_ndcg
+median_delta_ndcg
+p10_delta_ndcg
+win_rows
+loss_rows
+gold_gained_top20
+gold_lost_top20
+gold_demoted_top10_to_out20
+top10_churn_mean
+top20_jaccard_mean
+6. Paired bootstrap and tests
+
+The test must be paired because candidate and anchor are evaluated on the same rows.
+
+6.1 Panel-level paired delta
+
+For each panel p:
+
+Δ_p = metric(candidate, panel_p) - metric(anchor, panel_p)
+
+Then report:
+
+mean(Δ_p)
+median(Δ_p)
+p05(Δ_p)
+p10(Δ_p)
+p25(Δ_p)
+p75(Δ_p)
+p90(Δ_p)
+
+This is the most intuitive output.
+
+6.2 Bootstrap confidence interval
+
+Use bootstrap over panels:
+
+Python
+运行
+for b in range(5000):
+    sampled_panels = sample_with_replacement(primary_panels)
+    boot_delta[b] = mean(delta[p] for p in sampled_panels)
+
+ci_low = percentile(boot_delta, 5)
+ci_high = percentile(boot_delta, 95)
+
+Report one-sided lower confidence bound:
+
+LCB_90 = percentile(boot_delta, 10)
+LCB_95 = percentile(boot_delta, 5)
+
+For risky ranking changes, require:
+
+LCB_90(delta_ndcg) >= 0
+
+For tail-only diversity changes, you may allow tiny negative tolerance:
+
+LCB_90(delta_ndcg) >= -0.001
+
+But only if hard safety gates pass.
+
+6.3 Row-level paired sign test
+
+For row-level nDCG deltas:
+
+wins   = count(delta_ndcg > epsilon)
+losses = count(delta_ndcg < -epsilon)
+ties   = rest
+
+Use epsilon = 1e-9 or 1e-4.
+
+A candidate should not have many more loss rows than win rows unless the losses are only tiny tail movements.
+
+Simple gate:
+
+loss_rows <= win_rows * 1.25
+
+For LTR/full rerank, use stricter:
+
+loss_rows <= win_rows
+6.4 Stratified bootstrap
+
+For the final report, also run a stratum-preserving bootstrap:
+
+For each bootstrap sample:
+  for each Blind-A stratum:
+      sample quota[stratum] rows with replacement
+  compute paired delta
+
+This avoids a bootstrap sample accidentally drifting away from Blind A’s distribution.
+
+7. Hard safety gates
+
+Use three levels:
+
+HARD FAIL  -> reject immediately
+SOFT FAIL  -> warn, manual review only
+PASS       -> candidate can replace anchor
+7.1 Format gates
+
+Immediate reject:
+
+- missing row
+- invalid track_id
+- fewer than 20 recommendations
+- duplicate track_id inside one top20
+- response missing
+- response contains obvious placeholder
+- submission row order mismatch
+7.2 Ranking identity gates for response-only commits
+
+If commit is labeled response_only, require:
+
+top20 list identical to anchor for 100% rows
+rank order identical to anchor for 100% rows
+
+If not identical:
+
+REJECT
+
+Response-only commits should never accidentally change ranking.
+
+7.3 Head-protection gates
+
+For tail diversity experiments:
+
+head20_response_only:
+  ranks 1-20 must be identical
+
+head18_tail:
+  ranks 1-18 must be identical
+  ranks 19-20 may change
+
+head15_tail:
+  ranks 1-15 must be identical
+  ranks 16-20 may change
+
+LTR_tail:
+  default preserve ranks 1-10 or 1-15
+
+Extra rule:
+
+if category in {exact_track, artist_or_album} or specificity == S3:
+    preserve top20 unless the candidate has proven positive on exact/S3 stress panels
+
+This protects the rows where BM25 is usually strongest.
+
+7.4 nDCG safety gates
+
+Suggested automatic gates:
+
+Response-only
+delta_ndcg == 0 exactly
+Head18 tail diversity
+primary panel median ΔnDCG >= -0.0005
+primary panel p10 ΔnDCG    >= -0.0020
+bootstrap LCB_90 ΔnDCG     >= -0.0010
+
+gold_lost_top20:
+  median <= 0 rows per 80-row panel
+  p90    <= 1 row per 80-row panel
+
+gold_demoted_top10_to_out20:
+  must be 0
+Head15 tail diversity
+primary panel median ΔnDCG >= 0
+primary panel p10 ΔnDCG    >= -0.0015
+bootstrap LCB_90 ΔnDCG     >= -0.0005
+
+gold_lost_top20:
+  p90 <= 1 row per 80-row panel
+
+exact_track ΔnDCG >= -0.001
+artist_or_album ΔnDCG >= -0.001
+S3 ΔnDCG >= -0.001
+LTR / embedding rerank
+
+For first acceptance:
+
+primary panel median ΔnDCG >= +0.0015
+bootstrap LCB_90 ΔnDCG     >= 0
+primary panel p10 ΔnDCG    >= -0.001
+
+exact_track ΔnDCG >= 0
+artist_or_album ΔnDCG >= 0
+S3 ΔnDCG >= 0
+
+gold_demoted_top10_to_out20 = 0
+
+If LTR touches top 5:
+
+primary panel median ΔnDCG >= +0.005
+bootstrap LCB_90 ΔnDCG     >= +0.001
+p10 ΔnDCG                  >= 0
+all high-specificity groups >= 0
+
+Otherwise reject. Touching top 5 is not allowed just because global average is slightly up.
+
+8. Diversity and response gates
+
+Because catalog diversity has small weight relative to nDCG, never accept a ranking-damaging change for a tiny diversity gain.
+
+For tail-diversity commits, require:
+
+catalog_diversity absolute gain >= +0.0015
+unique_tracks gain >= +5%
+artist_repeat_rate decreases
+
+But also:
+
+estimated composite LCB_90 > 0
+
+Use your approximate composite:
+
+Δcomposite =
+    0.5 * ΔnDCG
+  + 0.1 * Δcatalog
+  + 0.1 * Δlexical
+  + 0.3 * Δjudge_scaled
+
+For local validation, Δjudge_scaled is usually unknown. So compute two versions:
+
+conservative_composite:
+  assume Δjudge_scaled = 0
+
+optimistic_response_composite:
+  use local proxy for response quality
+
+Auto-accept should use conservative composite.
+
+Response gates:
+
+distinct_2 increases by at least +20% relative
+bad_metadata_tag_rate <= 1%
+hallucinated_artist_or_title_rate <= 1%
+empty_response_rate = 0
+template_duplicate_rate <= 5%
+mean response length within allowed band
+
+Bad metadata tags should include things like:
+
+sleep
+to live by
+cds I own
+miscellaneous raw tag fragments
+broken scraped fields
+
+Those can make the response look ungrounded even if lexical diversity is high.
+
+9. Decision logic
+
+Use this order.
+
+Python
+运行
+def decide(candidate, anchor, report):
+    if format_gate_failed:
+        return "REJECT"
+
+    if candidate.type == "response_only":
+        if not ranking_identical:
+            return "REJECT"
+        if response_gates_pass:
+            return "ACCEPT"
+        return "WARN"
+
+    if head_protection_failed:
+        return "REJECT"
+
+    if any_hard_group_safety_failed:
+        return "REJECT"
+
+    if report.ndcg_lcb90 < threshold_for_candidate_type:
+        return "REJECT"
+
+    if report.gold_demoted_top10_to_out20 > 0:
+        return "REJECT"
+
+    if report.composite_lcb90 <= 0:
+        return "WARN"
+
+    if report.diversity_or_response_gain_too_small:
+        return "WARN"
+
+    return "ACCEPT"
+
+Recommended thresholds by commit type:
+
+response_only:
+  require ranking identity
+  accept if response gates pass
+
+head18_tail:
+  ΔnDCG LCB_90 >= -0.0010
+  p10 panel ΔnDCG >= -0.0020
+  gold_lost_top20 p90 <= 1
+
+head15_tail:
+  ΔnDCG LCB_90 >= -0.0005
+  p10 panel ΔnDCG >= -0.0015
+  exact/S3 groups not negative
+
+LTR_tail:
+  ΔnDCG LCB_90 >= 0
+  median ΔnDCG >= +0.0015
+  exact/S3 groups non-negative
+
+LTR_full:
+  ΔnDCG LCB_90 >= +0.001
+  p10 panel ΔnDCG >= 0
+  no top10 gold demotion
+10. Report format
+decision.json
+
+Example:
+
+JSON
+{
+  "candidate": "ltr_tail_commit_abc123",
+  "anchor": "head20_compactresp_v2",
+  "decision": "REJECT",
+  "reason": [
+    "S3 specificity group delta_ndcg = -0.0031",
+    "gold_lost_top20 p90 = 3 rows per panel",
+    "bootstrap LCB_90 delta_ndcg = -0.0018"
+  ],
+  "primary_metrics": {
+    "median_delta_ndcg": -0.0004,
+    "p10_delta_ndcg": -0.0032,
+    "lcb90_delta_ndcg": -0.0018,
+    "median_delta_catalog": 0.0024,
+    "conservative_delta_composite_lcb90": -0.0006
+  },
+  "hard_gates": {
+    "format": "PASS",
+    "head_protection": "PASS",
+    "exact_entity_safety": "FAIL",
+    "top10_gold_demotion": "PASS",
+    "response_quality": "PASS"
+  }
+}
+summary.md
+
+Should be beginner-readable:
+
+Candidate: ltr_tail_commit_abc123
+Anchor: head20_compactresp_v2
+Decision: REJECT
+
+Why:
+- The candidate improves diversity, but hurts high-specificity exact-entity rows.
+- Public Blind A is small, so one or two lost gold tracks can dominate.
+- The lower bootstrap bound for nDCG is negative.
+- Catalog gain is too small to compensate for ranking risk.
+group_metrics.csv
+
+Columns:
+
+group_type
+group_value
+n_rows
+mean_delta_ndcg
+median_delta_ndcg
+p10_delta_ndcg
+win_rows
+loss_rows
+gold_gained_top20
+gold_lost_top20
+gold_demoted_top10_to_out20
+top10_churn
+top20_jaccard
+decision_flag
+row_audit.csv
+
+Include top 50 worst rows:
+
+row_id
+session_id
+turn_number
+category
+specificity
+user_current_turn
+gold_track
+anchor_rank
+candidate_rank
+delta_ndcg
+anchor_top5
+candidate_top5
+failure_reason
+
+This is the file you actually inspect to fix bugs.
+
+11. CI setup
+
+Use two validation modes.
+
+Fast PR check
+
+Run on every commit:
+
+100 primary panels
+20 smoothed panels
+all format gates
+ranking identity check if response-only
+hard group gates
+
+Goal: catch obvious regressions quickly.
+
+Full nightly / pre-submit check
+
+Run before submission:
+
+1000 primary panels
+500 smoothed panels
+all stress panels
+5000 bootstrap resamples
+full response audit
+full row audit
+
+Only the full check can produce ACCEPT.
+
+12. Final recommended policy
+
+For your current system, I would set the default branch rule like this:
+
+1. response-only commit:
+   ACCEPT if ranking identical and response gates pass.
+
+2. head18 tail-diversity commit:
+   ACCEPT only if nDCG lower bound is nearly flat and exact/S3 groups are safe.
+
+3. head15 or more aggressive diversity:
+   WARN by default, ACCEPT only with positive paired evidence.
+
+4. LTR / embedding commit:
+   cannot touch top10 initially.
+   must first pass as tail reranker.
+   can expand upward only after repeated positive shadow-blind results.
+
+5. any commit that hurts exact_track, artist_or_album, or S3:
+   REJECT.
+
+The key idea is:
+
+All future commits must beat the anchor on Blind-A-shaped paired panels,
+not on all-turn dev average.
+
+That gives you a validation system that is beginner-explainable, CI-friendly, and strict enough to avoid repeating the Blind A mismatch.
