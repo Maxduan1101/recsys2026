@@ -103,6 +103,7 @@ BAD_TAG_PHRASES = (
     "songs ya",
     "sruuu",
     "to live by",
+    "zielonypaw",
 )
 
 
@@ -1208,7 +1209,7 @@ def _generate_judge_brief_response(state: ConversationState, catalog: TrackCatal
         context = _pick(
             state,
             [
-                f"It also {feedback_clause}; {profile} only breaks close ties.",
+                f"It also {feedback_clause}; I used {profile} only to break close ties.",
                 f"The list {feedback_clause}, with {profile} as a secondary cue.",
             ],
             salt="judge-brief-context-both",
@@ -1226,7 +1227,7 @@ def _generate_judge_brief_response(state: ConversationState, catalog: TrackCatal
         context = _pick(
             state,
             [
-                f"{profile.capitalize()} only breaks close ties.",
+                f"I used {profile} only to break close ties.",
                 f"I used {profile} as a secondary cue.",
             ],
             salt="judge-brief-context-profile",
@@ -1285,6 +1286,38 @@ def _generate_judge_compact_mix_response(
     if style == "natural":
         return _generate_natural_response(state, catalog, track_ids)
     return _generate_setwise_response(state, catalog, track_ids)
+
+
+def _generate_judge_clean_mix_response(
+    state: ConversationState,
+    catalog: TrackCatalog,
+    track_ids: list[str],
+) -> str:
+    bucket = int(
+        hashlib.md5(
+            f"{state.session_id}:{state.turn_number}:judge_clean_mix".encode("utf-8")
+        ).hexdigest()[:8],
+        16,
+    ) % 12
+    style = [
+        "judge_v2",
+        "judge_v2",
+        "judge_v2",
+        "judge_brief",
+        "judge_brief",
+        "judge_brief",
+        "compact",
+        "compact",
+        "compact",
+        "compact",
+        "compact",
+        "compact",
+    ][bucket]
+    if style == "judge_v2":
+        return _generate_judge_v2_response(state, catalog, track_ids)
+    if style == "judge_brief":
+        return _generate_judge_brief_response(state, catalog, track_ids)
+    return _generate_compact_response(state, catalog, track_ids)
 
 
 def _generate_polished_response(state: ConversationState, catalog: TrackCatalog, track_ids: list[str]) -> str:
@@ -1416,4 +1449,6 @@ def generate_response(
         return _generate_judge_brief_response(state, catalog, track_ids)
     if style == "judge_compact_mix":
         return _generate_judge_compact_mix_response(state, catalog, track_ids)
+    if style == "judge_clean_mix":
+        return _generate_judge_clean_mix_response(state, catalog, track_ids)
     raise ValueError(f"Unsupported response style: {style!r}")
