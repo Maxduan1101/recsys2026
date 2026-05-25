@@ -1326,10 +1326,12 @@ L2 正则可以理解成“不要让树的判断太激进”。单折里 `lambda
 | 120-tree lambda2 judge_brief | 0.183021 | 0.174312 | 更短的 grounded 回复 |
 | 120-tree lambda2 judge_compact_mix | 0.183021 | 0.194935 | compact/broad 混合备份 |
 | 120-tree lambda2 judge_clean_mix | 0.183021 | 0.200317 | 当前主回复，clean tags + 高 lexical |
+| 120-tree lambda2 compact_clean | 0.183021 | 0.209836 | clean compact 高 lexical 备份 |
 | 120-tree lambda2 compact_broad | 0.183021 | 0.220792 | 最高 lexical，但更机械 |
 | 120/140/200 lambda2 RRF ensemble | 0.183253 | 0.148741 | 微小排序提升 |
 | 120/140/200 lambda2 RRF judge_compact_mix | 0.183253 | 0.194546 | ensemble ranking + compact/broad 混合 |
 | 120/140/200 lambda2 RRF judge_clean_mix | 0.183253 | 0.200015 | ensemble ranking + clean 混合 |
+| 120/140/200 lambda2 RRF compact_clean | 0.183253 | 0.209445 | ensemble ranking + clean compact |
 | 120-tree lambda2 judge_v3 | 0.183021 | 0.125937 | 回复更像完整解释，但 lexical 下降 |
 
 Blind A gold-free 检查：
@@ -1342,11 +1344,13 @@ Blind A gold-free 检查：
 | `goalflow_ltr120_lambda2_head0_judge_mix_clean` | 1496 | 0.031782 | 0.522089 |
 | `goalflow_ltr120_lambda2_head0_judge_clean_mix_clean` | 1496 | 0.031782 | 0.610102 |
 | `goalflow_ltr120_lambda2_head0_judge_compact_mix_clean` | 1496 | 0.031782 | 0.611604 |
+| `goalflow_ltr120_lambda2_head0_compact_clean` | 1496 | 0.031782 | 0.676518 |
 | `goalflow_ltr120_lambda2_head0_compact_broad_clean` | 1496 | 0.031782 | 0.696674 |
 | `goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v2_clean` | 1494 | 0.031739 | 0.485312 |
 | `goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_mix_clean` | 1494 | 0.031739 | 0.524761 |
 | `goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_clean_mix_clean` | 1494 | 0.031739 | 0.613349 |
 | `goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_compact_mix_clean` | 1494 | 0.031739 | 0.615890 |
+| `goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_clean` | 1494 | 0.031739 | 0.679554 |
 | `goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_broad_clean` | 1494 | 0.031739 | 0.700198 |
 | `goalflow_ltr120_lambda2_head0_judge_v3_clean` | 1496 | 0.031782 | 0.434335 |
 | `goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v3_clean` | 1494 | 0.031739 | 0.437063 |
@@ -1511,12 +1515,28 @@ experiments/goalflow_segcat_ltr120_140_200_ens_compact_broad_clean/blindset_A/su
 第八备选：
 
 ```text
+experiments/goalflow_ltr120_lambda2_head0_compact_clean/blindset_A/submission.zip
+```
+
+理由：同一套 ranking，clean compact 回复，official dev lexical 更高，但比主包更像固定模板。
+
+第九备选：
+
+```text
 experiments/goalflow_ltr120_lambda2_head0_compact_broad_clean/blindset_A/submission.zip
 ```
 
 理由：同一套 ranking，Distinct-2 更高。如果 judge 对自然度不敏感、主要奖励词汇多样性，这个包可能更好。
 
-第九备选：
+第十四备选：
+
+```text
+experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_clean/blindset_A/submission.zip
+```
+
+理由：同一套 ensemble ranking，换成 clean compact 高 lexical 回复。
+
+第十一备选：
 
 ```text
 experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_broad_clean/blindset_A/submission.zip
@@ -1524,7 +1544,7 @@ experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_broad_clean/blinds
 
 理由：同一套 ensemble ranking，换成高 Distinct-2 回复。
 
-第十备选：
+第十二备选：
 
 ```text
 experiments/goalflow_ltr120_lambda2_head0_judge_v3_clean/blindset_A/submission.zip
@@ -1532,7 +1552,7 @@ experiments/goalflow_ltr120_lambda2_head0_judge_v3_clean/blindset_A/submission.z
 
 理由：同一套 120-tree lambda2 ranking，换成更完整的自然解释。Distinct-2 低于 judge_v2，所以仅作为 LLM judge 试验。
 
-第十一备选：
+第十三备选：
 
 ```text
 experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v3_clean/blindset_A/submission.zip
@@ -1548,7 +1568,7 @@ experiments/goalflow_ltr120_head0_judge_v2_clean/blindset_A/submission.zip
 
 理由：上一轮 120-tree 无 L2 主包，Blind A 唯一曲目略高，但 OOF nDCG 低于 lambda2。
 
-第九备选：
+第十五备选：
 
 ```text
 experiments/goalflow_ltr_head0_polished_v3/blindset_A/submission.zip

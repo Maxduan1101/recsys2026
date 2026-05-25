@@ -47,10 +47,18 @@ experiments/goalflow_segcat_ltr120_140_200_ens_compact_broad_clean/blindset_A/su
 High-lexical LTR backup:
 
 ```text
+experiments/goalflow_ltr120_lambda2_head0_compact_clean/blindset_A/submission.zip
+```
+
+Use this if the clean mixed package appears too cautious on lexical diversity and the LLM judge tolerates concise metadata-grounded templates. It has official dev lexical diversity `0.20984` and local Blind A Distinct-2 `0.67652`.
+
+Highest-lexical LTR backup:
+
+```text
 experiments/goalflow_ltr120_lambda2_head0_compact_broad_clean/blindset_A/submission.zip
 ```
 
-Use this if the first LTR judge-v2 package unexpectedly loses on lexical diversity or if maximizing Distinct-2 becomes the only goal. It has the same best L2-regularized LTR ranking and local Blind A catalog diversity, but Distinct-2 is higher at `0.69667` and the response is more mechanical.
+Use this if maximizing Distinct-2 becomes the only goal. It has the same best L2-regularized LTR ranking and local Blind A catalog diversity, but Distinct-2 is higher at `0.69667` and the response is more mechanical.
 
 OOF-max ensemble backup:
 
@@ -73,6 +81,14 @@ experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_mix_clean/blindset_A
 ```
 
 OOF-max high-lexical ensemble backup:
+
+```text
+experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_clean/blindset_A/submission.zip
+```
+
+Same ensemble ranking, with official dev lexical `0.20944` and local Blind A Distinct-2 `0.67955`.
+
+OOF-max highest-lexical ensemble backup:
 
 ```text
 experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_broad_clean/blindset_A/submission.zip

@@ -41,10 +41,12 @@ Development-set scores from the official evaluator.
 | `goalflow_ltr120_lambda2_head0_oof_judge_brief_probe` | 0.070875 | 0.162514 | 0.183021 | 0.528011 | 0.174312 | Same ranking as `judge_v2`; shorter grounded response probe. |
 | `goalflow_ltr120_lambda2_head0_oof_judge_compact_mix_probe` | 0.070875 | 0.162514 | 0.183021 | 0.528011 | 0.194935 | Compact/broad mixed response probe. |
 | `goalflow_ltr120_lambda2_head0_oof_judge_clean_mix` | 0.070875 | 0.162514 | 0.183021 | 0.528011 | 0.200317 | Current single-model text choice: cleaner high-lexical mix of judge/brief/compact responses. |
+| `goalflow_ltr120_lambda2_head0_oof_compact_probe` | 0.070875 | 0.162514 | 0.183021 | 0.528011 | 0.209836 | Clean compact response: higher lexical, more template-like. |
 | `goalflow_ltr120_lambda2_head0_oof_compact_broad_probe` | 0.070875 | 0.162514 | 0.183021 | 0.528011 | 0.220792 | Same ranking; highest lexical among grounded templates but more mechanical. |
 | `goalflow_ens_oof_ltr120_140_200_lambda2_rrf60_judge_mix` | 0.071000 | 0.163316 | 0.183253 | 0.525695 | 0.159014 | Same ensemble ranking; mixed response templates improve lexical diversity. |
 | `goalflow_ens_oof_ltr120_140_200_lambda2_rrf60_judge_compact_mix` | 0.071000 | 0.163316 | 0.183253 | 0.525695 | 0.194546 | Same ensemble ranking with the compact mixed response style. |
 | `goalflow_ens_oof_ltr120_140_200_lambda2_rrf60_judge_clean_mix` | 0.071000 | 0.163316 | 0.183253 | 0.525695 | 0.200015 | Same ensemble ranking with the clean mixed response style. |
+| `goalflow_ens_oof_ltr120_140_200_lambda2_rrf60_compact_clean` | 0.071000 | 0.163316 | 0.183253 | 0.525695 | 0.209445 | Ensemble ranking with clean compact response. |
 | `goalflow_segcat_ltr120_140_200_ens_judge_v2` | 0.072125 | 0.164281 | 0.184069 | 0.526481 | 0.148494 | High-risk segment-selection experiment: best non-nested OOF score, but nested segment validation regresses. |
 
 Immediate interpretation:
@@ -98,11 +100,13 @@ These are gold-free checks from `scripts/summarize_predictions.py`; they do not 
 | `goalflow_ltr120_lambda2_head0_judge_mix_clean` | 1496 | 0.9350 | 0.031782 | 0.033991 | 0.522089 | Lower-risk mixed text backup: same ranking as judge-v2, more varied judge-focused responses. |
 | `goalflow_ltr120_lambda2_head0_judge_clean_mix_clean` | 1496 | 0.9350 | 0.031782 | 0.033991 | 0.610102 | Current primary single-model text choice: same ranking, cleaner high-lexical mixing. |
 | `goalflow_ltr120_lambda2_head0_judge_compact_mix_clean` | 1496 | 0.9350 | 0.031782 | 0.033991 | 0.611604 | Compact/broad mixed backup: slightly higher Blind A Distinct-2 but lower official dev lexical. |
+| `goalflow_ltr120_lambda2_head0_compact_clean` | 1496 | 0.9350 | 0.031782 | 0.033991 | 0.676518 | Same L2 ranking; clean high-lexical template backup. |
 | `goalflow_ltr120_lambda2_head0_compact_broad_clean` | 1496 | 0.9350 | 0.031782 | 0.033991 | 0.696674 | Same L2 ranking; high-lexical backup if Distinct-2 matters more than naturalness. |
 | `goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v2_clean` | 1494 | 0.9338 | 0.031739 | 0.033991 | 0.485312 | OOF-max ensemble backup: slightly better dev OOF, slightly lower Blind A coverage. |
 | `goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_mix_clean` | 1494 | 0.9338 | 0.031739 | 0.033991 | 0.524761 | Same ensemble ranking; mixed judge-focused responses. |
 | `goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_clean_mix_clean` | 1494 | 0.9338 | 0.031739 | 0.033991 | 0.613349 | Same ensemble ranking; clean mixed responses. |
 | `goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_compact_mix_clean` | 1494 | 0.9338 | 0.031739 | 0.033991 | 0.615890 | Same ensemble ranking; compact/broad mixed responses. |
+| `goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_clean` | 1494 | 0.9338 | 0.031739 | 0.033991 | 0.679554 | Same ensemble ranking; clean high-lexical template backup. |
 | `goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_broad_clean` | 1494 | 0.9338 | 0.031739 | 0.033991 | 0.700198 | Same ensemble ranking; high-lexical backup. |
 | `goalflow_ltr120_lambda2_head0_judge_v3_clean` | 1496 | 0.9350 | 0.031782 | 0.033991 | 0.434335 | Same 120-tree L2 ranking; fuller prose for LLM-judge testing, lower Distinct-2 than v2. |
 | `goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v3_clean` | 1494 | 0.9338 | 0.031739 | 0.033991 | 0.437063 | Same ensemble ranking; fuller prose backup. |
@@ -225,13 +229,15 @@ Current submission recommendation:
 5. `experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_clean_mix_clean/blindset_A/submission.zip`
 6. `experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_mix_clean/blindset_A/submission.zip`
 7. `experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v2_clean/blindset_A/submission.zip`
-8. `experiments/goalflow_ltr120_lambda2_head0_compact_broad_clean/blindset_A/submission.zip`
-9. `experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_broad_clean/blindset_A/submission.zip`
-10. `experiments/goalflow_ltr120_lambda2_head0_judge_v3_clean/blindset_A/submission.zip`
-11. `experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v3_clean/blindset_A/submission.zip`
-12. `experiments/goalflow_ltr120_head0_judge_v2_clean/blindset_A/submission.zip`
-13. `experiments/goalflow_ltr_head0_polished_v3/blindset_A/submission.zip`
-14. `experiments/goalflow_head20_compact_broad/blindset_A/submission.zip`
+8. `experiments/goalflow_ltr120_lambda2_head0_compact_clean/blindset_A/submission.zip`
+9. `experiments/goalflow_ltr120_lambda2_head0_compact_broad_clean/blindset_A/submission.zip`
+10. `experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_clean/blindset_A/submission.zip`
+11. `experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_broad_clean/blindset_A/submission.zip`
+12. `experiments/goalflow_ltr120_lambda2_head0_judge_v3_clean/blindset_A/submission.zip`
+13. `experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v3_clean/blindset_A/submission.zip`
+14. `experiments/goalflow_ltr120_head0_judge_v2_clean/blindset_A/submission.zip`
+15. `experiments/goalflow_ltr_head0_polished_v3/blindset_A/submission.zip`
+16. `experiments/goalflow_head20_compact_broad/blindset_A/submission.zip`
 
 ## Progress Label Audit
 
@@ -267,7 +273,9 @@ Interpretation:
 - OOF-max compact/broad-mixed-response ensemble backup: `experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_compact_mix_clean/blindset_A/submission.zip`
 - OOF-max lower-risk mixed-response ensemble backup: `experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_mix_clean/blindset_A/submission.zip`
 - OOF-max fixed-style ensemble backup: `experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v2_clean/blindset_A/submission.zip`
+- Clean compact high-lexical LTR backup: `experiments/goalflow_ltr120_lambda2_head0_compact_clean/blindset_A/submission.zip`
 - Current high-lexical LTR backup: `experiments/goalflow_ltr120_lambda2_head0_compact_broad_clean/blindset_A/submission.zip`
+- OOF-max clean compact high-lexical backup: `experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_clean/blindset_A/submission.zip`
 - OOF-max high-lexical ensemble backup: `experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_broad_clean/blindset_A/submission.zip`
 - High-risk category-segmented package: `experiments/goalflow_segcat_ltr120_140_200_ens_judge_v2_clean/blindset_A/submission.zip`
 - Category-segmented high-lexical backup: `experiments/goalflow_segcat_ltr120_140_200_ens_compact_broad_clean/blindset_A/submission.zip`
