@@ -32,8 +32,9 @@ This file tracks questions and optimization directions that deserve a dedicated 
    - Previous response-only first-choice package: `experiments/goalflow_head20_compact_broad/blindset_A/submission.zip`.
    - Current middle backup: `experiments/goalflow_taildiv_head19_compact_broad/blindset_A/submission.zip`; dev nDCG@20 `0.08576`, Blind A unique tracks `1244`.
    - Current diversity backup: `experiments/goalflow_taildiv_head18_compact_broad/blindset_A/submission.zip`; Blind-A-shaped dev panels favor head18, while full dev favors head19.
-   - Current first-choice package after LTR tuning: `experiments/goalflow_ltr120_head0_judge_v2_clean/blindset_A/submission.zip`.
-   - Current high-lexical backup after LTR tuning: `experiments/goalflow_ltr120_head0_compact_broad_clean/blindset_A/submission.zip`.
+   - Previous first-choice package after 120-tree LTR tuning: `experiments/goalflow_ltr120_head0_judge_v2_clean/blindset_A/submission.zip`.
+   - Current first-choice package after L2 LTR tuning: `experiments/goalflow_ltr120_lambda2_head0_judge_v2_clean/blindset_A/submission.zip`.
+   - Current high-lexical backup after L2 LTR tuning: `experiments/goalflow_ltr120_lambda2_head0_compact_broad_clean/blindset_A/submission.zip`.
 
 1. **Progress-label semantics**
    - Is `goal_progress_assessment[turn_number]` judging the recommendation in the same turn, or the transition into the next turn?
@@ -82,9 +83,13 @@ This file tracks questions and optimization directions that deserve a dedicated 
    - Implemented `scripts/probe_lgbm_ltr.py` and `scripts/run_ltr_rerank.py`.
    - Contrary to the conservative prior, unprotected LTR head0 is strongest in held-out validation: five-fold OOF official dev `nDCG@20=0.18095`, Blind-A-shaped mean `0.16737` versus `0.08648` for head20.
    - Tuned tree count: 120 estimators beats the older 260-tree run in five-fold OOF (`nDCG@20=0.18210` vs `0.18095`).
+   - Accepted L2 regularization: `reg_lambda=2` improves five-fold OOF to `nDCG@20=0.18302`; `reg_lambda=0.1` was rejected at `0.18154`.
    - Rejected larger candidate pools for now: `max_candidates_per_group=500` lowered held-out nDCG@20 relative to max 300.
    - Rejected extra lexical/entity/year aggregate features: held-out nDCG@20 dropped to `0.17941`.
    - Rejected `num_leaves=63` despite a better first held-out fold; five-fold OOF dropped to `0.18124`, below 31 leaves.
+   - Rejected `min_child_samples=80`: first held-out fold improved slightly, but five-fold OOF dropped to `0.18114`.
+   - Rejected row bagging for now: after enabling `subsample_freq=1`, subsample values under `1.0` all lost to no row sampling on the held-out fold.
+   - Engineering backlog: cache `build_candidate_frames` outputs as a parquet/arrow artifact so LTR hyperparameter sweeps do not repeat the expensive 8000-turn retrieval pass.
    - Deep research question: why do LTR hyperparameters show fold-specific wins that fail OOF, and can we design a more reliable early-stopping/model-selection protocol for only 80-row Blind A?
    - Deep research question: why does wholesale LTR replacement work so well offline despite Pro's earlier caution, and does that hold on Blind B/private splits?
 

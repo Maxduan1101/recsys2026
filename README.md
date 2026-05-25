@@ -100,16 +100,22 @@ The upload file is:
 Current recommended Blind A package:
 
 ```text
-/Users/bytedance/generated_problems/recsys2026_music_crs/goalflow_musiccrs/experiments/goalflow_ltr120_head0_judge_v2_clean/blindset_A/submission.zip
+/Users/bytedance/generated_problems/recsys2026_music_crs/goalflow_musiccrs/experiments/goalflow_ltr120_lambda2_head0_judge_v2_clean/blindset_A/submission.zip
 ```
 
-This package uses full-dev LightGBM LambdaRank training for Blind A, then generates short judge-focused metadata-grounded responses. OOF dev validation, where each dev turn is scored by a model that did not train on it, reaches official `nDCG@20=0.18210`, catalog diversity `0.52652`, and lexical diversity `0.14877`. A high-lexical response backup with the same LTR ranking is:
+This package uses full-dev LightGBM LambdaRank training for Blind A, with `reg_lambda=2`, then generates short judge-focused metadata-grounded responses. OOF dev validation, where each dev turn is scored by a model that did not train on it, reaches official `nDCG@20=0.18302`, catalog diversity `0.52801`, and lexical diversity `0.14874`. A high-lexical response backup with the same LTR ranking is:
 
 ```text
-/Users/bytedance/generated_problems/recsys2026_music_crs/goalflow_musiccrs/experiments/goalflow_ltr120_head0_compact_broad_clean/blindset_A/submission.zip
+/Users/bytedance/generated_problems/recsys2026_music_crs/goalflow_musiccrs/experiments/goalflow_ltr120_lambda2_head0_compact_broad_clean/blindset_A/submission.zip
 ```
 
 The previous LTR package is still available as a fallback:
+
+```text
+/Users/bytedance/generated_problems/recsys2026_music_crs/goalflow_musiccrs/experiments/goalflow_ltr120_head0_judge_v2_clean/blindset_A/submission.zip
+```
+
+The older 260-tree LTR package is also available as a fallback:
 
 ```text
 /Users/bytedance/generated_problems/recsys2026_music_crs/goalflow_musiccrs/experiments/goalflow_ltr_head0_polished_v3/blindset_A/submission.zip
@@ -208,24 +214,30 @@ python -m pip install -e "goalflow_musiccrs[ltr]"
 
 python goalflow_musiccrs/scripts/run_ltr_rerank.py \
   --mode oof-dev \
-  --tid goalflow_ltr120_head0_oof_judge_v2_clean \
+  --tid goalflow_ltr120_lambda2_head0_oof_judge_v2 \
   --max-candidates-per-group 300 \
   --n-estimators 120 \
+  --subsample 1.0 \
+  --colsample-bytree 0.9 \
+  --reg-lambda 2 \
   --preserve-head-k 0 \
   --response-style judge_v2
 
 python goalflow_musiccrs/scripts/run_ltr_rerank.py \
   --mode blind \
-  --tid goalflow_ltr120_head0_judge_v2_clean \
+  --tid goalflow_ltr120_lambda2_head0_judge_v2_clean \
   --max-candidates-per-group 300 \
   --n-estimators 120 \
+  --subsample 1.0 \
+  --colsample-bytree 0.9 \
+  --reg-lambda 2 \
   --preserve-head-k 0 \
   --response-style judge_v2
 
 python goalflow_musiccrs/scripts/refresh_responses.py \
   --mode blind \
-  --input goalflow_musiccrs/experiments/goalflow_ltr120_head0_judge_v2_clean/blindset_A/prediction.json \
-  --tid goalflow_ltr120_head0_compact_broad_clean \
+  --input goalflow_musiccrs/experiments/goalflow_ltr120_lambda2_head0_judge_v2_clean/blindset_A/prediction.json \
+  --tid goalflow_ltr120_lambda2_head0_compact_broad_clean \
   --response-style compact_broad \
   --zip
 ```
@@ -245,8 +257,8 @@ python goalflow_musiccrs/scripts/refresh_responses.py \
 
 This is Phase 1/2 infrastructure. It deliberately avoids direct dependence on gated LLaMA, GPU-only FlashAttention, FAISS, or cross-encoder models. LightGBM is optional under the `ltr` extra and is now the strongest local ranking path. Remaining research items are tracked in `research/DEEP_RESEARCH_BACKLOG.md`.
 
-The current safe submission setting uses `legacy_head_k=20`: recommendation IDs exactly preserve the strongest known BM25 dev ranking while GoalFlow upgrades response generation. Experimental settings with lower `legacy_head_k` are useful for research, but currently reduce nDCG.
+The current primary submission setting uses unprotected LightGBM LambdaRank with `preserve_head_k=0`, `n_estimators=120`, `colsample_bytree=0.9`, and `reg_lambda=2`. The older `legacy_head_k=20` package is now only a conservative fallback: it preserves the strongest BM25-style head ranking, but its local dev validation is far below the tuned LTR path.
 
-Public Blind A feedback from one conservative submission was `nDCG@20=0.1935`, `catalog_diversity=0.0257`, `lexical_diversity=0.0125`, and `llm_judge_score=1.0`. Blind A currently has only 80 rows, so the maximum possible catalog diversity is `1600 / 47071 = 0.0340`; catalog is not the main bottleneck. After OOF validation and LTR tuning, the immediate best submission candidate is `goalflow_ltr120_head0_judge_v2_clean`, with `goalflow_ltr120_head0_compact_broad_clean` as a higher-Distinct-2 text backup and `goalflow_head20_compact_broad` as the conservative legacy-rank backup.
+Public Blind A feedback from one conservative submission was `nDCG@20=0.1935`, `catalog_diversity=0.0257`, `lexical_diversity=0.0125`, and `llm_judge_score=1.0`. Blind A currently has only 80 rows, so the maximum possible catalog diversity is `1600 / 47071 = 0.0340`; catalog is not the main bottleneck. After OOF validation and LTR tuning, the immediate best submission candidate is `goalflow_ltr120_lambda2_head0_judge_v2_clean`, with `goalflow_ltr120_lambda2_head0_compact_broad_clean` as a higher-Distinct-2 text backup and `goalflow_head20_compact_broad` as the conservative legacy-rank backup.
 
 The newest diagnostics show the added sources are useful for recall but not yet calibrated for rank fusion: the best single source per dev state reaches hit@20 `0.4715` / nDCG@20 `0.2600`, while the current RRF fusion reaches hit@20 `0.2595` / nDCG@20 `0.1015`. Legacy-vs-fused deltas show `446` gained top-20 hits but `212` lost hits and `642` demotions, so the next implementation step is source gating or a learning-to-rank model rather than simply adding more BM25 sources.

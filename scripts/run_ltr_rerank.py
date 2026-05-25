@@ -174,6 +174,8 @@ def train_ltr(
     min_child_samples: int,
     subsample: float,
     colsample_bytree: float,
+    reg_alpha: float,
+    reg_lambda: float,
 ) -> tuple[lgb.LGBMRanker, list[str], list[str], dict[str, list[str]], dict[str, int]]:
     df, feature_cols, categorical, category_values = prepare_features(df)
     train_groups = set(train_groups)
@@ -190,7 +192,10 @@ def train_ltr(
         num_leaves=num_leaves,
         min_child_samples=min_child_samples,
         subsample=subsample,
+        subsample_freq=1,
         colsample_bytree=colsample_bytree,
+        reg_alpha=reg_alpha,
+        reg_lambda=reg_lambda,
         random_state=2026,
         force_row_wise=True,
     )
@@ -362,8 +367,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--learning-rate", type=float, default=0.04)
     parser.add_argument("--num-leaves", type=int, default=31)
     parser.add_argument("--min-child-samples", type=int, default=40)
-    parser.add_argument("--subsample", type=float, default=0.9)
+    parser.add_argument("--subsample", type=float, default=1.0)
     parser.add_argument("--colsample-bytree", type=float, default=0.9)
+    parser.add_argument("--reg-alpha", type=float, default=0.0)
+    parser.add_argument("--reg-lambda", type=float, default=0.0)
     parser.add_argument(
         "--estimator-grid",
         default="",
@@ -383,6 +390,26 @@ def parse_args() -> argparse.Namespace:
         "--min-child-samples-grid",
         default="",
         help="Validate-mode comma-separated min_child_samples values trained on the same candidate frame.",
+    )
+    parser.add_argument(
+        "--subsample-grid",
+        default="",
+        help="Validate-mode comma-separated subsample values trained on the same candidate frame.",
+    )
+    parser.add_argument(
+        "--colsample-bytree-grid",
+        default="",
+        help="Validate-mode comma-separated colsample_bytree values trained on the same candidate frame.",
+    )
+    parser.add_argument(
+        "--reg-alpha-grid",
+        default="",
+        help="Validate-mode comma-separated L1 regularization values trained on the same candidate frame.",
+    )
+    parser.add_argument(
+        "--reg-lambda-grid",
+        default="",
+        help="Validate-mode comma-separated L2 regularization values trained on the same candidate frame.",
     )
     parser.add_argument("--preserve-head-k", type=int, default=18)
     parser.add_argument(
@@ -416,10 +443,16 @@ def model_key(
     learning_rate: float,
     num_leaves: int,
     min_child_samples: int,
+    subsample: float,
+    colsample_bytree: float,
+    reg_alpha: float,
+    reg_lambda: float,
 ) -> str:
     return (
         f"n{n_estimators}_lr{learning_rate:g}_"
-        f"leaves{num_leaves}_minchild{min_child_samples}"
+        f"leaves{num_leaves}_minchild{min_child_samples}_"
+        f"sub{subsample:g}_col{colsample_bytree:g}_"
+        f"alpha{reg_alpha:g}_lambda{reg_lambda:g}"
     )
 
 
@@ -459,15 +492,32 @@ def main() -> None:
         learning_rate_values = parse_float_grid(args.learning_rate_grid) or [args.learning_rate]
         num_leaves_values = parse_int_grid(args.num_leaves_grid) or [args.num_leaves]
         min_child_values = parse_int_grid(args.min_child_samples_grid) or [args.min_child_samples]
+        subsample_values = parse_float_grid(args.subsample_grid) or [args.subsample]
+        colsample_values = parse_float_grid(args.colsample_bytree_grid) or [args.colsample_bytree]
+        reg_alpha_values = parse_float_grid(args.reg_alpha_grid) or [args.reg_alpha]
+        reg_lambda_values = parse_float_grid(args.reg_lambda_grid) or [args.reg_lambda]
         estimator_results = {}
         first_grid = None
         first_train_stats = None
         first_valid_df = None
-        for n_estimators, learning_rate, num_leaves, min_child_samples in product(
+        for (
+            n_estimators,
+            learning_rate,
+            num_leaves,
+            min_child_samples,
+            subsample,
+            colsample_bytree,
+            reg_alpha,
+            reg_lambda,
+        ) in product(
             estimator_values,
             learning_rate_values,
             num_leaves_values,
             min_child_values,
+            subsample_values,
+            colsample_values,
+            reg_alpha_values,
+            reg_lambda_values,
         ):
             ranker, feature_cols, _categorical, category_values, train_stats = train_ltr(
                 dev_df,
@@ -476,8 +526,10 @@ def main() -> None:
                 learning_rate=learning_rate,
                 num_leaves=num_leaves,
                 min_child_samples=min_child_samples,
-                subsample=args.subsample,
-                colsample_bytree=args.colsample_bytree,
+                subsample=subsample,
+                colsample_bytree=colsample_bytree,
+                reg_alpha=reg_alpha,
+                reg_lambda=reg_lambda,
             )
             valid_df, _, _, _ = prepare_features(
                 dev_df[dev_df["group_id"].isin(valid_groups)].copy(),
@@ -498,6 +550,10 @@ def main() -> None:
                 learning_rate=learning_rate,
                 num_leaves=num_leaves,
                 min_child_samples=min_child_samples,
+                subsample=subsample,
+                colsample_bytree=colsample_bytree,
+                reg_alpha=reg_alpha,
+                reg_lambda=reg_lambda,
             )
             estimator_results[key] = {
                 "params": {
@@ -505,8 +561,10 @@ def main() -> None:
                     "learning_rate": learning_rate,
                     "num_leaves": num_leaves,
                     "min_child_samples": min_child_samples,
-                    "subsample": args.subsample,
-                    "colsample_bytree": args.colsample_bytree,
+                    "subsample": subsample,
+                    "colsample_bytree": colsample_bytree,
+                    "reg_alpha": reg_alpha,
+                    "reg_lambda": reg_lambda,
                 },
                 "train": train_stats,
                 "grid": grid,
@@ -531,6 +589,10 @@ def main() -> None:
             "learning_rate": learning_rate_values[0],
             "num_leaves": num_leaves_values[0],
             "min_child_samples": min_child_values[0],
+            "subsample": subsample_values[0],
+            "colsample_bytree": colsample_values[0],
+            "reg_alpha": reg_alpha_values[0],
+            "reg_lambda": reg_lambda_values[0],
             "best_ltr_config_by_head0": best_params,
             "train": first_train_stats,
             "valid_groups": len(valid_groups),
@@ -563,6 +625,8 @@ def main() -> None:
                 min_child_samples=args.min_child_samples,
                 subsample=args.subsample,
                 colsample_bytree=args.colsample_bytree,
+                reg_alpha=args.reg_alpha,
+                reg_lambda=args.reg_lambda,
             )
             fold_df, _, _, _ = prepare_features(
                 dev_df[dev_df["group_id"].isin(fold_valid_groups)].copy(),
@@ -612,6 +676,10 @@ def main() -> None:
             "learning_rate": args.learning_rate,
             "num_leaves": args.num_leaves,
             "min_child_samples": args.min_child_samples,
+            "subsample": args.subsample,
+            "colsample_bytree": args.colsample_bytree,
+            "reg_alpha": args.reg_alpha,
+            "reg_lambda": args.reg_lambda,
             "preserve_head_k": args.preserve_head_k,
             "output": str(output),
             "folds": fold_stats,
@@ -634,6 +702,8 @@ def main() -> None:
         min_child_samples=args.min_child_samples,
         subsample=args.subsample,
         colsample_bytree=args.colsample_bytree,
+        reg_alpha=args.reg_alpha,
+        reg_lambda=args.reg_lambda,
     )
 
     if args.mode == "blind":
