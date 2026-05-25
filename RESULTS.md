@@ -37,7 +37,7 @@ Development-set scores from the official evaluator.
 | `goalflow_ltr120_lr006_lambda2_head0_oof_judge_v2` | 0.069250 | 0.161655 | 0.181458 | 0.523040 | 0.148666 | Rejected: higher learning rate overfit fold 0. |
 | `goalflow_ens_oof_ltr120_140_200_lambda2_rrf60` | 0.071000 | 0.163316 | 0.183253 | 0.525695 | 0.148741 | Best local OOF score, but only `+0.00023` over the single 120-tree model. |
 | `goalflow_ltr120_lambda2_head0_oof_judge_v3` | 0.070875 | 0.162514 | 0.183021 | 0.528011 | 0.125937 | Same ranking as `judge_v2`; more complete prose but lower lexical diversity. |
-| `goalflow_segcat_ltr120_140_200_ens_judge_v2` | 0.072125 | 0.164281 | 0.184069 | 0.526481 | 0.148494 | Current best local OOF score: choose 120/140/200/ensemble by `conversation_goal.category`. |
+| `goalflow_segcat_ltr120_140_200_ens_judge_v2` | 0.072125 | 0.164281 | 0.184069 | 0.526481 | 0.148494 | High-risk segment-selection experiment: best non-nested OOF score, but nested segment validation regresses. |
 
 Immediate interpretation:
 
@@ -45,8 +45,8 @@ Immediate interpretation:
 - They do improve response diversity and candidate diversity.
 - Real Blind A feedback suggests the conservative ranking anchor is strong, while response quality/diversity is the biggest immediate score bottleneck.
 - Blind A has only 80 rows, so catalog diversity is capped at `1600 / 47071 = 0.0340`; improving catalog by a few hundred unique tail tracks has a small composite effect compared with preserving nDCG and improving response text.
-- LightGBM LambdaRank is now the strongest local ranking path. The current best single model is 120 estimators / 31 leaves / learning rate 0.04 / L2 `reg_lambda=2`; same-family RRF ensembling gives a tiny gain, and category-segmented selection is the current local OOF leader.
-- Category-segmented model selection is the new local-score leader. It chooses `ens` for category A, `ltr140` for C/H/I/J, `ltr200` for G/K, and `ltr120` otherwise. This is a broad segment rule rather than per-row oracle selection, but it is still less conservative than the single 120-tree model.
+- LightGBM LambdaRank is now the strongest local ranking path. The current best single model is 120 estimators / 31 leaves / learning rate 0.04 / L2 `reg_lambda=2`; same-family RRF ensembling gives a tiny gain.
+- Category-segmented model selection reaches the best non-nested OOF score. It chooses `ens` for category A, `ltr140` for C/H/I/J, `ltr200` for G/K, and `ltr120` otherwise. A stricter nested segment-selection check drops to about `0.18235`, so it is high-risk and not the recommended first retry.
 - The remaining high-impact work is response judge calibration, better candidate recall without head-rank dilution, and richer dense/embedding features.
 
 ## Public Blind A Feedback
@@ -92,7 +92,7 @@ These are gold-free checks from `scripts/summarize_predictions.py`; they do not 
 | `goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_broad_clean` | 1494 | 0.9338 | 0.031739 | 0.033991 | 0.700198 | Same ensemble ranking; high-lexical backup. |
 | `goalflow_ltr120_lambda2_head0_judge_v3_clean` | 1496 | 0.9350 | 0.031782 | 0.033991 | 0.434335 | Same 120-tree L2 ranking; fuller prose for LLM-judge testing, lower Distinct-2 than v2. |
 | `goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v3_clean` | 1494 | 0.9338 | 0.031739 | 0.033991 | 0.437063 | Same ensemble ranking; fuller prose backup. |
-| `goalflow_segcat_ltr120_140_200_ens_judge_v2_clean` | 1496 | 0.9350 | 0.031782 | 0.033991 | 0.487628 | Current local-score leader; category-segmented LTR selection with judge-v2 responses. |
+| `goalflow_segcat_ltr120_140_200_ens_judge_v2_clean` | 1496 | 0.9350 | 0.031782 | 0.033991 | 0.487628 | High-risk category-segmented LTR selection with judge-v2 responses. |
 | `goalflow_segcat_ltr120_140_200_ens_compact_broad_clean` | 1496 | 0.9350 | 0.031782 | 0.033991 | 0.698188 | Same category-segmented ranking; high-lexical backup. |
 
 ## Blind-Like Dev Panels
@@ -240,7 +240,7 @@ Interpretation:
 - OOF-max ensemble backup: `experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v2_clean/blindset_A/submission.zip`
 - Current high-lexical LTR backup: `experiments/goalflow_ltr120_lambda2_head0_compact_broad_clean/blindset_A/submission.zip`
 - OOF-max high-lexical ensemble backup: `experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_broad_clean/blindset_A/submission.zip`
-- Category-segmented local-score leader: `experiments/goalflow_segcat_ltr120_140_200_ens_judge_v2_clean/blindset_A/submission.zip`
+- High-risk category-segmented package: `experiments/goalflow_segcat_ltr120_140_200_ens_judge_v2_clean/blindset_A/submission.zip`
 - Category-segmented high-lexical backup: `experiments/goalflow_segcat_ltr120_140_200_ens_compact_broad_clean/blindset_A/submission.zip`
 - Fuller-prose single-model backup: `experiments/goalflow_ltr120_lambda2_head0_judge_v3_clean/blindset_A/submission.zip`
 - Fuller-prose ensemble backup: `experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v3_clean/blindset_A/submission.zip`
@@ -259,7 +259,7 @@ The `compact_broad` response style is the high-lexical backup for submissions. I
 
 The RRF ensemble backup uses `scripts/ensemble_predictions.py` with the 120/140/200-tree L2 LTR packages and `rrf_k=60`. It gives a small local OOF gain over the single 120-tree package, but because the gain is very small and Blind A unique-track coverage is slightly lower, it should be treated as a submission-budget-dependent experiment rather than a risk-free replacement.
 
-The category-segmented package uses `scripts/select_segmented_predictions.py` to choose among the single LTR models and the RRF ensemble by `conversation_goal.category`. It has the best official dev OOF score so far, `nDCG@20=0.184069`, and Blind A local diversity matches the single 120-tree package. Because the segment map was selected from dev OOF diagnostics, it should be treated as a higher-upside but slightly less conservative package than the single 120-tree L2 model.
+The category-segmented package uses `scripts/select_segmented_predictions.py` to choose among the single LTR models and the RRF ensemble by `conversation_goal.category`. It has the best non-nested official dev OOF score, `nDCG@20=0.184069`, and Blind A local diversity matches the single 120-tree package. A stricter nested segment-selection check, where four folds choose the segment map and the held-out fold evaluates it, drops to about `0.18235`; keep it as a high-risk experiment rather than a primary package.
 
 ## Embedding Schema
 

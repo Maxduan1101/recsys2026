@@ -102,14 +102,6 @@ The upload file is:
 Current recommended Blind A package:
 
 ```text
-/Users/bytedance/generated_problems/recsys2026_music_crs/goalflow_musiccrs/experiments/goalflow_segcat_ltr120_140_200_ens_judge_v2_clean/blindset_A/submission.zip
-```
-
-This package chooses among the 120/140/200-tree L2 LTR rankings and their RRF ensemble by the official `conversation_goal.category`. It is the current best local OOF run: official dev `nDCG@20=0.18407`, catalog diversity `0.52648`, and lexical diversity `0.14849`. It is still slightly more adaptive than the single-model package below, so keep the single 120-tree package as the conservative fallback.
-
-Conservative single-model Blind A package:
-
-```text
 /Users/bytedance/generated_problems/recsys2026_music_crs/goalflow_musiccrs/experiments/goalflow_ltr120_lambda2_head0_judge_v2_clean/blindset_A/submission.zip
 ```
 
@@ -130,6 +122,14 @@ This package RRF-ensembles the 120/140/200-tree `reg_lambda=2` LTR rankings with
 ```text
 /Users/bytedance/generated_problems/recsys2026_music_crs/goalflow_musiccrs/experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_broad_clean/blindset_A/submission.zip
 ```
+
+High-risk segmented LTR package:
+
+```text
+/Users/bytedance/generated_problems/recsys2026_music_crs/goalflow_musiccrs/experiments/goalflow_segcat_ltr120_140_200_ens_judge_v2_clean/blindset_A/submission.zip
+```
+
+This package chooses among the 120/140/200-tree L2 LTR rankings and their RRF ensemble by `conversation_goal.category`. It reaches official dev `nDCG@20=0.18407` when the segment map is selected on all OOF dev diagnostics, but nested segment validation drops to about `0.18235`, so treat it as a high-risk experiment rather than the first retry.
 
 Fuller-prose LLM-judge text backups:
 
@@ -310,8 +310,8 @@ python goalflow_musiccrs/scripts/refresh_responses.py \
 
 This is Phase 1/2 infrastructure. It deliberately avoids direct dependence on gated LLaMA, GPU-only FlashAttention, FAISS, or cross-encoder models. LightGBM is optional under the `ltr` extra and is now the strongest local ranking path. Remaining research items are tracked in `research/DEEP_RESEARCH_BACKLOG.md`.
 
-The current primary local-score setting uses category-segmented selection over the 120/140/200-tree L2 LTR models and their RRF ensemble. The conservative single-model setting uses unprotected LightGBM LambdaRank with `preserve_head_k=0`, `n_estimators=120`, `colsample_bytree=0.9`, and `reg_lambda=2`. The older `legacy_head_k=20` package is now only a conservative fallback: it preserves the strongest BM25-style head ranking, but its local dev validation is far below the tuned LTR path.
+The current recommended setting uses unprotected LightGBM LambdaRank with `preserve_head_k=0`, `n_estimators=120`, `colsample_bytree=0.9`, and `reg_lambda=2`. Same-family RRF ensembling gives a tiny OOF gain and is kept as a submission-budget backup. Category-segmented selection has the highest non-nested dev score but fails stricter nested segment validation, so it is high-risk. The older `legacy_head_k=20` package is now only a conservative fallback: it preserves the strongest BM25-style head ranking, but its local dev validation is far below the tuned LTR path.
 
-Public Blind A feedback from one conservative submission was `nDCG@20=0.1935`, `catalog_diversity=0.0257`, `lexical_diversity=0.0125`, and `llm_judge_score=1.0`. Blind A currently has only 80 rows, so the maximum possible catalog diversity is `1600 / 47071 = 0.0340`; catalog is not the main bottleneck. After OOF validation and LTR tuning, the local-score leader is `goalflow_segcat_ltr120_140_200_ens_judge_v2_clean`, the immediate conservative single-model candidate is `goalflow_ltr120_lambda2_head0_judge_v2_clean`, `goalflow_segcat_ltr120_140_200_ens_compact_broad_clean` / `goalflow_ltr120_lambda2_head0_compact_broad_clean` are higher-Distinct-2 text backups, and `goalflow_head20_compact_broad` remains the conservative legacy-rank backup.
+Public Blind A feedback from one conservative submission was `nDCG@20=0.1935`, `catalog_diversity=0.0257`, `lexical_diversity=0.0125`, and `llm_judge_score=1.0`. Blind A currently has only 80 rows, so the maximum possible catalog diversity is `1600 / 47071 = 0.0340`; catalog is not the main bottleneck. After OOF validation and LTR tuning, the immediate conservative single-model candidate is `goalflow_ltr120_lambda2_head0_judge_v2_clean`, the micro-gain ensemble candidate is `goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v2_clean`, `goalflow_ltr120_lambda2_head0_compact_broad_clean` is the higher-Distinct-2 text backup, `goalflow_segcat_ltr120_140_200_ens_judge_v2_clean` is a high-risk segment-selection experiment, and `goalflow_head20_compact_broad` remains the conservative legacy-rank backup.
 
 The newest diagnostics show the added sources are useful for recall but not yet calibrated for rank fusion: the best single source per dev state reaches hit@20 `0.4715` / nDCG@20 `0.2600`, while the current RRF fusion reaches hit@20 `0.2595` / nDCG@20 `0.1015`. Legacy-vs-fused deltas show `446` gained top-20 hits but `212` lost hits and `642` demotions, so the next implementation step is source gating or a learning-to-rank model rather than simply adding more BM25 sources.

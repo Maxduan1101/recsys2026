@@ -1,18 +1,5 @@
 # Blind A Submission Decision
 
-Best local-score package after segmented LTR selection:
-
-```text
-experiments/goalflow_segcat_ltr120_140_200_ens_judge_v2_clean/blindset_A/submission.zip
-```
-
-Why this one:
-
-- Category-segmented selection over the 120/140/200-tree L2 LTR models and their RRF ensemble reaches official OOF dev `nDCG@20=0.18407`, the best local score so far.
-- It keeps Blind A local catalog diversity at `0.03178`, matching the conservative 120-tree package, and local Distinct-2 is `0.48763`.
-- The segment rule is broad and interpretable: category A uses the RRF ensemble, C/H/I/J use 140 trees, G/K use 200 trees, and the other categories use the 120-tree model.
-- Risk: the segment map was selected from dev OOF diagnostics, so it is a little less conservative than a single fixed LTR model.
-
 Conservative first retry after LTR tuning and response cleanup:
 
 ```text
@@ -28,13 +15,17 @@ Why this one:
 - The response cleanup removes private/noisy tag artifacts and title-cases profile fields before writing them into the explanation.
 - It directly attacks the previous public weak points: `lexical_diversity=0.0125` and `llm_judge_score=1.0`, while also improving local ranking validation.
 
-Category-segmented high-lexical backup:
+High-risk category-segmented LTR package:
+
+```text
+experiments/goalflow_segcat_ltr120_140_200_ens_judge_v2_clean/blindset_A/submission.zip
+```
+
+This chooses among the 120/140/200-tree L2 LTR models and their RRF ensemble by `conversation_goal.category`. It reaches official dev `nDCG@20=0.18407` if the segment map is selected on all OOF diagnostics, but stricter nested segment validation drops to about `0.18235`; use only as a high-risk experiment. Its high-lexical version is:
 
 ```text
 experiments/goalflow_segcat_ltr120_140_200_ens_compact_broad_clean/blindset_A/submission.zip
 ```
-
-Same segmented ranking as the best local-score package, but with compact-broad responses. Local Blind A Distinct-2 is `0.69819`.
 
 High-lexical LTR backup:
 

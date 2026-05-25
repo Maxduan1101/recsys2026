@@ -1408,7 +1408,7 @@ OOF 结果：
 |---|---:|---|
 | 120-tree lambda2 单模型 | 0.183021 | 最稳的单模型 |
 | 120/140/200 RRF ensemble | 0.183253 | 微小提升 |
-| category 分段选择 | 0.184069 | 当前本地最高 |
+| category 分段选择 | 0.184069 | 非嵌套本地最高，但更严格验证会回落 |
 
 分段规则很简单：
 
@@ -1419,17 +1419,9 @@ OOF 结果：
 | G/K | 200-tree LTR |
 | 其他 | 120-tree LTR |
 
-这不是逐条样本偷看答案，而是按官方 goal category 做宽分组；但它确实是根据 dev OOF 诊断选出来的，所以风险比单模型略高。
+这不是逐条样本偷看答案，而是按官方 goal category 做宽分组；但它确实是根据 dev OOF 诊断选出来的。更严格的嵌套检查里，用 4 折选分段规则、1 折评估，category 分段只有约 `0.18235`，低于单模型和 ensemble。因此它被降级为高风险实验。
 
 第一优先：
-
-```text
-experiments/goalflow_segcat_ltr120_140_200_ens_judge_v2_clean/blindset_A/submission.zip
-```
-
-理由：当前最高本地 OOF nDCG，Blind A unique tracks 仍是 `1496 / 1600`，没有牺牲覆盖度。
-
-第一保守备选：
 
 ```text
 experiments/goalflow_ltr120_lambda2_head0_judge_v2_clean/blindset_A/submission.zip
@@ -1443,7 +1435,15 @@ experiments/goalflow_ltr120_lambda2_head0_judge_v2_clean/blindset_A/submission.z
 experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v2_clean/blindset_A/submission.zip
 ```
 
-理由：比单 120-tree 有微小 OOF 增益，但已经低于 category 分段选择，Blind A 覆盖度也略低。适合在有提交预算时试。
+理由：比单 120-tree 有微小 OOF 增益，Blind A 覆盖度略低。适合在有提交预算时试。
+
+高风险备选：
+
+```text
+experiments/goalflow_segcat_ltr120_140_200_ens_judge_v2_clean/blindset_A/submission.zip
+```
+
+理由：非嵌套 OOF 最高，但嵌套 segment 验证回落，可能是分段选择过拟合。
 
 第三备选：
 
