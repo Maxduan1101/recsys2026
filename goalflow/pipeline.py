@@ -13,7 +13,7 @@ from tqdm import tqdm
 from .bm25_retrieval import MultiBM25Retriever
 from .data import BLIND_A_DATASET, CONVERSATION_DATASET, TRACK_METADATA, TrackCatalog, load_conversations
 from .documents import build_documents, build_train_augmentation
-from .fusion import rerank_candidates, rrf_fuse
+from .fusion import diversify_tail, rerank_candidates, rerank_candidates_gated, rrf_fuse
 from .response import generate_response
 from .state import build_state_for_blind_item, build_state_for_dev_turn, query_variants
 from .validation import validate_predictions
@@ -31,6 +31,9 @@ class GoalFlowConfig:
     retrieval_top_k: int = 260
     rerank_pool_size: int = 1200
     legacy_head_k: int = 20
+    fusion_mode: str = "standard"
+    tail_diversity_start: int = 20
+    global_repeat_penalty: float = 0.0
     rrf_k: int = 60
     dev_limit: int | None = None
 
@@ -94,6 +97,9 @@ def prepare_retriever(config: GoalFlowConfig, catalog: TrackCatalog) -> MultiBM2
 
 
 def _predict_states(config: GoalFlowConfig, states, catalog: TrackCatalog, retriever: MultiBM25Retriever) -> list[dict]:
+    if config.fusion_mode not in {"standard", "gated"}:
+        raise ValueError(f"Unsupported fusion_mode={config.fusion_mode!r}")
+
     variants = [query_variants(state, catalog) for state in states]
     source_rows = retriever.batch_search(
         query_variants_per_state=variants,
@@ -115,12 +121,36 @@ def _predict_states(config: GoalFlowConfig, states, catalog: TrackCatalog, retri
             fused = dict(
                 sorted(fused.items(), key=lambda item: item[1].score, reverse=True)[: config.rerank_pool_size]
             )
-        track_ids = rerank_candidates(state, catalog, fused, top_k=20, global_counts=global_counts)
-        if config.legacy_head_k and legacy_order:
+        rerank_top_k = 80 if config.tail_diversity_start < 20 else 20
+        if config.fusion_mode == "gated":
+            track_ids = rerank_candidates_gated(
+                state,
+                catalog,
+                fused,
+                legacy_order=legacy_order,
+                top_k=rerank_top_k,
+                global_counts=global_counts,
+                protect_head_k=config.legacy_head_k,
+            )
+        else:
+            track_ids = rerank_candidates(state, catalog, fused, top_k=rerank_top_k, global_counts=global_counts)
+        if config.fusion_mode == "standard" and config.legacy_head_k and legacy_order:
             anchored = legacy_order[: config.legacy_head_k]
             merged = anchored + [track_id for track_id in track_ids if track_id not in anchored]
             merged += [track_id for track_id in legacy_order if track_id not in merged]
-            track_ids = merged[:20]
+            track_ids = merged
+        if config.tail_diversity_start < 20:
+            track_ids = diversify_tail(
+                track_ids,
+                state,
+                catalog,
+                global_counts=global_counts,
+                top_k=20,
+                preserve_head_k=config.tail_diversity_start,
+                repeat_penalty=config.global_repeat_penalty,
+            )
+        else:
+            track_ids = track_ids[:20]
         global_counts.update(track_ids)
         predictions.append(
             {
@@ -198,6 +228,9 @@ def write_run_summary(config: GoalFlowConfig, output_path: Path, mode: str) -> P
         "retrieval_top_k": config.retrieval_top_k,
         "rerank_pool_size": config.rerank_pool_size,
         "legacy_head_k": config.legacy_head_k,
+        "fusion_mode": config.fusion_mode,
+        "tail_diversity_start": config.tail_diversity_start,
+        "global_repeat_penalty": config.global_repeat_penalty,
         "rrf_k": config.rrf_k,
         "query_weights": default_query_weights(),
         "index_weights": default_index_weights(),

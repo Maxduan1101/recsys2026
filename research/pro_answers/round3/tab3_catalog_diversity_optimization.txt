@@ -1,0 +1,623 @@
+You are advising catalog diversity for RecSys Challenge 2026 Music-CRS. The system currently repeats too many globally popular or legacy-BM25 tracks: blind catalog_diversity is only 0.0257, but nDCG@20 is strong at 0.1935. Research question: how should we optimize the top-20 tail for catalog diversity under nDCG risk? Give a practical batch-level algorithm with global frequency accounting, MMR/xQuAD-style tail selection, position-specific penalties, and a method to estimate composite-score tradeoffs before blind submission.
+
+
+我会先对齐挑战指标与风险边界，再给出一个可落地的重排方案：保住前排相关性，把主要多样性探索放在第 11–20 位，并配套离线权衡估计避免盲提交过拟合。
+
+关键新增约束是：catalog diversity 是全文件级唯一曲目覆盖，而非单列表新颖性；因此要跨 batch 预算重复热门曲目的使用，而不是逐 query 盲目打散。
+
+已思考 11m 19s
+Recommendation
+
+Use a budgeted global tail reranker: keep the high-nDCG head mostly fixed, then replace repeated/popular/BM25-collapse items in ranks 11–20 with relevance-gated, globally underused candidates. Catalog diversity is counted as unique recommended tracks ÷ total catalog size, while nDCG@20 is position-discounted and macro-averaged, so the diversity decision should be made over the whole prediction batch, not independently per conversation turn. 
+GitHub
+
+The official challenge setup also makes this a good fit: Music-CRS uses multi-turn conversations plus shared track metadata/embeddings, and the catalog is about 50.4k tracks. Your blind catalog_diversity = 0.0257 therefore corresponds to roughly 1.3k unique tracks if the blind set uses the shared catalog denominator. 
+NLP4MUSA
+ 
+GitHub
+
+Under the current Codabench composite shown for Music-CRS, the recommendation-side tradeoff is approximately:
+
+ΔScore
+rec
+	​
+
+=0.50ΔnDCG@20+0.10ΔCatalogDiversity
+
+with lexical and LLM-judge terms held constant. 
+Codabench
+
+That means the break-even rule is:
+
+acceptable nDCG loss<0.2×catalog-diversity gain
+
+So from your current 0.0257 catalog diversity:
+
+Target catalog diversity	New unique tracks needed, approx.	Break-even nDCG loss
+0.040	+721	0.0029
+0.050	+1,225	0.0049
+0.075	+2,485	0.0099
+0.100	+3,745	0.0149
+
+Given your nDCG@20 = 0.1935, I would first target 0.05–0.07 catalog diversity while keeping estimated nDCG loss below 0.003–0.006. Do not jump straight to random-tail behavior; random systems can have high catalog coverage but near-zero nDCG, as the official dev baselines illustrate. 
+GitHub
+
+Algorithm: Budgeted Global xQuAD/MMR Tail Reranker
+
+Call this BG-Tail: Budgeted Global Tail Diversification.
+
+1. Start from your strong base run
+
+For each conversation-turn row q, you have:
+
+L
+q
+	​
+
+=[t
+q,1
+	​
+
+,…,t
+q,20
+	​
+
+]
+
+from the current high-nDCG system.
+
+Use the whole catalog and valid track IDs; do not restrict to a subset during inference, and keep each row duplicate-free because the evaluator requires unique track IDs within each predicted_track_ids list and rank order matters. 
+GitHub
+ 
+GitHub
+
+Set:
+
+H=8 or 10
+
+and hard-lock positions 1..H. With your nDCG already strong, I would start with H = 10.
+
+2. Maintain a global frequency ledger
+
+Initialize from the current full top-20 predictions:
+
+freq[t]=
+q
+∑
+	​
+
+p=1
+∑
+20
+	​
+
+1[L
+q,p
+	​
+
+=t]
+
+Also maintain:
+
+U=∣{t:freq[t]>0}∣
+
+The exact diversity effect of replacing old item o with candidate t is:
+
+ΔCD(o→t)=
+∣Catalog∣
+1[freq[t]=0]−1[freq[o]=1]
+	​
+
+
+This is the core correction. Replacing a globally repeated track with a never-used track gives +1 unique. Replacing a unique old track with a new unique track gives 0 net catalog gain. Replacing a unique old track with an already-used track gives negative catalog gain and should almost never happen unless it is a clear nDCG win.
+
+3. Build candidate pools for tail positions only
+
+For each row q, build candidates from the top K of your retrieval/reranker ensemble, not from random catalog sampling.
+
+Use something like:
+
+K
+11−12
+	​
+
+=100,K
+13−16
+	​
+
+=300,K
+17−20
+	​
+
+=500
+
+Candidate sources should include BM25, dense retrieval, track embeddings, user-track embeddings, and any cross-encoder/LLM reranker you have. The official baseline already frames the system as a two-stage recommender plus LLM pipeline with BM25/BERT-style retrieval and track metadata such as name, artist, album, tags, and release date. 
+GitHub
+
+For every candidate t, estimate calibrated relevance:
+
+P
+rel
+	​
+
+(q,t)
+
+Train this calibrator on dev candidates with features like base rank, BM25 score, dense score, embedding similarity, artist match, tag overlap, release decade match, track popularity, candidate source, and turn number.
+
+4. Use MMR/xQuAD-style local novelty
+
+MMR is useful because it explicitly trades relevance against redundancy; xQuAD is useful because it covers uncovered query aspects. MMR was introduced as a diversity-based reranking method balancing relevance and novelty, and xQuAD explicitly diversifies by accounting for aspects or sub-queries. 
+CMU School of Computer Science
+ 
+Springer
+
+For Music-CRS, define aspects a from:
+
+explicit artists, tracks, albums, genres, moods, and eras mentioned in the conversation;
+
+metadata tags and release decade;
+
+top-candidate inferred aspects if the conversation is vague.
+
+For a candidate t and current list S
+q
+	​
+
+, use:
+
+xQ(q,t∣S
+q
+	​
+
+)=
+a
+∑
+	​
+
+P(a∣q)P(t∣a)
+j∈S
+q
+	​
+
+∏
+	​
+
+(1−P(j∣a))
+
+This rewards a track if it matches an aspect not already covered by the current list.
+
+Also compute MMR-style redundancy:
+
+Red(t,S
+q
+	​
+
+)=
+j∈S
+q
+	​
+
+max
+	​
+
+sim(t,j)
+
+where similarity can combine artist equality, album equality, tag overlap, embedding cosine, and same-decade similarity.
+
+5. Score each possible tail swap
+
+For each row q, position p>H, old item o=L
+q,p
+	​
+
+, and candidate t∈
+/
+L
+q
+	​
+
+, compute:
+
+d
+p
+	​
+
+=
+log
+2
+	​
+
+(p+1)
+1
+	​
+
+ΔnDCG
+q,p
+	​
+
+=
+N⋅
+IDCG
+q
+	​
+
+d
+p
+	​
+
+	​
+
+(P
+rel
+	​
+
+(q,t)−P
+rel
+	​
+
+(q,o))
+
+where N is the number of prediction rows. Estimate 
+IDCG
+q
+	​
+
+ from dev buckets by turn number, goal type, or number of relevant ground-truth tracks. The official nDCG formula uses the same logarithmic position discount. 
+GitHub
+
+Then score the swap:
+
+J(o→t)=0.50
+ΔnDCG
+q,p
+	​
+
++0.10ΔCD+α
+p
+	​
+
+ΔxQ+β
+p
+	​
+
+ΔMMR+τ
+p
+	​
+
+ΔFreq−λ
+p
+	​
+
+RiskPenalty
+
+where:
+
+ΔxQ=xQ(q,t∣S
+q
+	​
+
+∖{o})−xQ(q,o∣S
+q
+	​
+
+∖{o})
+ΔMMR=Red(o,S
+q
+	​
+
+∖{o})−Red(t,S
+q
+	​
+
+∖{o})
+ΔFreq=log(1+freq[o])−log(1+freq[t])
+
+Add an extra positive term when o is a globally overused legacy-BM25 item, but exempt exact-title or exact-artist matches from the user’s request.
+
+6. Use position-specific risk gates
+
+Start with this schedule:
+
+Positions	Policy	Relevance gate	Diversity pressure
+1–8	hard lock	no replacement	none
+9–10	usually lock	replace only if relevance-neutral	tiny
+11–12	conservative tail	P
+rel
+	​
+
+(t)≥P
+rel
+	​
+
+(o)−0.02	low
+13–16	normal tail	P
+rel
+	​
+
+(t)≥P
+rel
+	​
+
+(o)−0.05	medium
+17–20	diversity tail	P
+rel
+	​
+
+(t)≥P
+rel
+	​
+
+(o)−0.08 initially	high
+
+A useful per-slot break-even approximation for replacing a duplicate old item with a new unique item is:
+
+P
+rel
+	​
+
+(o)−P
+rel
+	​
+
+(t)≲
+∣Catalog∣d
+p
+	​
+
+0.2N
+IDCG
+q
+	​
+
+	​
+
+
+For a dev-sized batch of roughly 1,000 sessions × 8 turns and a 50.4k-track catalog, this gives a much larger allowable relevance drop at rank 20 than at rank 1. Use only 50–70% of that theoretical threshold because blind calibration error is real.
+
+7. Greedy global selection, not per-row reranking
+
+Use lazy greedy over all possible tail swaps.
+
+Python
+运行
+# Inputs:
+# base_lists[q]       : current top-20 list
+# candidates[q]       : candidate tracks with calibrated relevance scores
+# H                   : locked head size, e.g. 10
+# target_cd_gain      : e.g. 0.0243 to move 0.0257 -> 0.0500
+# risk_fraction       : e.g. 0.65
+
+lists = deepcopy(base_lists)
+freq = Counter(track for q in Q for track in lists[q])
+catalog_size = C
+
+# Composite break-even: ndcg_loss < 0.2 * cd_gain.
+ndcg_loss_budget = risk_fraction * 0.2 * target_cd_gain
+
+heap = build_all_tail_swaps(
+    rows=Q,
+    positions=range(H+1, 21),
+    lists=lists,
+    candidates=candidates,
+    freq=freq
+)
+
+used_ndcg_loss = 0.0
+
+while heap:
+    swap = heap.pop_best_lazy_recomputed()
+
+    q, p, old, new = swap.q, swap.p, swap.old, swap.new
+
+    if new in lists[q]:
+        continue
+
+    delta_cd = ((freq[new] == 0) - (freq[old] == 1)) / catalog_size
+    delta_ndcg = estimate_delta_ndcg(q, p, old, new)
+
+    # Never spend diversity budget on a negative-CD swap unless it improves nDCG.
+    if delta_cd < 0 and delta_ndcg <= 0:
+        continue
+
+    # Position-specific relevance/risk gate.
+    if not passes_position_gate(q, p, old, new):
+        continue
+
+    # Full composite + MMR/xQuAD/frequency score.
+    J = score_swap(q, p, old, new, lists[q], freq)
+
+    if J <= margin_for_position[p]:
+        continue
+
+    ndcg_loss = max(0.0, -delta_ndcg)
+
+    if used_ndcg_loss + ndcg_loss > ndcg_loss_budget:
+        continue
+
+    # Apply swap.
+    lists[q][p-1] = new
+    freq[old] -= 1
+    if freq[old] == 0:
+        del freq[old]
+    freq[new] += 1
+    used_ndcg_loss += ndcg_loss
+
+    refresh_heap_entries_for_row_and_tracks(q, old, new)
+
+This formulation naturally prioritizes the best cases first: remove a repeated globally popular tail item, add a first-use candidate, keep relevance nearly flat, and improve aspect coverage.
+
+How to estimate the blind composite tradeoff before submitting
+A. Exact quantities you can know without labels
+
+For any blind rerank candidate, compute exactly:
+
+CD
+new
+	​
+
+=
+∣Catalog∣
+∣∪
+q
+	​
+
+L
+q
+new
+	​
+
+∣
+	​
+
+
+and therefore:
+
+ΔCD=CD
+new
+	​
+
+−0.0257
+
+Also report:
+
+number of new unique tracks added;
+
+number of unique old tracks lost;
+
+top-100 most repeated tracks before/after;
+
+replacements by position;
+
+replacements by candidate source;
+
+percent of replacements that are BM25-only;
+
+percent of rows touched.
+
+If the run raises catalog diversity by replacing many unique old items, it is not doing the right thing. You want most gains to come from duplicate-old → new-unique swaps.
+
+B. Estimate nDCG loss with a calibrated relevance model
+
+On dev:
+
+Generate the same candidate pools used on blind.
+
+Label candidates as relevant if they match the dev ground truth.
+
+Train a calibrated model for P
+rel
+	​
+
+(q,t).
+
+Validate calibration by turn number and by score bucket.
+
+Compute predicted 
+ΔnDCG
+ for proposed swaps.
+
+Compare predicted vs actual ΔnDCG after running the official dev evaluator.
+
+Use session-level bootstrapping, not row-level randomization, because the official evaluation macro-averages over turns and sessions. 
+GitHub
+
+C. Build a Pareto curve
+
+Sweep:
+
+H ∈ {8, 10, 12};
+
+target CD gain, e.g. +0.01, +0.02, +0.04, +0.07;
+
+tail relevance gates;
+
+global frequency penalty;
+
+MMR/xQuAD weights;
+
+candidate pool size K.
+
+For each setting, record:
+
+(nDCG@20, CatalogDiversity, 0.50nDCG@20+0.10CD)
+
+on dev.
+
+Then choose the setting with the best lower-confidence-bound composite, not the best mean composite:
+
+LCB=E[ΔScore]−1.64⋅SE
+
+I would only trust a blind candidate if:
+
+LCB(ΔScore
+rec
+	​
+
+)>0
+
+and the estimated nDCG drop is below your predeclared budget.
+
+D. Use blind-leaderboard history as a shrinkage calibrator
+
+If you have several previous submissions, fit:
+
+ΔnDCG
+blind
+	​
+
+≈a+b⋅ΔnDCG
+dev
+	​
+
+
+with b shrunk toward zero if you have few data points. Catalog diversity does not need this model because it is exactly computable from the blind prediction file before submission.
+
+Then estimate:
+
+Score
+blind
+	​
+
+=0.50(0.1935+
+ΔnDCG
+blind
+	​
+
+)+0.10(CD
+new
+	​
+
+)+constant text terms
+
+If your response text names specific tracks, regenerate or neutralize the response after reranking; otherwise the LLM-judge component may be harmed even if nDCG and catalog diversity improve.
+
+Practical first submission recipe
+
+Use this as your first conservative diversified blind run:
+
+Lock ranks 1–10.
+
+Only replace ranks 11–20.
+
+Candidate pool: top 300–500 per row from hybrid retrieval/reranking.
+
+Replace mostly tracks with freq[old] > 1.
+
+Require new to be first-use globally unless it is a strong nDCG improvement.
+
+Use xQuAD over artist, tag, mood/genre, and decade aspects.
+
+Apply a soft penalty to BM25-only legacy/popular tracks in ranks 13–20.
+
+Target catalog_diversity ≈ 0.05.
+
+Stop if estimated nDCG drops below about 0.190–0.191.
+
+If dev/bootstrap estimates are stable, a second, more aggressive run can target 0.065–0.075. I would not target 0.10+ until the estimator shows that ranks 17–20 can absorb the swaps with less than roughly 0.01 nDCG loss.
+
+The core principle is: do not diversify blindly; spend the lower top-20 positions on globally new, locally plausible, aspect-covering tracks, and price every swap in composite-score units before submitting.
+
+来源
+
+进阶专业
+ChatGPT 也可能会犯错。请核查重要信息。

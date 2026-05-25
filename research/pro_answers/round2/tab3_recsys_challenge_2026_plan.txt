@@ -1,0 +1,900 @@
+You are helping with RecSys Challenge 2026 Music-CRS. I implemented an export_ltr_dataset.py script that writes JSONL rows with group_id=session-turn, label exact gold track vs candidate, and features like RRF score, rule boost, source ranks, intent/category/specificity, popularity, release_year, seed indicators, and previously_recommended. Research question: give a concrete LightGBM LambdaRank training and inference implementation plan from this JSONL. Include feature encoding, handling sparse per-source rank columns, categorical features, negative sampling, group arrays, validation split by session/user, metrics, model saving, inference integration, and how to compare honest end-to-end vs positive-injected oracle.
+
+展开
+
+我会把你的 JSONL 导出对齐到 LightGBM LambdaRank 的实际训练/推理流程，覆盖特征编码、分组训练、验证评估，以及 honest 与 oracle 候选生成的分离对比。
+
+我会把每个 session-turn 作为一个 query group，按 group_id 排序并构造候选数数组；同时以官方 nDCG@1/10/20 和 top-20 提交约束作为目标。
+
+已思考 12m 2s
+
+Below is a concrete plan that treats your JSONL as a second-stage reranking dataset: first-stage retrieval/RRF/rules create candidates; LightGBM LambdaRank learns how to reorder them per session_id × turn_number. This matches the challenge shape: the baseline repo describes a two-stage system with a RecSys retrieval stage and an LLM response stage, and the official inference JSON requires one ranked predicted_track_ids list, up to 20 tracks, for every session turn. The baseline docs also warn that inference must retrieve from the full catalog, not a split/subset. 
+GitHub
+
+1. JSONL contract
+
+Make each row look logically like this, even if your script stores features nested under features:
+
+JSON
+{
+  "group_id": "69137__2020-02-08::turn_1",
+  "session_id": "69137__2020-02-08",
+  "user_id": "69137",
+  "turn_number": 1,
+  "track_id": "715f8aff-7c99-46b8-8f9d-6d1aa1ae0372",
+  "gold_track_id": "715f8aff-7c99-46b8-8f9d-6d1aa1ae0372",
+  "label": 1,
+  "candidate_rank": 4,
+  "features": {
+    "rrf_score": 0.0371,
+    "rule_boost": 1.5,
+    "rank_bm25": 3,
+    "rank_dense": 12,
+    "rank_artist": null,
+    "intent": "recommend_by_artist",
+    "category": "artist",
+    "specificity": "specific",
+    "popularity": 0.72,
+    "release_year": 2018,
+    "is_seed_track": 0,
+    "is_seed_artist": 1,
+    "previously_recommended": 0
+  }
+}
+
+Two important non-feature fields should be present:
+
+gold_track_id should be included for every row, or stored in a separate group-level truth file. Without it, you cannot correctly score honest groups where the gold track was not retrieved, nor can you build the positive-injected oracle set.
+
+candidate_rank or candidate_order should record the deterministic pre-LTR order so you can break score ties reproducibly.
+
+Do not include group_id, session_id, user_id, track_id, gold_track_id, label, or any is_gold_injected flag as model features.
+
+2. Feature encoding
+
+Use LightGBM’s native handling for numeric missing values and categorical features. LightGBM’s ranking labels must be integer relevance labels where larger means more relevant, and LGBMRanker.fit() expects a group array whose entries are contiguous query/group sizes. LightGBM also supports categorical features via categorical_feature; categorical codes should be non-negative integers, and negative values are treated as missing. 
+LightGBM
+ 
+LightGBM
+
+Numeric features
+
+Keep these as float32 or small integer types:
+
+rrf_score
+rule_boost
+popularity
+log1p_popularity
+release_year
+release_age
+turn_number
+candidate_rank
+is_seed_track
+is_seed_artist
+is_seed_album
+is_seed_genre
+previously_recommended
+
+For release_year, add:
+
+release_age = reference_year - release_year
+
+Use reference_year = max catalog release_year or fixed 2026. Save that choice in metadata.
+
+Sparse per-source rank columns
+
+Do not one-hot the source ranks. Treat each source as a numeric feature with missingness:
+
+rank_bm25
+rank_dense
+rank_artist
+rank_tag
+rank_popularity
+
+For every rank column, add two derived features:
+
+Python
+运行
+rank_bm25_present = 1 if rank_bm25 is not null else 0
+rank_bm25_recip = 1 / log2(rank_bm25 + 1) if present else 0
+
+Recommended representation:
+
+rank_bm25          = NaN when candidate not produced by BM25
+rank_bm25_present  = 0/1
+rank_bm25_recip    = 0 when absent, reciprocal rank when present
+
+This lets LightGBM learn both “missing from this source” and “high rank in this source.” Avoid filling missing ranks with 999999 unless you also add presence flags; NaN + present flag is cleaner.
+
+Categorical features
+
+Treat these as categorical:
+
+intent
+category
+specificity
+
+Use fixed training-time vocabularies and save them. At inference, unseen categories should map to __UNK__; missing categories to __MISSING__.
+
+Example:
+
+Python
+运行
+cat_cols = ["intent", "category", "specificity"]
+
+for c in cat_cols:
+    observed = sorted(x for x in train_df[c].dropna().astype(str).unique()
+                      if x not in {"__MISSING__", "__UNK__"})
+    categories = ["__MISSING__", "__UNK__"] + observed
+    train_df[c] = train_df[c].fillna("__MISSING__").astype(str)
+    train_df.loc[~train_df[c].isin(categories), c] = "__UNK__"
+    train_df[c] = pd.Categorical(train_df[c], categories=categories)
+
+If specificity is truly ordinal, for example broad < category < artist < track, add an extra numeric feature such as specificity_level, but still keep the categorical version.
+
+3. Negative sampling
+
+For LambdaRank, each group needs at least one positive and at least one negative. Groups with no positive row produce no useful pairwise ranking signal.
+
+Use different policies for train and validation:
+
+Training sampling
+
+For each group_id:
+
+Keep all positive rows.
+
+Keep hard negatives from the top of your first-stage list, for example top 100–300 by rrf_score.
+
+Add a small random tail sample, for example 20–100 negatives, to avoid teaching the model only the already-near-top distribution.
+
+Keep special negatives such as previously_recommended=1 if they are common failure cases.
+
+Drop train groups with no positive unless you are doing positive injection.
+
+A good initial setting:
+
+max_negatives_per_group = 200
+hard_negatives_top_k    = 150
+random_tail_negatives   = 50
+
+For small candidate sets, keep all negatives.
+
+Positive injection for training
+
+If many training groups lack the gold track, create a training variant where the gold track is appended as a positive candidate.
+
+Rules:
+
+Compute features for the injected positive exactly as you would for any candidate.
+
+Source ranks should be NaN if the candidate was not actually retrieved by that source.
+
+Do not include is_gold_injected as a feature.
+
+Keep is_gold_injected only as metadata for auditing.
+
+Train at least two variants if time allows:
+
+A. retrieved_only_ltr:
+   train only on groups where gold was naturally retrieved
+
+B. pos_injected_ltr:
+   inject missing positives into train groups
+
+Then evaluate both on honest validation. If pos_injected_ltr helps honest validation, keep it; if it only helps oracle validation, it is overfitting to an unrealistic training distribution.
+
+4. Validation split by session/user
+
+Use group-level splits, never row-level splits.
+
+Preferred split:
+
+user-level split:
+  all sessions and turns for a user go either train or validation
+
+Fallback split:
+
+session-level split:
+  all turns for a session go either train or validation
+
+Do not split individual session-turn groups across train/validation.
+
+Practical recommendation:
+
+Primary local validation: user-level 80/20
+Secondary diagnostic: session-level 80/20
+Official model selection: train on train, validate on official dev if available
+
+The official evaluator reports nDCG@1, nDCG@10, and nDCG@20 over the development set, macro-averaged over turns and sessions; it also checks diversity metrics and requires valid, unique, ordered track IDs in predicted_track_ids. 
+GitHub
+
+5. Group arrays for LightGBM
+
+After sorting by group_id, the LightGBM group array is simply the number of rows per contiguous group:
+
+Python
+运行
+df = df.sort_values(["group_id", "candidate_rank"], kind="mergesort")
+group = df.groupby("group_id", sort=False).size().to_numpy()
+assert group.sum() == len(df)
+
+Do this separately for train and validation.
+
+For early stopping, feed LightGBM a validation set where every group has at least one positive. For honest end-to-end validation, compute your own metric externally, because honest candidate sets can have no positive row when retrieval missed the gold track.
+
+6. Training script skeleton
+
+Create train_lgbm_ltr.py.
+
+Python
+运行
+#!/usr/bin/env python3
+
+import argparse
+import json
+import math
+from pathlib import Path
+
+import lightgbm as lgb
+import numpy as np
+import pandas as pd
+
+
+ID_COLS = {
+    "group_id",
+    "session_id",
+    "user_id",
+    "turn_number",
+    "track_id",
+    "gold_track_id",
+    "label",
+    "candidate_rank",
+    "is_gold_injected",
+}
+
+DEFAULT_CAT_COLS = ["intent", "category", "specificity"]
+
+
+def read_jsonl(path: str) -> pd.DataFrame:
+    rows = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            r = json.loads(line)
+            feats = r.pop("features", {})
+            rows.append({**r, **feats})
+    return pd.DataFrame(rows)
+
+
+def add_rank_features(df: pd.DataFrame) -> pd.DataFrame:
+    rank_cols = [
+        c for c in df.columns
+        if c.startswith("rank_") or c.startswith("source_rank_")
+    ]
+
+    for c in rank_cols:
+        df[c] = pd.to_numeric(df[c], errors="coerce").astype("float32")
+        df[f"{c}_present"] = df[c].notna().astype("int8")
+        df[f"{c}_recip"] = np.where(
+            df[c].notna() & (df[c] > 0),
+            1.0 / np.log2(df[c].astype("float32") + 1.0),
+            0.0,
+        ).astype("float32")
+
+    return df
+
+
+def add_numeric_transforms(df: pd.DataFrame, reference_year: int | None = None):
+    if "popularity" in df.columns:
+        df["popularity"] = pd.to_numeric(df["popularity"], errors="coerce").astype("float32")
+        df["log1p_popularity"] = np.log1p(df["popularity"].clip(lower=0)).astype("float32")
+
+    if "release_year" in df.columns:
+        df["release_year"] = pd.to_numeric(df["release_year"], errors="coerce").astype("float32")
+        if reference_year is None:
+            reference_year = int(np.nanmax(df["release_year"].values))
+        df["release_age"] = (reference_year - df["release_year"]).astype("float32")
+
+    return df, reference_year
+
+
+def split_by_key(df: pd.DataFrame, key_col: str, valid_frac: float, seed: int):
+    keys = df[key_col].dropna().astype(str).unique()
+    rng = np.random.default_rng(seed)
+    rng.shuffle(keys)
+
+    n_valid = max(1, int(round(len(keys) * valid_frac)))
+    valid_keys = set(keys[:n_valid])
+
+    valid = df[df[key_col].astype(str).isin(valid_keys)].copy()
+    train = df[~df[key_col].astype(str).isin(valid_keys)].copy()
+    return train, valid
+
+
+def sample_negatives(
+    df: pd.DataFrame,
+    max_negatives_per_group: int,
+    hard_top_k: int,
+    random_tail_k: int,
+    seed: int,
+) -> pd.DataFrame:
+    out = []
+
+    sort_col = "rrf_score" if "rrf_score" in df.columns else "candidate_rank"
+
+    for gid, g in df.groupby("group_id", sort=False):
+        pos = g[g["label"] > 0]
+        neg = g[g["label"] <= 0]
+
+        if len(pos) == 0 or len(neg) == 0:
+            continue
+
+        if sort_col == "candidate_rank":
+            neg_sorted = neg.sort_values(sort_col, ascending=True, kind="mergesort")
+        else:
+            neg_sorted = neg.sort_values(sort_col, ascending=False, kind="mergesort")
+
+        hard = neg_sorted.head(hard_top_k)
+
+        remaining = neg_sorted.iloc[hard_top_k:]
+        n_tail = min(random_tail_k, max(0, max_negatives_per_group - len(hard)), len(remaining))
+
+        if n_tail > 0:
+            # Stable per-group random seed.
+            gid_seed = (abs(hash(str(gid))) + seed) % (2**32)
+            tail = remaining.sample(n=n_tail, random_state=gid_seed)
+            keep = pd.concat([pos, hard, tail], axis=0)
+        else:
+            keep = pd.concat([pos, hard], axis=0)
+
+        keep = keep.drop_duplicates("track_id")
+        out.append(keep)
+
+    if not out:
+        raise ValueError("No train groups with both positives and negatives after sampling.")
+
+    return pd.concat(out, axis=0, ignore_index=True)
+
+
+def keep_groups_with_positive(df: pd.DataFrame) -> pd.DataFrame:
+    has_pos = df.groupby("group_id")["label"].transform("max") > 0
+    has_two = df.groupby("group_id")["label"].transform("size") >= 2
+    return df[has_pos & has_two].copy()
+
+
+def build_feature_spec(train_df: pd.DataFrame, explicit_cat_cols=None):
+    cat_cols = [c for c in (explicit_cat_cols or DEFAULT_CAT_COLS) if c in train_df.columns]
+
+    excluded = set(ID_COLS)
+    excluded.update(["features"])
+
+    feature_cols = []
+    for c in train_df.columns:
+        if c in excluded:
+            continue
+        if train_df[c].dtype == "object" and c not in cat_cols:
+            continue
+        feature_cols.append(c)
+
+    # Ensure cat cols are included.
+    for c in cat_cols:
+        if c not in feature_cols:
+            feature_cols.append(c)
+
+    feature_cols = sorted(set(feature_cols), key=feature_cols.index)
+
+    cat_maps = {}
+    for c in cat_cols:
+        values = train_df[c].fillna("__MISSING__").astype(str)
+        observed = sorted(v for v in values.unique() if v not in {"__MISSING__", "__UNK__"})
+        cat_maps[c] = ["__MISSING__", "__UNK__"] + observed
+
+    return {
+        "feature_cols": feature_cols,
+        "cat_cols": cat_cols,
+        "cat_maps": cat_maps,
+    }
+
+
+def apply_feature_spec(df: pd.DataFrame, spec: dict) -> pd.DataFrame:
+    df = df.copy()
+
+    for c in spec["feature_cols"]:
+        if c not in df.columns:
+            df[c] = np.nan
+
+    for c in spec["cat_cols"]:
+        categories = spec["cat_maps"][c]
+        df[c] = df[c].fillna("__MISSING__").astype(str)
+        df.loc[~df[c].isin(categories), c] = "__UNK__"
+        df[c] = pd.Categorical(df[c], categories=categories)
+
+    for c in spec["feature_cols"]:
+        if c in spec["cat_cols"]:
+            continue
+        df[c] = pd.to_numeric(df[c], errors="coerce").astype("float32")
+
+    return df[spec["feature_cols"]]
+
+
+def make_lgb_arrays(df: pd.DataFrame, spec: dict):
+    df = df.sort_values(["group_id", "candidate_rank"], kind="mergesort").copy()
+
+    X = apply_feature_spec(df, spec)
+    y = df["label"].astype("int32").to_numpy()
+    group = df.groupby("group_id", sort=False).size().to_numpy(dtype=np.int32)
+
+    assert int(group.sum()) == len(df)
+    return X, y, group, df
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--jsonl", required=True)
+    ap.add_argument("--out_dir", required=True)
+    ap.add_argument("--split_key", choices=["user_id", "session_id"], default="user_id")
+    ap.add_argument("--valid_frac", type=float, default=0.2)
+    ap.add_argument("--seed", type=int, default=42)
+
+    ap.add_argument("--max_negatives_per_group", type=int, default=200)
+    ap.add_argument("--hard_top_k", type=int, default=150)
+    ap.add_argument("--random_tail_k", type=int, default=50)
+
+    args = ap.parse_args()
+
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    df = read_jsonl(args.jsonl)
+    df["label"] = pd.to_numeric(df["label"], errors="coerce").fillna(0).astype("int32")
+
+    if "candidate_rank" not in df.columns:
+        df["candidate_rank"] = df.groupby("group_id").cumcount() + 1
+
+    df = add_rank_features(df)
+    df, reference_year = add_numeric_transforms(df)
+
+    train_df, valid_df = split_by_key(df, args.split_key, args.valid_frac, args.seed)
+
+    train_df = sample_negatives(
+        train_df,
+        max_negatives_per_group=args.max_negatives_per_group,
+        hard_top_k=args.hard_top_k,
+        random_tail_k=args.random_tail_k,
+        seed=args.seed,
+    )
+
+    # For LightGBM early stopping, use only validation groups where gold is present.
+    valid_for_es = keep_groups_with_positive(valid_df)
+
+    spec = build_feature_spec(train_df)
+    spec["reference_year"] = reference_year
+    spec["split_key"] = args.split_key
+    spec["negative_sampling"] = {
+        "max_negatives_per_group": args.max_negatives_per_group,
+        "hard_top_k": args.hard_top_k,
+        "random_tail_k": args.random_tail_k,
+        "seed": args.seed,
+    }
+
+    X_train, y_train, group_train, train_df_sorted = make_lgb_arrays(train_df, spec)
+    X_valid, y_valid, group_valid, valid_df_sorted = make_lgb_arrays(valid_for_es, spec)
+
+    ranker = lgb.LGBMRanker(
+        objective="lambdarank",
+        metric="ndcg",
+        n_estimators=3000,
+        learning_rate=0.03,
+        num_leaves=63,
+        max_depth=-1,
+        min_child_samples=40,
+        subsample=0.85,
+        subsample_freq=1,
+        colsample_bytree=0.85,
+        reg_alpha=0.0,
+        reg_lambda=2.0,
+        label_gain=[0, 1],
+        lambdarank_truncation_level=20,
+        random_state=args.seed,
+        n_jobs=-1,
+        importance_type="gain",
+    )
+
+    ranker.fit(
+        X_train,
+        y_train,
+        group=group_train,
+        eval_set=[(X_valid, y_valid)],
+        eval_group=[group_valid],
+        eval_at=[1, 10, 20],
+        eval_metric="ndcg",
+        categorical_feature=spec["cat_cols"],
+        callbacks=[
+            lgb.early_stopping(stopping_rounds=100, verbose=True),
+            lgb.log_evaluation(period=50),
+        ],
+    )
+
+    model_path = out_dir / "lgbm_lambdarank.txt"
+    spec_path = out_dir / "feature_spec.json"
+
+    ranker.booster_.save_model(str(model_path), num_iteration=ranker.best_iteration_)
+
+    spec["best_iteration"] = int(ranker.best_iteration_ or ranker.n_estimators_)
+    spec["feature_importance_gain"] = {
+        name: float(val)
+        for name, val in zip(ranker.feature_name_, ranker.feature_importances_)
+    }
+
+    with open(spec_path, "w", encoding="utf-8") as f:
+        json.dump(spec, f, indent=2, ensure_ascii=False)
+
+    print(f"Saved model to {model_path}")
+    print(f"Saved feature spec to {spec_path}")
+
+
+if __name__ == "__main__":
+    main()
+
+Initial command:
+
+Bash
+python train_lgbm_ltr.py \
+  --jsonl data/ltr_train.jsonl \
+  --out_dir models/lgbm_ltr_user_split \
+  --split_key user_id \
+  --valid_frac 0.2 \
+  --max_negatives_per_group 200 \
+  --hard_top_k 150 \
+  --random_tail_k 50
+7. Local metric implementation
+
+Use three metric layers.
+
+Layer A: candidate generation ceiling
+
+Before reranking:
+
+candidate_recall@N = fraction of session-turn groups where gold_track_id is present in the candidate set
+
+For top-20 output:
+
+base_rrf_nDCG@1/10/20
+base_rrf_hit@20
+
+This tells you whether retrieval is the bottleneck.
+
+Layer B: reranker on same candidate set
+
+After LightGBM reranking:
+
+lgbm_nDCG@1/10/20
+lgbm_hit@20
+lgbm_mrr@20
+
+With one gold track per turn:
+
+Python
+运行
+def ndcg_single_gold(rank_1_based: int | None, k: int) -> float:
+    if rank_1_based is None or rank_1_based > k:
+        return 0.0
+    return 1.0 / math.log2(rank_1_based + 1)
+
+Macro-average by session, not just by row count:
+
+1. compute metric per session-turn
+2. average over turns within each session
+3. average over sessions
+
+That mirrors the official evaluator’s macro-averaging description. 
+GitHub
+
+Layer C: official dev evaluator
+
+Write the official JSON and run:
+
+Bash
+python evaluate_devset.py --eval_dataset devset --tid my_lgbm_ltr
+
+The required prediction fields are session_id, user_id, turn_number, predicted_track_ids, and predicted_response; predicted_track_ids must be unique, valid catalog IDs, ordered by relevance, and length ≤ 20. 
+GitHub
+
+8. Inference integration
+
+Create rerank_with_lgbm.py that consumes candidate JSONL from your retrieval/export pipeline and writes official inference JSON.
+
+Key steps:
+
+Generate candidates from the full track catalog.
+
+Compute exactly the same features as in training.
+
+Add missing train-time feature columns with NaN.
+
+Apply saved categorical vocabularies.
+
+Predict LightGBM scores.
+
+Sort within each group_id.
+
+Deduplicate track IDs.
+
+Return top 20.
+
+Backfill only if fewer than 20 candidates are available.
+
+Skeleton:
+
+Python
+运行
+#!/usr/bin/env python3
+
+import argparse
+import json
+from pathlib import Path
+
+import lightgbm as lgb
+import numpy as np
+import pandas as pd
+
+from train_lgbm_ltr import (
+    read_jsonl,
+    add_rank_features,
+    add_numeric_transforms,
+    apply_feature_spec,
+)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--candidates_jsonl", required=True)
+    ap.add_argument("--model", required=True)
+    ap.add_argument("--feature_spec", required=True)
+    ap.add_argument("--out_json", required=True)
+    ap.add_argument("--default_response", default="Here are some songs you might enjoy.")
+    args = ap.parse_args()
+
+    with open(args.feature_spec, "r", encoding="utf-8") as f:
+        spec = json.load(f)
+
+    df = read_jsonl(args.candidates_jsonl)
+
+    if "candidate_rank" not in df.columns:
+        df["candidate_rank"] = df.groupby("group_id").cumcount() + 1
+
+    df = add_rank_features(df)
+    df, _ = add_numeric_transforms(df, reference_year=spec.get("reference_year"))
+
+    X = apply_feature_spec(df, spec)
+
+    booster = lgb.Booster(model_file=args.model)
+    df["lgbm_score"] = booster.predict(
+        X,
+        num_iteration=spec.get("best_iteration"),
+    )
+
+    tie_cols = []
+    ascending = []
+
+    tie_cols.extend(["group_id", "lgbm_score"])
+    ascending.extend([True, False])
+
+    if "rrf_score" in df.columns:
+        tie_cols.append("rrf_score")
+        ascending.append(False)
+
+    tie_cols.append("candidate_rank")
+    ascending.append(True)
+
+    df = df.sort_values(tie_cols, ascending=ascending, kind="mergesort")
+
+    outputs = []
+
+    for (session_id, user_id, turn_number), g in df.groupby(
+        ["session_id", "user_id", "turn_number"], sort=False
+    ):
+        seen = set()
+        track_ids = []
+
+        for tid in g["track_id"].astype(str).tolist():
+            if tid in seen:
+                continue
+            seen.add(tid)
+            track_ids.append(tid)
+            if len(track_ids) >= 20:
+                break
+
+        outputs.append({
+            "session_id": str(session_id),
+            "user_id": str(user_id),
+            "turn_number": int(turn_number),
+            "predicted_track_ids": track_ids,
+            "predicted_response": args.default_response,
+        })
+
+    out_path = Path(args.out_json)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(outputs, f, ensure_ascii=False, indent=2)
+
+    print(f"Wrote {len(outputs)} predictions to {out_path}")
+
+
+if __name__ == "__main__":
+    main()
+
+Example:
+
+Bash
+python rerank_with_lgbm.py \
+  --candidates_jsonl exp/candidates/devset_candidates.jsonl \
+  --model models/lgbm_ltr_user_split/lgbm_lambdarank.txt \
+  --feature_spec models/lgbm_ltr_user_split/feature_spec.json \
+  --out_json exp/inference/devset/lgbm_ltr_devset.json
+9. Honest end-to-end vs positive-injected oracle
+
+You should report both, but label them clearly.
+
+Honest end-to-end
+
+This is the real setting.
+
+retriever/rules/RRF candidates
+→ LightGBM rerank
+→ top-20 predictions
+→ official/dev metric
+
+No gold insertion. If the retriever misses the gold track, that turn gets nDCG 0 no matter how good the reranker is.
+
+Report:
+
+candidate_recall@candidate_pool_size
+candidate_recall@20 before LTR
+base_RRF nDCG@1/10/20
+LGBM nDCG@1/10/20
+official evaluator score
+
+This is the number you should use for leaderboard-facing claims.
+
+Positive-injected oracle
+
+This is a diagnostic upper-bound setting.
+
+same validation candidates
++ append gold track if missing
+→ compute features
+→ LightGBM rerank
+→ top-20 metric
+
+Exclude is_gold_injected from features.
+
+Report:
+
+LGBM oracle nDCG@1/10/20
+oracle-hit@20
+delta = oracle nDCG@20 - honest nDCG@20
+
+Interpretation:
+
+honest low, oracle high:
+  retrieval/candidate generation is the bottleneck
+
+honest low, oracle also low:
+  reranker/features are weak
+
+base RRF high, LGBM lower:
+  LGBM is overfitting or feature encoding/sampling is wrong
+
+oracle nDCG@1 high but honest recall low:
+  focus on retrieval expansion, not reranking
+
+A clean experiment table:
+
+Run	Validation candidates	Train candidates	Gold injected at validation?	Claim type
+base_rrf_honest	natural	none	no	real baseline
+lgbm_honest	natural	natural or train-injected	no	real reranker
+base_rrf_oracle	natural + gold	none	yes	diagnostic
+lgbm_oracle	natural + gold	natural or train-injected	yes	diagnostic upper bound
+
+Do not compare lgbm_oracle directly to leaderboard scores. Use it to decide whether to improve candidate generation or the reranker.
+
+10. Hyperparameter starting point
+
+Start with:
+
+Python
+运行
+params = dict(
+    objective="lambdarank",
+    metric="ndcg",
+    eval_at=[1, 10, 20],
+    label_gain=[0, 1],
+    lambdarank_truncation_level=20,
+
+    n_estimators=3000,
+    learning_rate=0.03,
+    num_leaves=63,
+    min_child_samples=40,
+    subsample=0.85,
+    subsample_freq=1,
+    colsample_bytree=0.85,
+    reg_lambda=2.0,
+    random_state=42,
+)
+
+Tune in this order:
+
+max_negatives_per_group: 50, 100, 200, 500
+learning_rate / n_estimators: 0.03 with early stopping first
+num_leaves: 31, 63, 127
+min_child_samples: 20, 40, 80, 150
+reg_lambda: 0, 1, 2, 5, 10
+lambdarank_truncation_level: 10, 20, 50
+
+Optimize primarily for nDCG@20, but watch nDCG@1; the official evaluator includes nDCG at 1, 10, and 20. 
+GitHub
+
+11. Sanity checks before trusting results
+
+Run these checks after every export:
+
+Python
+运行
+# One group should not span train and validation.
+assert not set(train_df.group_id) & set(valid_df.group_id)
+
+# If splitting by user:
+assert not set(train_df.user_id) & set(valid_df.user_id)
+
+# Labels are binary for this task.
+assert set(df.label.unique()).issubset({0, 1})
+
+# Group array is valid.
+assert group_train.sum() == len(X_train)
+
+# No leakage columns.
+for bad in ["track_id", "gold_track_id", "label", "group_id", "session_id", "user_id", "is_gold_injected"]:
+    assert bad not in feature_cols
+
+# Validate candidate ceiling.
+candidate_recall = (
+    df.groupby("group_id")
+      .apply(lambda g: str(g.gold_track_id.iloc[0]) in set(g.track_id.astype(str)))
+      .mean()
+)
+print(candidate_recall)
+
+Also inspect feature importance. You should normally see useful gain from rrf_score, reciprocal rank features, rule boost, source presence, popularity/release features, and seed indicators. If previously_recommended dominates, check whether repeated recommendations are accidentally correlated with labels due to turn leakage.
+
+12. Recommended final workflow
+
+Use this as your experimental loop:
+
+1. Export natural train/dev candidates.
+2. Export train-positive-injected candidates as a separate file.
+3. Train LGBM on user-level split.
+4. Evaluate:
+   a. base RRF honest
+   b. LGBM honest
+   c. base RRF oracle
+   d. LGBM oracle
+5. If honest ≪ oracle:
+   improve retrieval / candidate pool / source fusion.
+6. If LGBM honest < base RRF honest:
+   fix sampling, leakage, feature encoding, or overfitting.
+7. Once stable:
+   train on all allowed training data.
+8. Run full-catalog inference on dev/blind candidates.
+9. Write official JSON.
+10. Run official dev evaluator before submission.
+
+The highest-value addition to your existing export_ltr_dataset.py is to emit two non-feature fields consistently: gold_track_id and candidate_rank. Everything else can be built cleanly from your existing feature set.
+
+来源
+
+进阶专业
+ChatGPT 也可能会犯错。请核查重要信息。

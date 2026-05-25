@@ -1,0 +1,641 @@
+You are helping me write a beginner-friendly technical report for RecSys Challenge 2026 Music-CRS. The reader is new to recommender-system competitions. My system is GoalFlow-MusicCRS: it starts from the official BM25+LLaMA baseline, builds conversation state, BM25 multi-source retrieval, train-context document augmentation, RRF fusion diagnostics, shifted progress-label feedback, LTR feature export, and official embedding-store scaffolding. Research question: propose a detailed report outline and 4-6 diagrams to explain the whole system to a beginner. For each diagram, describe exactly what boxes/arrows it should contain, what each technical term means, and how to explain baseline vs my additions and the observed results/pitfalls.
+
+收起
+
+我会先对齐官方挑战与基线术语，再把 GoalFlow-MusicCRS 组织成新人能理解的报告结构、流程图说明和经验教训。
+
+我也会把任务明确成“多轮对话+用户上下文→Top-20 曲目ID排序+自然语言回复”，并围绕 nDCG@20、多样性和回复评测来区分官方基线与新增模块。
+
+已思考 8m 22s
+
+Use the report as a story of increasing structure: the official baseline treats each turn mostly as a retrieval-and-response problem; GoalFlow-MusicCRS turns the dialogue into a stateful, inspectable ranking pipeline. The official task asks systems to use dialogue history and user context to output ranked track IDs and response text; the data includes multi-turn conversations, track metadata, user profiles, and official track/user embeddings. 
+RecSys
++1
+ The public baseline repo describes a two-stage system: RecSys retrieves candidate tracks with BM25 or BERT, then LLaMA-3.2-1B-Instruct generates the natural-language response. 
+GitHub
+ If your local implementation uses BM25+, describe it as your lexical baseline variant; BM25+ is a BM25 extension designed to reduce over-penalization of long documents by lower-bounding term-frequency normalization. 
+timan.cs.illinois.edu
++1
+
+Proposed report outline
+1. Abstract
+
+State the problem in one paragraph: “Given a music conversation up to the current turn, recommend up to 20 relevant tracks and optionally generate a response.” Then give the method: GoalFlow-MusicCRS starts from the official BM25/BM25+ plus LLaMA baseline and adds conversation state, multi-source lexical retrieval, train-context augmentation, RRF fusion diagnostics, shifted progress-label feedback, LTR feature export, and embedding-store scaffolding. End with a careful results sentence: “The main contribution is not a single black-box model but an interpretable pipeline that exposes where retrieval succeeds, where it fails, and which future reranking signals are ready.”
+
+2. Beginner introduction: what is Music-CRS?
+
+Explain conversational music recommendation as “search plus dialogue.” A normal recommender might say “users like this also liked that.” A conversational recommender must remember what the listener just said, infer goals like mood, genre, artist, era, or uncertainty, recommend tracks, and answer naturally. The challenge dataset contains train/development rows with session IDs, user profiles, conversation goals, conversation turns, and goal-progress assessments; the public dataset card shows 15.2k train rows and 1k test/development rows in the challenge dataset viewer. 
+Hugging Face
+
+Define the output format early. Each turn must produce session_id, user_id, turn_number, an ordered predicted_track_ids list of up to 20 unique valid track IDs, and predicted_response; order matters because higher-ranked tracks count more. 
+GitHub
+
+3. Baseline system: what the official starter code gives you
+
+Describe the baseline as a two-stage pipeline:
+
+Stage 1: RecSys retrieval. BM25/BM25+ searches a textual representation of the catalog. The official baseline also includes a dense BERT option. The item database contains fields such as track name, artist, album, tags, and release date; the user database stores demographic profile fields. 
+GitHub
+
+Stage 2: LLM response generation. LLaMA receives the retrieved tracks and writes a natural-language answer.
+
+Mention the key competition rule: during inference, systems must retrieve from the full catalog using all_tracks; the baseline README warns not to filter or subset the track catalog because doing so can invalidate evaluation. 
+GitHub
+
+Use the official dev baseline as the anchor point: the evaluator README reports LLaMA-1B + BM25 at nDCG@1 = 0.0098, nDCG@10 = 0.0627, nDCG@20 = 0.0815, catalog diversity = 0.3795, and lexical diversity = 0.2558. 
+GitHub
+
+4. Research question and hypotheses
+
+Suggested wording:
+
+Research question. Can a stateful, diagnostic retrieval pipeline improve or better explain conversational music recommendation compared with the official BM25/BM25+ plus LLaMA baseline?
+
+Then list hypotheses:
+
+H1: A structured conversation state makes vague user requests easier to search.
+H2: Multi-source BM25 retrieval improves recall because different document views catch different clues.
+H3: Train-context augmentation bridges the gap between natural conversation language and sparse track metadata.
+H4: RRF fusion improves robustness, but only when weak retrieval sources are diagnosed rather than blindly mixed.
+H5: Shifted progress labels can create useful weak supervision, but label alignment is noisy.
+H6: LTR features and embedding stores are scaffolding for future reranking, not automatically performance gains unless used in the final submitted ranker.
+
+5. Data representation
+
+Explain the three main data objects.
+
+Conversation record: one music-seeking session with multiple turns, user messages, music-track events, goal text, and goal-progress assessments.
+Track metadata: the searchable catalog. The track metadata dataset viewer shows fields such as track_id, ISRC, track_name, artist_name, album_name, tag_list, popularity, release_date, duration, artist_id, and album_id. 
+Hugging Face
+
+User metadata: demographic/profile data such as user_id, age, age group, country, and gender. 
+Hugging Face
+
+Then define the system’s internal representation: a document is the text searched by BM25/BM25+, and a candidate is a track retrieved for possible recommendation.
+
+6. Method: GoalFlow-MusicCRS
+
+Break this into beginner-friendly subsections.
+
+6.1 Conversation state builder. Converts raw dialogue into a compact state: current request, persistent preferences, rejected directions, previously played tracks, inferred constraints, and open questions.
+
+6.2 BM25 multi-source retrieval. Runs several lexical searches instead of one. Example sources: track metadata documents, tag-heavy documents, artist/album documents, conversation-state query, current-turn query, and augmented train-context documents. BM25 ranks documents by matching query terms while accounting for term frequency, term rarity, and document length; BM25+ adds a lower-bound correction for length normalization. 
+timan.cs.illinois.edu
+
+6.3 Train-context document augmentation. Adds training-only conversational language to searchable documents so the system can match user phrases like “rainy afternoon,” “early 2000s vibe,” or “aggressive gym track” even when catalog metadata is sparse. Make the no-leakage rule explicit: use training context only, never future turns or dev/test ground truth.
+
+6.4 RRF fusion and diagnostics. Reciprocal Rank Fusion combines several ranked lists by giving each item credit based on its rank in each list; the original RRF paper is Cormack, Clarke, and Buettcher, SIGIR 2009. 
+Google Research
+ In plain English: “A track that appears near the top of several sources should outrank a track that appears high in only one unreliable source.” Diagnostics show which retrieval source contributed each final track.
+
+6.5 Shifted progress-label feedback. The dataset includes goal-progress assessments, so your system can create weak labels. Explain the shift carefully: if an assessment at turn t + 1 reflects whether the previous recommendation helped, align that assessment back to the recommendation made at turn t. This is useful but noisy, so it belongs in an experimental/diagnostic section, not as guaranteed ground truth.
+
+6.6 LTR feature export. Learning to Rank means training a model to order candidate items using features and relevance labels; LTR is commonly described as constructing a ranking model from training data so new items can be sorted by relevance. 
+ACM Digital Library
+ Your export should create one row per (session, turn, candidate_track) with features such as BM25 scores, source ranks, RRF score, popularity, metadata matches, prior-track similarity, user-profile matches, and shifted label.
+
+6.7 Official embedding-store scaffolding. The challenge provides precomputed track and user embeddings; the track embedding dataset includes fields such as audio CLAP, image SigLIP2, collaborative-filtering BPR, attribute embeddings, lyric embeddings, and metadata embeddings. 
+Hugging Face
+ Explain this as “future dense retrieval/reranking infrastructure” unless it was actually used in your final predictions.
+
+7. Experimental setup
+
+Report:
+
+Dataset split used for development.
+Whether you used only all_tracks during inference.
+Which retrieval sources were enabled.
+Whether LLaMA response generation was changed or left as baseline.
+Which runs are final ranking runs versus diagnostic/export-only runs.
+Which random seeds, cache settings, and candidate cutoffs were used.
+
+The official evaluator computes retrieval nDCG@1, nDCG@10, and nDCG@20 across all 8 conversation turns, macro-averaged over sessions and turns; it also reports catalog diversity and lexical diversity. 
+GitHub
+
+8. Results
+
+Use one main table:
+
+Run	State	Multi-source BM25	Augmentation	RRF	Shifted labels	LTR used in final rank?	Embeddings used?	nDCG@1	nDCG@10	nDCG@20	Catalog diversity	Notes
+Official baseline	No	No	No	No	No	No	No	0.0098	0.0627	0.0815	0.3795	Anchor
+GoalFlow v1	Yes	Yes	No	Yes	No	No	No	…	…	…	…	Retrieval only
+GoalFlow v2	Yes	Yes	Yes	Yes	No	No	No	…	…	…	…	Augmented docs
+GoalFlow diagnostics	Yes	Yes	Yes	Yes	Yes	Export only	Scaffold only	…	…	…	…	Do not claim LTR/embedding lift
+
+This table prevents overclaiming. If LTR features or embeddings were only exported/scaffolded, mark them as not used in final rank.
+
+9. Error analysis and pitfalls
+
+Organize errors by beginner-friendly categories:
+
+Vocabulary mismatch: the listener says “dreamy rainy afternoon,” but metadata says “indie folk,” “acoustic,” or “melancholic.”
+Over-specific goals: the listener wants a half-remembered song; BM25 can miss it if the exact title/artist is absent from the query.
+Noisy tags: tag fields are broad, duplicated, or user-generated, so they can swamp better metadata.
+RRF source imbalance: RRF can rescue good candidates, but it can also promote popular false positives if several weak sources agree.
+Label shift noise: progress labels are useful feedback but may describe the conversation trajectory, not a clean track-level relevance judgment.
+Scaffolding vs result: feature export and embedding stores are engineering contributions, but they are not ranking improvements until connected to inference.
+
+10. Discussion
+
+Answer the research question directly. A strong discussion can say:
+
+“GoalFlow-MusicCRS improves the baseline mainly by making the retrieval process stateful and inspectable. The most valuable additions were conversation state, multi-source retrieval, and diagnostics. The riskiest additions were train-context augmentation and shifted feedback, because both can introduce leakage-like behavior or noisy supervision if not carefully aligned. LTR export and embedding-store scaffolding position the system for future hybrid ranking but should be reported as infrastructure unless used in submitted predictions.”
+
+11. Reproducibility checklist
+
+Include:
+
+Exact config names.
+Candidate cutoffs per source.
+RRF constant.
+Corpus fields used.
+Whether augmented documents were built from train only.
+Path to generated prediction JSON.
+Path to feature export files.
+Validation that every session × turn is present, every track ID is valid, there are no duplicate IDs per turn, and track IDs are ordered by relevance; these are also listed in the official evaluator’s validation guidance. 
+GitHub
+
+Diagram set: 6 beginner-friendly diagrams
+Diagram 1 — “What the challenge asks the system to do”
+
+Purpose: Put the reader before the model. This should be the first figure.
+
+Exact boxes and arrows:
+
+Left column, stacked input boxes:
+
+User profile
+Small text inside: age, country, gender, preferred culture if available
+
+Conversation so far
+Small text: turns 1…t: user messages, previous music items, responses
+
+Track catalog
+Small text: track_id, title, artist, album, tags, release date, popularity
+
+Optional official embeddings
+Small text: audio, image, collaborative, text embeddings
+
+Middle box:
+
+Music-CRS system
+Small text: understand request → retrieve tracks → rank → respond
+
+Right column, stacked output boxes:
+
+Ranked track IDs
+Small text: up to 20 unique tracks, best first
+
+Natural-language response
+Small text: short explanation or conversational reply
+
+Bottom evaluation box:
+
+Evaluator
+Small text: nDCG@1/10/20, catalog diversity, lexical diversity
+
+Arrows:
+
+User profile → Music-CRS system
+Conversation so far → Music-CRS system
+Track catalog → Music-CRS system
+Optional official embeddings → Music-CRS system
+Music-CRS system → Ranked track IDs
+Music-CRS system → Natural-language response
+Ranked track IDs → Evaluator
+Natural-language response → Evaluator
+
+Technical terms to define in the caption:
+
+Turn: one step in a multi-turn conversation.
+Track catalog: the full set of candidate songs that can be recommended.
+Ranked list: an ordered list where position 1 is the system’s best guess.
+nDCG: a ranking metric that gives more credit when relevant tracks appear near the top.
+
+Baseline vs your additions:
+
+Say: “The baseline already performs the middle-box task with BM25/BM25+ retrieval and LLaMA response generation. GoalFlow keeps the same input-output contract but expands what happens inside the system.”
+
+Observed results/pitfalls to explain:
+
+Use this diagram to warn readers that the output format is strict. A good model can still fail evaluation if it misses turns, outputs duplicate track IDs, uses invalid IDs, or retrieves from a filtered catalog instead of all_tracks.
+
+Suggested caption:
+
+Figure 1. Music-CRS input-output contract. The system receives user context, dialogue history, and the full track catalog, then outputs a ranked list of track IDs and a response for every turn.
+
+Diagram 2 — “Baseline pipeline vs GoalFlow-MusicCRS”
+
+Purpose: Show the whole system in one figure. Use color or line style: gray for official baseline, blue for GoalFlow additions.
+
+Exact boxes and arrows:
+
+Top row, gray baseline path:
+
+Dialogue history
+arrow to
+
+Baseline query builder
+arrow to
+
+BM25/BM25+ retriever
+arrow to
+
+Top-20 track IDs
+arrow to
+
+LLaMA response generator
+arrow to
+
+Submission JSON
+
+Second row, blue GoalFlow additions connected into the baseline:
+
+Conversation state builder
+arrow from Dialogue history
+arrow to Goal-aware query
+
+Goal-aware query
+arrow to BM25/BM25+ retriever
+
+Multi-source retrieval indexes
+arrows to BM25/BM25+ retriever
+small labels: metadata index, tag index, artist/album index, train-context index
+
+RRF fusion
+arrow from BM25/BM25+ retriever
+arrow to Top-20 track IDs
+
+Fusion diagnostics
+dashed arrow from RRF fusion
+
+Shifted label feedback
+dashed arrow from training conversations
+arrow to LTR feature export
+
+LTR feature export
+dashed arrow to future reranker
+
+Official embedding store
+dashed arrow to future hybrid retrieval/reranker
+
+Arrows:
+
+Dialogue history → Conversation state builder → Goal-aware query → BM25/BM25+ retriever
+Multi-source retrieval indexes → BM25/BM25+ retriever
+BM25/BM25+ retriever → RRF fusion → Top-20 track IDs
+Top-20 track IDs → LLaMA response generator → Submission JSON
+RRF fusion --dashed→ Fusion diagnostics
+Shifted label feedback → LTR feature export --dashed→ future reranker
+Official embedding store --dashed→ future hybrid retrieval/reranker
+
+Technical terms to define:
+
+Baseline query builder: the starter method that turns the dialogue into text for retrieval.
+Conversation state: a structured memory of the user’s goal and constraints.
+Multi-source retrieval: searching several versions of the catalog, not just one text field.
+RRF fusion: a rank-combining method that merges several candidate lists.
+Dashed arrow: diagnostic or future-facing component, not necessarily used in final scoring.
+
+Baseline vs your additions:
+
+State this explicitly in the figure legend:
+
+Gray = official baseline path.
+Blue solid = GoalFlow components used in final ranking.
+Blue dashed = diagnostics, training signal, or future scaffolding.
+
+Observed results/pitfalls to explain:
+
+This diagram is where you prevent the reader from thinking every box improved the leaderboard score. Say: “Only solid boxes on the inference path can affect submitted nDCG. Dashed boxes help analysis or future reranking but should not be credited as final-ranking gains unless connected to the final prediction path.”
+
+Suggested caption:
+
+Figure 2. GoalFlow-MusicCRS extends the official retrieval-plus-LLM baseline with state, multi-source retrieval, fusion, diagnostics, weak supervision, and embedding infrastructure.
+
+Diagram 3 — “Conversation state builder”
+
+Purpose: Explain the most beginner-important addition: the system remembers the conversation as structured fields.
+
+Exact boxes and arrows:
+
+Left side input boxes:
+
+Current user message
+Example text: “I want something mellow for a rainy afternoon.”
+
+Previous user messages
+Example text: “not too upbeat,” “male vocal preferred”
+
+Previously recommended / played tracks
+Example text: track IDs + metadata
+
+User profile
+Example text: country, age group, culture
+
+Conversation goal
+Example text: discover multiple mellow acoustic songs
+
+All arrows point into center box:
+
+State builder
+
+Center-to-right arrows into state fields:
+
+Intent
+Text: discover, find specific song, refine, reject
+
+Positive preferences
+Text: mellow, acoustic, dreamy, male vocal
+
+Negative preferences
+Text: not upbeat, not metal
+
+Hard constraints
+Text: artist, era, language, album, release period
+
+Soft constraints
+Text: mood, energy, similar-to, use case
+
+Conversation memory
+Text: already tried tracks, accepted/rejected directions
+
+Final arrow:
+
+State fields → Goal-aware retrieval query
+
+Technical terms to define:
+
+Intent: what the user is trying to do, such as discover broadly or find one specific song.
+Hard constraint: a condition that should not be violated, such as “Nine Inch Nails” or “from the 2000s.”
+Soft constraint: a preference that helps ranking but may be approximate, such as “dreamy” or “good for a rainy day.”
+Conversation memory: information from earlier turns that should influence the current turn.
+
+Baseline vs your additions:
+
+Baseline explanation: “The baseline can use dialogue text, but it does not explicitly separate persistent preferences, rejected directions, and current-turn constraints.”
+GoalFlow explanation: “GoalFlow turns raw text into reusable state fields before retrieval.”
+
+Observed results/pitfalls to explain:
+
+Explain that state helps when the user says “something like that but softer,” because “that” refers to previous recommendations. The pitfall is state drift: if the system incorrectly stores a preference, every later query can be biased. Recommend adding an error-analysis table with columns: turn, state field, correct?, effect on retrieval.
+
+Suggested caption:
+
+Figure 3. The conversation state builder converts messy dialogue into explicit retrieval constraints and memory.
+
+Diagram 4 — “BM25 multi-source retrieval, augmentation, and RRF fusion”
+
+Purpose: Show how GoalFlow generates and combines candidate tracks.
+
+Exact boxes and arrows:
+
+Top input box:
+
+Goal-aware query
+Example: mellow rainy afternoon acoustic male vocal not upbeat
+
+Arrows from query to four parallel retrieval lanes:
+
+Source A: Track metadata BM25
+Document text: title + artist + album + release date
+
+Source B: Tag/mood BM25
+Document text: tag_list + genre-like words + mood words
+
+Source C: Artist/album context BM25
+Document text: artist aliases + album families + era
+
+Source D: Train-context augmented BM25
+Document text: training-only phrases linked to tracks or styles
+
+Each source outputs a ranked list:
+
+Ranked list A
+
+Ranked list B
+
+Ranked list C
+
+Ranked list D
+
+All ranked-list boxes point into:
+
+RRF fusion
+
+RRF points into:
+
+Final candidate ranking
+
+RRF also points via dashed arrow to:
+
+Fusion diagnostics table
+
+Diagnostics table contains mini-columns:
+
+track_id | final rank | source ranks | RRF score | source count | notes
+
+Technical terms to define:
+
+BM25/BM25+: lexical search; it rewards tracks whose text contains important query words.
+Source: one searchable view of the catalog.
+Train-context augmentation: adding training-only conversational phrases to retrieval documents to bridge natural language and metadata.
+RRF score: a fused score based on ranks, not raw BM25 scores. A simple explanation is: “appearing high in multiple lists is better than appearing high in only one list.”
+Fusion diagnostics: logs that explain why a track was ranked.
+
+Baseline vs your additions:
+
+Baseline: one BM25/BM25+ retrieval path over selected corpus fields.
+GoalFlow: multiple retrieval paths plus RRF fusion and diagnostics.
+
+Observed results/pitfalls to explain:
+
+Use this figure to discuss two common observations.
+
+First, multi-source retrieval often improves candidate coverage because different fields capture different clues: title/artist for exact requests, tags for mood, release date for era, and train-context for conversational phrases.
+
+Second, it can hurt if weak sources are too noisy. For example, tag-heavy documents can retrieve broadly popular but irrelevant songs, and train-context augmentation can overfit training phrasing. RRF can make this harder to see because it merges lists cleanly; therefore, the diagnostic table is not optional.
+
+Suggested caption:
+
+Figure 4. GoalFlow retrieves candidates from several lexical views of the catalog and fuses them with RRF while logging which source supported each track.
+
+Diagram 5 — “Shifted progress labels and LTR feature export”
+
+Purpose: Explain the training/learning part without implying that it is automatically a final model.
+
+Exact boxes and arrows:
+
+Left side, chronological boxes:
+
+Turn t user request
+arrow to
+
+System recommends tracks at turn t
+arrow to
+
+User continues conversation
+arrow to
+
+Goal-progress assessment at turn t+1
+
+Curved arrow:
+
+Goal-progress assessment at turn t+1 → shifted label for turn t recommendation
+
+Center box:
+
+Shifted label alignment
+Text: MOVES_TOWARD_GOAL = positive/weak positive; DOES_NOT_MOVE_TOWARD_GOAL = weak negative
+
+Right side feature table box:
+
+LTR feature row
+Columns inside box:
+session_id
+turn_number
+track_id
+label
+bm25_metadata_score
+bm25_tag_score
+source_rank_metadata
+source_rank_tags
+rrf_score
+popularity
+artist_match
+era_match
+already_recommended
+user_profile_features
+
+Arrow:
+
+Shifted label alignment → LTR feature row
+
+Bottom future box:
+
+Future learning-to-rank reranker
+Dashed arrow from LTR feature row
+
+Technical terms to define:
+
+Goal-progress assessment: a label indicating whether the conversation moved toward the listener’s goal.
+Shifted label: a label moved backward one step so it supervises the recommendation that likely caused the later progress.
+Weak supervision: imperfect labels derived automatically rather than judged directly by humans.
+Feature: a numeric or categorical signal used by a later ranking model.
+LTR: learning a model that orders candidates using features and labels.
+
+Baseline vs your additions:
+
+Baseline: no learning loop from progress assessments.
+GoalFlow: converts assessments into weak labels and exports training rows for future reranking.
+
+Observed results/pitfalls to explain:
+
+Be explicit: “This component is an export/scaffolding contribution unless the trained reranker is used during inference.” The main pitfall is label ambiguity. A “does not move toward goal” assessment may reflect a bad response, a bad track, or an overly difficult user request. It is not a perfect track-level relevance label.
+
+Suggested caption:
+
+Figure 5. Shifted progress labels turn conversation-level feedback into weak supervision for future learning-to-rank experiments.
+
+Diagram 6 — “Evaluation and diagnostic dashboard”
+
+Purpose: Show how you interpreted results and avoided misleading conclusions.
+
+Exact boxes and arrows:
+
+Top row:
+
+Prediction JSON
+Text: one row per session × turn
+
+Arrow to:
+
+Official evaluator
+
+Evaluator points to three metric boxes:
+
+Ranking quality
+Text: nDCG@1, nDCG@10, nDCG@20
+
+Catalog behavior
+Text: catalog diversity
+
+Response behavior
+Text: lexical diversity
+
+Prediction JSON also points to diagnostic boxes:
+
+Per-turn nDCG plot
+Text: turn 1…8
+
+Source contribution chart
+Text: % final tracks from each retrieval source
+
+RRF overlap heatmap
+Text: which sources agree?
+
+Error-case gallery
+Text: query, state, top tracks, failure reason
+
+Submission validity checklist
+Text: all turns present, no duplicates, valid IDs, all_tracks
+
+Optional future box at bottom:
+
+Embedding-store readiness report
+Text: loaded embeddings, dimensions, missing IDs, nearest-neighbor sanity checks
+
+Arrows:
+
+Prediction JSON → Official evaluator → Ranking quality
+Official evaluator → Catalog behavior
+Official evaluator → Response behavior
+Prediction JSON → Per-turn nDCG plot
+Prediction JSON → Source contribution chart
+RRF logs → RRF overlap heatmap
+State logs + final candidates → Error-case gallery
+Prediction JSON → Submission validity checklist
+Official embeddings → Embedding-store readiness report
+
+Technical terms to define:
+
+nDCG@k: quality of the top k ranked tracks, with more credit for relevant tracks near the top.
+Catalog diversity: how much of the catalog the system uses across recommendations.
+Lexical diversity: variety of wording in generated responses.
+Overlap heatmap: a grid showing whether retrieval sources return the same candidates.
+Validity checklist: mechanical checks required before submission.
+
+Baseline vs your additions:
+
+Baseline results can be reported with official metrics only. GoalFlow adds diagnostic views that explain why the metrics changed.
+
+Observed results/pitfalls to explain:
+
+Use this diagram to discuss trade-offs. Higher catalog diversity is not automatically better if relevance drops. Higher lexical diversity is not useful if responses become less faithful. A retrieval source that increases candidate variety may lower nDCG if it adds noisy tracks. The report should separate official metric gains from debugging insights.
+
+Suggested caption:
+
+Figure 6. The evaluation dashboard separates official scoring from diagnostic evidence about where GoalFlow succeeds or fails.
+
+Recommended diagram order in the report
+
+Use the diagrams in this order:
+
+Challenge input-output map before the baseline section.
+
+Baseline vs GoalFlow overview at the start of the method section.
+
+Conversation state builder inside the state subsection.
+
+Multi-source retrieval + RRF inside the retrieval subsection.
+
+Shifted labels + LTR export inside the weak-supervision subsection.
+
+Evaluation dashboard at the start of the results section.
+
+This gives beginners a smooth path: first understand the task, then the baseline, then your additions, then the evidence.
+
+来源
+
+进阶专业
+ChatGPT 也可能会犯错。请核查重要信息。

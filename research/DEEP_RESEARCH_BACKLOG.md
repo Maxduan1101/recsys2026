@@ -11,7 +11,18 @@ This file tracks questions and optimization directions that deserve a dedicated 
    - Source diagnostics now confirm the hypothesis: `__best_single_source_rank__` reaches dev hit@20 `0.4715`, while current RRF reaches hit@20 `0.2595`.
    - Legacy-vs-fused delta diagnostic: RRF gains `446` top-20 hits and loses `212`, but demotes `642` legacy hits.
    - Pro answer saved at `research/pro_answers/tab2_rrf_source-weight_regression_fix.txt`.
+   - Source-gated experiment `goalflow_gated_head5` reached dev nDCG@20 `0.0787` and catalog diversity `0.4712`, so the current hand-written gates are useful as instrumentation but not yet a safe replacement for legacy-head protection.
+   - Additional Pro answer saved at `research/pro_answers/round2/tab1_source_gating_design.txt`.
    - Research/implementation need: source gating, intent-specific source weights, and/or learning-to-rank features over per-source ranks.
+
+0.5. **Public blind diversity bottleneck**
+   - Public Blind A submission reported by user: nDCG@20 `0.1935`, catalog diversity `0.0257`, lexical diversity `0.0125`, LLM judge `1.0`, composite `0.1006`.
+   - This indicates the ranking anchor is valuable on blind data, but global repetition and templated responses are major bottlenecks.
+   - Implemented `goalflow_taildiv_head15`: protect first 15 ranks, diversify only positions 16-20 with global repeat penalties and artist/album soft caps.
+   - Dev result: nDCG@20 `0.0818`, catalog diversity `0.7676`, lexical diversity `0.1019`.
+   - Blind candidate package: `experiments/goalflow_taildiv_head15/blindset_A/submission.zip`.
+   - Pro answers saved at `research/pro_answers/round3/tab1_blind_postprocessing_strategy.txt` and `research/pro_answers/round3/tab5_metadata_grounded_response_design.txt`.
+   - Open research: estimate online composite risk of `head15` vs `head20`, and try `head17/head18` if one more safer submission is needed.
 
 1. **Progress-label semantics**
    - Is `goal_progress_assessment[turn_number]` judging the recommendation in the same turn, or the transition into the next turn?
@@ -37,6 +48,7 @@ This file tracks questions and optimization directions that deserve a dedicated 
    - Warning: older `TalkPlayData-2-Track-Embeddings` has zero overlap with Challenge track UUIDs.
    - Implemented initial `goalflow/embeddings.py` store with per-channel raw/L2-normalized matrices and masks.
    - Pro answer saved at `research/pro_answers/tab4_music_crs_implementation_plan.txt`.
+   - Additional Pro answer saved at `research/pro_answers/round2/tab2_embedding-based_extension_design.txt`.
    - Recommended first implementation: official embedding store with per-channel masks + L2 normalization, then seed_metadata, seed_attributes, seed_cf, and user_cf channels before lyrics/audio/image direct-query work.
 
 5. **Candidate recall diagnostics**
@@ -51,6 +63,8 @@ This file tracks questions and optimization directions that deserve a dedicated 
    - Compare binary classification, pairwise ranker, and LambdaRank grouped by session-turn.
    - Hard negatives should include BM25, dense, same-artist wrong-track, same-album wrong-track, and popularity negatives.
    - First feature export is implemented in `scripts/export_ltr_dataset.py`; it writes JSONL rows grouped by dev session-turn with source-rank, RRF, rule boost, profile, seed, and track prior features.
+   - Pro answer saved at `research/pro_answers/round2/tab3_recsys_challenge_2026_plan.txt`.
+   - Round 3 Pro question is running in Chrome tab 2: prioritize LTR, embeddings, CF, cross-encoder, or response/diversity under limited time.
    - Next: decide feature matrix encoding, candidate sampling, and whether missed gold rows should be included for training or only diagnostics.
 
 7. **Cross-encoder reranking**
@@ -84,12 +98,24 @@ This file tracks questions and optimization directions that deserve a dedicated 
 
 15. **LLM-as-a-Judge response optimization**
    - Establish prompts and self-critique criteria for personalization and explanation quality without hallucinating metadata.
+   - Implemented metadata-grounded response variants keyed by session/turn. This raises dev lexical diversity from `0.0830` to `0.1019`.
+   - Pro answers saved at `research/pro_answers/round2/tab4_recsys_2026_response_generation.txt` and `research/pro_answers/round3/tab5_metadata_grounded_response_design.txt`.
 
 16. **Distinct-2 vs. naturalness tradeoff**
    - Template diversity can inflate lexical diversity but may hurt Gemini quality. Need controlled eval.
 
 17. **Global catalog-diversity post-processing**
    - Current top-5 is protected and positions 6-20 are lightly diversified. Research stronger xQuAD/MMR settings without damaging nDCG.
+   - `taildiv_head10` reached dev catalog diversity `0.8323` but nDCG@20 only `0.0721`.
+   - `taildiv_head15` reached dev catalog diversity `0.7676` with nDCG@20 `0.0818`; this is the current best diversity/ranking tradeoff candidate.
+   - Pro answer saved at `research/pro_answers/round3/tab3_catalog_diversity_optimization.txt`.
+
+## Evaluation Research
+
+21. **Dev/blind mismatch**
+   - Local dev nDCG around `0.08` aligns with the official baseline expectation, while public Blind A feedback showed `0.1935`.
+   - Possible causes include Blind A containing only selected/prefix turns, distribution shift, or different public split difficulty.
+   - Round 3 Pro question is running in Chrome tab 4 to design a robust validation protocol and grouped diagnostics.
 
 ## Engineering
 

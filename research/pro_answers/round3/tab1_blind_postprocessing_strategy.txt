@@ -1,0 +1,1168 @@
+You are advising a RecSys Challenge 2026 Music-CRS system. New public blind submission metrics are: nDCG@20=0.1935, catalog_diversity=0.0257, lexical_diversity=0.0125, llm_judge_score=1.0, composite=0.1006. The current system is a conservative BM25/legacy-head baseline with good ranking but extremely repeated tracks and templated responses. Research question: design a low-risk post-processing strategy to raise catalog diversity and response lexical diversity while preserving most of the nDCG@20. Include concrete formulas, safe top-k protection, global repeat penalties, artist/album caps, exception rules for exact artist/album queries, and ablation experiments.
+
+
+我会把方案限定为不重训的保守后处理：保护BM25高置信头部，只在可替换尾部用受控重排、重复惩罚和文本改写提升多样性，同时核对公开赛制约束。
+
+我还会按指标行为来调参：当前 composite 几乎等于 0.5nDCG@20+0.1catalog_diversity+0.1*lexical_diversity，且多样性是全局统计，因此小幅、保排名的全局去重可能最划算。
+
+已思考 12m 6s
+Recommendation: add a conservative exposure-aware reranker plus a metadata-grounded response realizer
+
+The challenge is explicitly dual-output: systems take dialogue/user context, return ranked track recommendations, and generate coherent natural-language responses. Evaluation covers both recommendation and response quality, including nDCG@20, catalog diversity, lexical diversity, and LLM-as-judge. Lexical diversity is measured as Distinct-2, so repeated boilerplate is directly punished. 
+RecSys
+ 
+推荐系统挑战赛
+
+Your reported composite is almost exactly consistent with:
+
+score=0.50nDCG@20+0.10catalog_div+0.10lexical_div+0.30judge_norm
+
+with
+
+judge_norm=
+4
+judge−1
+	​
+
+.
+
+For your run:
+
+0.50(0.1935)+0.10(0.0257)+0.10(0.0125)+0.30(0)=0.10057.
+
+So the safe optimization target is: do not disturb the top of the ranked list, diversify lower slots aggressively, and rewrite responses without hallucinating. A 0.005 nDCG drop costs 0.0025 composite points, so diversity gains must be real; but slots 11–20 are cheap in nDCG and still count toward catalog diversity.
+
+1. Query intent classifier: decide when diversity is allowed
+
+Before reranking, classify each dialogue into one of four intent types.
+
+z(q)∈{exact_track,exact_album,exact_artist,broad}
+
+Use exact/fuzzy catalog matching over the latest user turn plus dialogue history.
+
+Exact artist
+
+Trigger when the user says things like:
+
+“songs by Radiohead”
+
+“more Taylor Swift”
+
+“recommend Kendrick tracks”
+
+“I want The Beatles”
+
+Rule:
+
+exact_artist=1if
+a∈A
+max
+	​
+
+fuzzy_match(q,a)≥0.95
+
+and the utterance contains an artist-intent cue: by, artist, band, singer, from, more, tracks by.
+
+Exact album
+
+Trigger when the user asks for a named album or songs from it:
+
+exact_album=1if
+m∈M
+max
+	​
+
+fuzzy_match(q,m)≥0.95
+
+and the utterance contains album, record, from, off, songs on.
+
+Exact track
+
+Trigger when the user names a track and asks for that track or close variants. For “similar to X,” treat the named track as an anchor but not as a hard catalog constraint.
+
+Broad
+
+Everything else: mood, genre, era, activity, “something like,” “more upbeat,” “indie rock,” “chill dinner,” etc. These are the best candidates for diversification.
+
+2. Candidate pool and score normalization
+
+Keep the current BM25/legacy ranker as the retrieval backbone. For each query q, take the top L candidates:
+
+C
+q
+	​
+
+={i
+1
+	​
+
+,…,i
+L
+	​
+
+},L=100 or 200.
+
+Normalize the base score within the query:
+
+s
+^
+qi
+	​
+
+=
+max
+j∈C
+q
+	​
+
+	​
+
+s
+qj
+	​
+
+−min
+j∈C
+q
+	​
+
+	​
+
+s
+qj
+	​
+
++ϵ
+s
+qi
+	​
+
+−min
+j∈C
+q
+	​
+
+	​
+
+s
+qj
+	​
+
+	​
+
+.
+
+If BM25 scores are unstable, blend score and original rank:
+
+s
+^
+qi
+∗
+	​
+
+=0.7
+s
+^
+qi
+	​
+
++0.3exp(−
+20
+r
+qi
+	​
+
+−1
+	​
+
+).
+
+Use 
+s
+^
+qi
+∗
+	​
+
+ as the relevance proxy.
+
+3. Safe top-k protection
+
+Use a protected prefix to preserve nDCG. MMR-style reranking is a standard way to reduce redundancy while maintaining relevance, but here it should be applied only after the safest slots are protected. 
+ACL Anthology
+
+Recommended default:
+
+B(q)=
+⎩
+⎨
+⎧
+	​
+
+10
+8
+5
+3
+20
+	​
+
+exact_album
+exact_artist
+broad
+similar-to-track
+very high-confidence exact-track lookup
+	​
+
+
+For broad queries:
+
+positions 1–3: hard frozen;
+
+positions 4–5: semi-frozen;
+
+positions 6–20: exposure-aware diversified reranking.
+
+Semi-frozen rule for positions 4–5:
+
+Replace a protected item only when all are true:
+
+E
+track
+	​
+
+(i)≥T
+hot
+	​
+
+,
+r
+qj
+	​
+
+≤10,
+s
+^
+qj
+∗
+	​
+
+≥
+s
+^
+qi
+∗
+	​
+
+−0.02,
+
+and the query is not exact artist/album/track.
+
+A good starting value:
+
+T
+hot
+	​
+
+=3
+
+meaning a track already emitted at least three times can be replaced from positions 4–5, but only by a near-tie candidate.
+
+4. Local artist and album caps
+
+For broad queries, enforce hard caps after the protected prefix.
+
+Broad-query caps
+
+Top 10:
+
+artist_count
+1:10
+	​
+
+(a)≤2
+album_count
+1:10
+	​
+
+(m)≤1
+
+Top 20:
+
+artist_count
+1:20
+	​
+
+(a)≤3
+album_count
+1:20
+	​
+
+(m)≤2.
+
+If the protected prefix already violates a cap, do not remove protected items. Instead define an effective cap:
+
+cap
+′
+(a)=max(cap(a),count
+1:B
+	​
+
+(a)).
+
+Then prevent adding more items from that artist/album later.
+
+Exact artist exception
+
+If the user explicitly asks for artist a
+∗
+, disable the artist cap for a
+∗
+:
+
+artist_cap(a
+∗
+)=20.
+
+But keep album caps within that artist, because “songs by Artist X” can still benefit from album spread:
+
+album_count
+1:20
+	​
+
+(m)≤3.
+
+Do not penalize the target artist globally for exact-artist queries; only penalize repeated tracks.
+
+Exact album exception
+
+If the user explicitly asks for album m
+∗
+, disable the album cap for m
+∗
+:
+
+album_cap(m
+∗
+)=20.
+
+For “songs from album m
+∗
+,” restrict candidates to that album when enough candidates exist:
+
+C
+q
+′
+	​
+
+={i∈C
+q
+	​
+
+:album(i)=m
+∗
+}.
+
+If fewer than 20 candidates are available, fill the remainder from same artist, then same genre/mood.
+
+Exact track exception
+
+If the user wants a specific track, pin it:
+
+π
+q
+	​
+
+(1)=i
+∗
+
+where i
+∗
+ is the matched track. Do not globally suppress it. For “similar to track i
+∗
+,” keep it only as an anchor; diversify the rest.
+
+5. Global repeat penalties across the whole submission
+
+The current catalog diversity of 0.0257 strongly suggests the system is repeatedly emitting the same head tracks. The most reliable post-processing gain is therefore global exposure control.
+
+Maintain weighted exposure counters while generating the full submission:
+
+E
+track
+	​
+
+(i)=
+(q,p):π
+q
+	​
+
+(p)=i
+∑
+	​
+
+w
+p
+	​
+
+E
+artist
+	​
+
+(a)=
+(q,p):artist(π
+q
+	​
+
+(p))=a
+∑
+	​
+
+w
+p
+	​
+
+E
+album
+	​
+
+(m)=
+(q,p):album(π
+q
+	​
+
+(p))=m
+∑
+	​
+
+w
+p
+	​
+
+
+with position weight:
+
+w
+p
+	​
+
+=
+log
+2
+	​
+
+(p+1)
+1
+	​
+
+.
+
+Then define a global repeat penalty:
+
+G(i)=λ
+t
+	​
+
+log(1+E
+track
+	​
+
+(i))+λ
+a
+	​
+
+log(1+E
+artist
+	​
+
+(a
+i
+	​
+
+))+λ
+m
+	​
+
+log(1+E
+album
+	​
+
+(m
+i
+	​
+
+)).
+
+Recommended starting weights:
+
+λ
+t
+	​
+
+=1.00,λ
+a
+	​
+
+=0.15,λ
+m
+	​
+
+=0.25.
+
+Track-level repeat should dominate; artist/album penalties should be softer because exact artist/album queries are common in music.
+
+Add hard global rules for broad queries:
+
+E
+track
+	​
+
+(i)≥1⇒i banned from positions 11–20
+E
+track
+	​
+
+(i)≥2⇒i banned from positions 6–20
+E
+track
+	​
+
+(i)≥3⇒i allowed only for exact queries.
+
+This is the single highest-leverage rule for catalog diversity because it attacks repeated head tracks while leaving top exact-intent recommendations intact.
+
+6. Greedy reranking objective
+
+For each query q, build the final list S
+q
+	​
+
+ greedily.
+
+For protected positions p≤B(q), keep the baseline item unless a semi-frozen replacement rule fires.
+
+For each unprotected position p>B(q), choose:
+
+i
+∗
+=arg
+i∈A(q,p,S
+q
+	​
+
+)
+max
+	​
+
+F(q,i,p,S
+q
+	​
+
+)
+
+where A(q,p,S
+q
+	​
+
+) is the eligible candidate set after removing already selected tracks and applying caps.
+
+Use:
+
+F(q,i,p,S
+q
+	​
+
+)=(1−α
+p
+	​
+
+)
+s
+^
+qi
+∗
+	​
+
++α
+p
+	​
+
+N(i,S
+q
+	​
+
+)−μ
+p
+	​
+
+G(i)−ρM(i,p).
+Position-dependent diversity strength
+α
+p
+	​
+
+=α
+max
+	​
+
+(
+20−B(q)
+p−B(q)
+	​
+
+)
+1.2
+μ
+p
+	​
+
+=μ
+max
+	​
+
+(
+20−B(q)
+p−B(q)
+	​
+
+)
+1.2
+.
+
+Start with:
+
+α
+max
+	​
+
+=0.25,μ
+max
+	​
+
+=0.20.
+
+For slots 11–20, test a stronger variant:
+
+α
+max
+	​
+
+=0.35,μ
+max
+	​
+
+=0.35.
+Local novelty
+
+Define item similarity using only safe metadata:
+
+sim(i,j)=0.551[a
+i
+	​
+
+=a
+j
+	​
+
+]+0.351[m
+i
+	​
+
+=m
+j
+	​
+
+]+0.10Jaccard(tags
+i
+	​
+
+,tags
+j
+	​
+
+).
+
+Then:
+
+N(i,S
+q
+	​
+
+)=1−
+j∈S
+q
+	​
+
+max
+	​
+
+sim(i,j).
+
+This encourages artist/album/tag spread without needing embeddings or new model training.
+
+Movement cost
+
+Avoid promoting deep candidates too aggressively:
+
+M(i,p)=max(0,
+L
+r
+qi
+	​
+
+−p
+	​
+
+).
+
+Use:
+
+ρ=0.05.
+Eligibility windows
+
+For each position p, only allow candidates near enough to the original ranking.
+
+A(q,p,S
+q
+	​
+
+)={i∈C
+q
+	​
+
+:i∈
+/
+S
+q
+	​
+
+,r
+qi
+	​
+
+≤R
+p
+	​
+
+,
+s
+^
+qi
+∗
+	​
+
+≥
+s
+^
+q,b
+p
+	​
+
+∗
+	​
+
+−δ
+p
+	​
+
+}
+
+where b
+p
+	​
+
+ is the baseline item at position p.
+
+Suggested windows:
+
+R
+p
+	​
+
+=
+⎩
+⎨
+⎧
+	​
+
+10
+50
+100
+	​
+
+p≤5
+6≤p≤10
+11≤p≤20
+	​
+
+δ
+p
+	​
+
+=
+⎩
+⎨
+⎧
+	​
+
+0.02
+0.05
+0.12
+	​
+
+p≤5
+6≤p≤10
+11≤p≤20.
+	​
+
+
+This keeps the reranker from dragging irrelevant tail tracks into the list.
+
+7. Relaxation rules when caps overconstrain
+
+Never return fewer than 20 tracks. If no candidate satisfies all constraints, relax in this order:
+
+Expand rank window: R
+p
+	​
+
+←150.
+
+Loosen album cap by +1.
+
+Loosen artist cap by +1.
+
+Reduce global penalty: μ
+p
+	​
+
+←0.5μ
+p
+	​
+
+.
+
+Fall back to the best remaining BM25 candidate.
+
+Do not relax exact artist/album constraints before relaxing diversity caps. Relevance intent beats diversity.
+
+8. Batch-level generation order
+
+Because global exposure penalties depend on previous selections, generate the submission in rounds rather than one query at a time.
+
+Recommended procedure:
+
+Classify every query.
+
+Fill protected prefixes for all queries.
+
+Initialize global counters from protected items.
+
+For p=B+1 to 20:
+
+process all broad queries in stable shuffled order;
+
+then exact artist queries;
+
+then exact album/track queries, mostly unchanged.
+
+Update global counters after each selected track.
+
+Round-wise filling prevents the first few rows from consuming all the good diverse candidates and gives later rows similar access to the catalog.
+
+9. Response lexical-diversity postprocessor
+
+The response layer should be metadata-grounded and varied. Since lexical diversity is Distinct-2, repeated phrases like “Here are some recommendations based on your preferences” are especially damaging.
+
+Distinct-2 is:
+
+D
+2
+	​
+
+=
+∑
+r
+	​
+
+∣B
+2
+	​
+
+(r)∣
+∣⋃
+r
+	​
+
+B
+2
+	​
+
+(r)∣
+	​
+
+
+where B
+2
+	​
+
+(r) is the set of bigrams in response r.
+
+Generate 20–50 candidate responses per query from a controlled template bank, then select the one that maximizes new bigrams while preserving coherence.
+
+r
+∗
+=arg
+r∈R(q)
+max
+	​
+
+[η
+1
+	​
+
+∣B
+2
+	​
+
+(r)∣
+∣B
+2
+	​
+
+(r)∖G
+2
+	​
+
+∣
+	​
+
++η
+2
+	​
+
+metadata_coverage(r)−η
+3
+	​
+
+log(1+template_count(r))−η
+4
+	​
+
+length_penalty(r)]
+
+where G
+2
+	​
+
+ is the global set of bigrams already emitted.
+
+Suggested weights:
+
+η
+1
+	​
+
+=1.0,η
+2
+	​
+
+=0.3,η
+3
+	​
+
+=0.5,η
+4
+	​
+
+=0.2.
+
+Use a target length of 35–60 words. Very long responses increase the denominator of Distinct-2 and often repeat boilerplate. Very short responses can hurt the LLM judge.
+
+Safe response ingredients
+
+Use only facts available in metadata or the ranked list:
+
+track titles;
+
+artist names;
+
+album names;
+
+genre/tag/mood fields if present;
+
+whether the list intentionally stays close to an artist/album or branches out.
+
+Avoid unsupported claims like “this has a warm analog synth texture” unless that attribute exists in metadata.
+
+Example response families
+
+Broad query:
+
+“I kept the first few picks close to your request, then widened the list with related artists so it does not collapse onto the same catalog head. Start with ‘{track1}’ by {artist1}, then try ‘{track2}’ and ‘{track3}’ for a different angle.”
+
+Exact artist:
+
+“I stayed with {artist} and spread the picks across albums rather than repeating one record. The strongest anchors are ‘{track1}’, ‘{track2}’, and ‘{track3}’.”
+
+Exact album:
+
+“I focused on {album} as requested. The list keeps the album tracks together, with the highest-confidence matches first.”
+
+Similar-to-track:
+
+“‘{anchor}’ is the anchor here, so the top picks stay close while later slots branch into neighboring artists and albums.”
+
+Have at least 30 opener variants, 30 transition variants, and 30 closing variants. Also cap each template family:
+
+template_count(t)≤0.05N
+
+where N is the number of test dialogues.
+
+10. Recommended first submission configuration
+
+Start conservative:
+
+Candidate pool: L=100
+
+Broad hard freeze: top 3
+
+Broad semi-freeze: positions 4–5
+
+Full rerank: positions 6–20
+
+Exact artist freeze: top 8
+
+Exact album freeze: top 10 or full top 20 if high-confidence
+
+Broad artist cap: top10 ≤ 2, top20 ≤ 3
+
+Broad album cap: top10 ≤ 1, top20 ≤ 2
+
+Global track repeat:
+
+repeated once: banned from positions 11–20
+
+repeated twice: banned from positions 6–20
+
+repeated three times: exact queries only
+
+α
+max
+	​
+
+=0.25
+
+μ
+max
+	​
+
+=0.20
+
+Response target length: 35–60 words
+
+Bigram-aware response template selection enabled
+
+This should raise catalog diversity mostly through positions 6–20 while preserving the BM25 head.
+
+11. Ablation experiments
+
+Run ablations on a local validation split and track both global and per-intent metrics.
+
+Core ablation table
+ID	Change	Expected effect	Main risk
+A0	Current BM25/legacy baseline	reference	repeated tracks, templated text
+A1	Response lexical postprocessor only	lexical diversity ↑, judge maybe ↑	almost no nDCG risk
+A2	Local duplicate removal only	catalog diversity slight ↑	minimal
+A3	Artist/album caps only	list diversity ↑	exact artist/album harm unless exceptions work
+A4	Global track repeat penalty only	catalog diversity large ↑	repeated-head relevance loss
+A5	Global penalty only slots 11–20	safe catalog gain	limited gain
+A6	Global penalty slots 6–20	larger catalog gain	moderate nDCG risk
+A7	Local MMR + caps + global penalty	best balanced candidate	tuning needed
+A8	Exact intent exceptions added	nDCG recovery on entity queries	possible diversity reduction
+A9	Semi-frozen top 4–5 replacement	more catalog gain	top-rank risk
+A10	Aggressive version, freeze only top 3	max diversity	highest nDCG risk
+Parameter sweeps
+
+Sweep these one at a time:
+
+B∈{3,5,8}
+α
+max
+	​
+
+∈{0.10,0.20,0.25,0.35}
+μ
+max
+	​
+
+∈{0.10,0.20,0.35,0.50}
+artist cap
+20
+	​
+
+∈{2,3,4}
+album cap
+20
+	​
+
+∈{1,2,3}
+L∈{50,100,200}.
+Diagnostics to log
+
+For every ablation, log:
+
+nDCG@20 overall;
+
+nDCG@20 by intent type;
+
+unique tracks / total recommended tracks;
+
+max exposure of any track;
+
+mean track exposure;
+
+artist exposure Gini;
+
+album exposure Gini;
+
+percentage of lists violating broad artist/album caps;
+
+lexical Distinct-1 and Distinct-2;
+
+average response length;
+
+top 50 most repeated response bigrams;
+
+LLM judge on a sampled subset, if available.
+
+The most important slice is exact artist/album nDCG. Diversity rules often look good globally while quietly destroying entity-specific queries.
+
+12. Decision rule for public submissions
+
+Use composite delta:
+
+Δscore=0.50ΔnDCG+0.10ΔC+0.10ΔL+0.30ΔJ.
+
+For reranking-only changes, assume ΔJ=0. Then a drop of 0.004 nDCG requires:
+
+0.10(ΔC+ΔL)>0.002
+ΔC+ΔL>0.020.
+
+So reject any reranking variant that loses more than 0.004–0.006 nDCG unless catalog diversity jumps substantially. Response-only improvements should be submitted first because they are almost free with respect to nDCG.
+
+The best low-risk sequence is:
+
+Submit response-only lexical postprocessor.
+
+Submit slots 11–20 global track repeat penalty.
+
+Submit slots 6–20 global penalty + local caps + exact exceptions.
+
+Try semi-frozen top 4–5 only if the previous run improves composite.
+
+The expected winning variant is likely A7: top-k protected, exact-intent-aware, global track exposure penalty, local artist/album caps, and bigram-aware response realization.
+
+来源
+
+进阶专业
+ChatGPT 也可能会犯错。请核查重要信息。

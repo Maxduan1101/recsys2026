@@ -938,3 +938,104 @@ feature table 里列：
 先让新增模块证明它能稳定提高 nDCG，再动最终提交的排序头部。
 ```
 
+## 16. 5 月 25 日晚新增工作：从“能排准”转向“少重复、会解释”
+
+你提交过一次保守版本后，公共 Blind A 返回了非常关键的信号：
+
+| 指标 | 公共 Blind A 分数 |
+|---|---:|
+| nDCG@20 | 0.1935 |
+| Catalog Diversity | 0.0257 |
+| Lexical Diversity | 0.0125 |
+| LLM Judge | 1.0000 |
+| Composite | 0.1006 |
+
+这组数的直观含义是：
+
+- 推荐排序不是最差的地方，甚至比本地 dev 指标看起来更有希望。
+- 系统太爱重复同一批歌，导致 catalog diversity 很低。
+- 回复文本太模板化，导致 lexical diversity 和 LLM judge 都很弱。
+
+所以这一轮我没有继续盲目加更多召回源，而是做了两个更低风险的改动。
+
+### 16.1 Source-Gated Fusion
+
+新增参数：
+
+```bash
+--fusion-mode gated
+```
+
+它的想法是：
+
+```text
+legacy/BM25 头部先保护住
+其他来源的候选只有证据足够强才允许进 top20
+```
+
+本地 dev 结果：
+
+| Run | nDCG@20 | Catalog Diversity | 结论 |
+|---|---:|---:|---|
+| `goalflow_gated_head5` | 0.0787 | 0.4712 | 多样性提高，但排名还不够稳 |
+
+结论：这个方向值得继续研究，但当前手写 gate 还不能替代保守 baseline。
+
+### 16.2 Tail Diversity
+
+新增参数：
+
+```bash
+--tail-diversity-start 15
+--global-repeat-penalty 0.06
+```
+
+这版只动第 16 到第 20 首，前 15 首仍然保护原有强排序。它做三件事：
+
+- 对全局已经推荐很多次的 track 降权；
+- 控制同 artist / album 在尾部过度堆叠；
+- 优先把没出现过或少出现过的候选放进尾部。
+
+本地 dev 结果：
+
+| Run | nDCG@20 | Catalog Diversity | Lexical Diversity | 结论 |
+|---|---:|---:|---:|---|
+| `goalflow_taildiv_head10` | 0.0721 | 0.8323 | 0.1019 | 太激进，排名掉太多 |
+| `goalflow_taildiv_head15` | 0.0818 | 0.7676 | 0.1019 | 当前最稳的多样性候选 |
+
+当前可提交候选包：
+
+```text
+experiments/goalflow_taildiv_head15/blindset_A/submission.zip
+```
+
+这个包不是替代安全包的绝对答案，而是一个“用最后 5 个位置换多样性”的线上实验版本。
+
+### 16.3 Response 多样化
+
+原先回复虽然不是完全常量，但句式仍然太少。这一轮改成了按 session/turn 稳定分流的多模板回复：
+
+```text
+同样的输入每次生成同一种回复，保证可复现；
+不同 session 会走不同句式，提升 Distinct-2；
+每句话仍然绑定 track、artist、album、tags、profile 或 feedback，减少胡编。
+```
+
+这把 dev lexical diversity 从约 `0.0830` 提高到 `0.1019`。
+
+### 16.4 新一批 Pro 问题
+
+我又把 5 个研究问题发给网页端 Pro：
+
+- 公共 Blind A 后处理策略；
+- metadata-grounded response generation；
+- catalog diversity 的 batch-level 策略；
+- dev / blind 分数错位诊断；
+- 下一步最高 ROI：LTR、embedding、CF、cross-encoder 还是 response。
+
+已保存的完整回答：
+
+```text
+research/pro_answers/round3/tab1_blind_postprocessing_strategy.txt
+research/pro_answers/round3/tab5_metadata_grounded_response_design.txt
+```

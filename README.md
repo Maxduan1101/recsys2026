@@ -18,6 +18,7 @@ The first runnable system implements:
 - optional `legacy_head_k` protection so early ranks can stay aligned with the strongest known baseline while later ranks are diversified;
 - lightweight entity, era, tag, profile, and seed-feedback boosts;
 - conservative top-20 diversity post-processing;
+- optional source-gated fusion and tail-only global-repeat diversification;
 - non-constant, metadata-grounded response templates;
 - devset prediction, official evaluator compatibility, Blind A `submission.zip` generation.
 
@@ -76,6 +77,25 @@ The current shifted-feedback safe package is:
 /Users/bytedance/generated_problems/recsys2026_music_crs/goalflow_musiccrs/experiments/goalflow_safe_bm25_response_shifted_feedback/blindset_A/submission.zip
 ```
 
+Tail-diversity Blind A candidate:
+
+```bash
+python goalflow_musiccrs/scripts/run_goalflow.py \
+  --mode blind \
+  --tid goalflow_taildiv_head15 \
+  --retrieval-top-k 180 \
+  --rerank-pool-size 900 \
+  --legacy-head-k 15 \
+  --tail-diversity-start 15 \
+  --global-repeat-penalty 0.06
+```
+
+The upload file is:
+
+```text
+/Users/bytedance/generated_problems/recsys2026_music_crs/goalflow_musiccrs/experiments/goalflow_taildiv_head15/blindset_A/submission.zip
+```
+
 Source-level retrieval diagnostics:
 
 ```bash
@@ -120,5 +140,7 @@ Important: use `talkpl-ai/TalkPlayData-Challenge-Track-Embeddings`, not the olde
 This is Phase 1/2 infrastructure. It deliberately avoids direct dependence on gated LLaMA, GPU-only FlashAttention, LightGBM, FAISS, or cross-encoder models. Those are tracked in `research/DEEP_RESEARCH_BACKLOG.md`.
 
 The current safe submission setting uses `legacy_head_k=20`: recommendation IDs exactly preserve the strongest known BM25 dev ranking while GoalFlow upgrades response generation. Experimental settings with lower `legacy_head_k` are useful for research, but currently reduce nDCG.
+
+Public Blind A feedback from one conservative submission was `nDCG@20=0.1935`, `catalog_diversity=0.0257`, `lexical_diversity=0.0125`, and `llm_judge_score=1.0`. That means ranking is promising but diversity and response quality are the visible bottlenecks. The `goalflow_taildiv_head15` candidate keeps the first 15 ranks protected and diversifies only the final five tracks.
 
 The newest diagnostics show the added sources are useful for recall but not yet calibrated for rank fusion: the best single source per dev state reaches hit@20 `0.4715` / nDCG@20 `0.2600`, while the current RRF fusion reaches hit@20 `0.2595` / nDCG@20 `0.1015`. Legacy-vs-fused deltas show `446` gained top-20 hits but `212` lost hits and `642` demotions, so the next implementation step is source gating or a learning-to-rank model rather than simply adding more BM25 sources.

@@ -1,0 +1,750 @@
+You are helping with RecSys Challenge 2026 Music-CRS. I found the correct official embedding datasets: talkpl-ai/TalkPlayData-Challenge-Track-Embeddings with all_tracks split fully overlapping the 47,071-track catalog, and talkpl-ai/TalkPlayData-Challenge-User-Embeddings. Track channels are metadata-qwen3, attributes-qwen3, lyrics-qwen3, audio-laion_clap, image-siglip2, and cf-bpr. I have a BM25 baseline and a new TrackEmbeddingStore with raw/L2-normalized matrices and masks. Research question: design the first minimal but strong embedding-based extension to add after BM25. Focus on seed_metadata, seed_attributes, seed_cf, user_cf, robust score normalization, candidate union, features, memory/performance, and failure modes. Give concrete implementation steps and ablation order.
+
+展开
+
+我会基于你确认的官方通道和现有 BM25/TrackEmbeddingStore，设计一个尽量小但可消融的 embedding 扩展，覆盖检索信号、归一化、候选合并、特征、性能和风险。
+
+我会先保留 BM25 作为文本意图锚点，不从对话文本 embedding 入手；新增信号应围绕历史 seed track、user cf-bpr 和全量目录上的轻量 late-fusion rerank 展开。47k 曲目规模足够直接做少量 dense dot product，暂时不需要 ANN，并要保证 top-20 唯一、有效、覆盖 all_tracks。
+
+已思考 11m 45s
+Recommendation: add a BM25 + calibrated seed/user embedding hybrid reranker
+
+The first extension I would build is not a new dense query encoder and not a learned ranker yet. Use your existing BM25 output as the lexical anchor, then add four cheap embedding signals:
+
+seed_metadata, seed_attributes, seed_cf, and user_cf.
+
+This is minimal because it only needs the official precomputed embeddings, your TrackEmbeddingStore, a seed linker, exact dot products over ~47k tracks, and a hand-tuned linear fusion. It is strong because it improves both recall through candidate union and ranking through complementary content/CF signals, while keeping BM25 dominant when the dialogue contains exact artist/track/album constraints.
+
+This fits the challenge setup: Music-CRS is explicitly multi-turn, uses TalkPlayData-Challenge, and provides pre-extracted multimodal track and user embeddings. 
+NLP4MUSA
+ The official baseline/evaluation materials also emphasize retrieval quality, all-turn ranking, and strict use of the full catalog during inference. 
+GitHub
++1
+
+Core design
+
+For each conversation turn:
+
+Run the existing BM25 retriever over all_tracks.
+
+Extract high-confidence seed tracks from dialogue history and available context.
+
+Build three seed-based dense query vectors:
+
+seed_metadata: centroid/max similarity in metadata-qwen3_embedding_0.6b.
+
+seed_attributes: centroid/max similarity in attributes-qwen3_embedding_0.6b.
+
+seed_cf: item-item similarity in cf-bpr.
+
+Add one user-based dense signal:
+
+user_cf: raw BPR user-track dot product when the user embedding is available.
+
+Take a candidate union from BM25 and each embedding source.
+
+Score every union candidate with robustly normalized source scores.
+
+Final rank with a simple gated linear fusion.
+
+Return top 20 unique valid track IDs.
+
+The track embedding dataset exposes all_tracks with about 47.1k rows and the relevant channels: audio-laion_clap, image-siglip2, cf-bpr, attributes-qwen3_embedding_0.6b, lyrics-qwen3_embedding_0.6b, and metadata-qwen3_embedding_0.6b; the first extension should use only metadata, attributes, and CF to keep risk low. 
+Hugging Face
+ The user embedding dataset has cf-bpr user vectors with train/test-warm/test-cold splits, so user_cf must be optional and mask-aware. 
+Hugging Face
+
+Why these four signals first
+1. seed_metadata
+
+This is the safest embedding add-on after BM25.
+
+Use it when the dialogue contains seed tracks, artists, albums, or previous positively received recommendations that can be mapped to track IDs. It should capture semantic similarity around track/artist/album metadata, while BM25 still handles exact lexical matches.
+
+Use cosine similarity over L2-normalized metadata embeddings:
+
+q_seed_metadata = normalize(weighted_mean(metadata_norm[seed_track_ids]))
+score_seed_metadata(track) = dot(metadata_norm[track], q_seed_metadata)
+
+For multiple seeds, do not rely only on the centroid. Add a max-similarity feature:
+
+centroid_score = dot(track_vec, centroid)
+max_seed_score = max_j dot(track_vec, seed_vec_j)
+
+seed_metadata_raw = 0.7 * centroid_score + 0.3 * max_seed_score
+
+The max term helps when a session contains multiple tastes, such as “I like Radiohead and also want something like SZA.”
+
+2. seed_attributes
+
+This should be the second seed signal. It is likely more useful for mood, genre, instrumentation, vibe, and taste descriptors than pure metadata.
+
+Use the same centroid plus max approach:
+
+q_seed_attributes = normalize(weighted_mean(attributes_norm[seed_track_ids]))
+seed_attributes_raw = 0.7 * centroid_cos + 0.3 * max_seed_cos
+
+Expected win: turns where BM25 retrieves exact words but misses semantically similar tracks.
+
+Expected risk: attributes may overgeneralize and pull in “vibe-near” but lexically irrelevant songs. Keep its weight below or equal to seed_metadata initially.
+
+3. seed_cf
+
+Use cf-bpr track vectors for item-item collaborative similarity from seed tracks.
+
+For seed-to-track similarity, prefer cosine over L2-normalized CF vectors at first:
+
+q_seed_cf = normalize(weighted_mean(track_cf_norm[seed_track_ids]))
+seed_cf_raw = dot(track_cf_norm[track], q_seed_cf)
+
+Why cosine here: item-item BPR dot products can be strongly affected by vector norms and popularity. Cosine is a safer minimal item-neighborhood signal. Later, ablate raw item-item dot product separately.
+
+Use seed_cf only when you have at least one strong seed; ideally give it full weight only with two or more seeds:
+
+g_seed_cf = min(1.0, effective_seed_count / 3.0)
+4. user_cf
+
+Use raw BPR user-track dot product:
+
+user_cf_raw(track) = dot(user_cf_raw[user_id], track_cf_raw[track])
+
+This is different from seed_cf. For user-track relevance, raw BPR dot product is the natural first choice because BPR-style matrix factorization is usually trained to score user-item pairs by dot product. Robust normalization will handle scale differences.
+
+Use this only when the user vector exists. For missing/cold users, set user_cf_available = 0 and remove its weight entirely. Do not impute with zeros and then treat the score as meaningful.
+
+Seed extraction policy
+
+Keep seed extraction high precision. A bad seed is worse than no seed because it drifts all dense channels.
+
+Use seed sources in this priority order:
+
+Explicit track IDs already present in system state, history, or previous recommendations.
+
+Exact normalized (track_name, artist_name) matches from the dialogue.
+
+Exact track title matches only when the title is unambiguous.
+
+Previous recommendations that the user accepted or reacted to positively.
+
+Optional later: high-confidence artist-level matches expanded to that artist’s known tracks.
+
+Do not use BM25 top results as pseudo-seeds in the first version. That creates feedback loops: BM25 makes a mistake, embeddings amplify it.
+
+Seed weights:
+
+explicit_liked_track        1.00
+accepted_previous_reco      0.80
+mentioned_track_exact       0.70
+profile/history seed        0.50
+ambiguous title-only match   skip initially
+negative/rejected mention    skip or use later as negative seed
+
+Apply recency decay:
+
+weight *= 0.85 ** turns_ago
+
+Cap to the most recent/highest-confidence 5–10 seeds.
+
+Candidate union
+
+Use candidate union, not reranking BM25-only candidates. Otherwise embeddings can only reorder BM25’s mistakes and cannot fix recall.
+
+Starting values:
+
+BM25 topK              500
+seed_metadata topK     300
+seed_attributes topK   300
+seed_cf topK           300
+user_cf topK           500
+max union size         usually 800–1,800 after de-dup
+final output           top 20
+
+For every source, retrieve from the full all_tracks catalog. The official baseline README explicitly warns that inference must retrieve candidates from the entire track catalog and not filter/subset tracks by split or other mechanisms. 
+GitHub
+
+Candidate object:
+
+Python
+运行
+CandidateFeatures = {
+    "track_id": str,
+    "bm25_raw": float,
+    "bm25_norm": float,
+    "bm25_rank": int | None,
+
+    "seed_metadata_raw": float,
+    "seed_metadata_norm": float,
+    "seed_metadata_rank": int | None,
+
+    "seed_attributes_raw": float,
+    "seed_attributes_norm": float,
+    "seed_attributes_rank": int | None,
+
+    "seed_cf_raw": float,
+    "seed_cf_norm": float,
+    "seed_cf_rank": int | None,
+
+    "user_cf_raw": float,
+    "user_cf_norm": float,
+    "user_cf_rank": int | None,
+
+    "source_count": int,
+    "has_metadata_emb": bool,
+    "has_attributes_emb": bool,
+    "has_cf_emb": bool,
+    "user_cf_available": bool,
+    "num_seed_tracks": int,
+    "turn_number": int,
+}
+Robust score normalization
+
+Do not directly add BM25, cosine, and BPR scores. Their scales are incompatible.
+
+Use per-turn, per-source robust normalization. For each source, calibrate using the source’s own retrieved topK scores, not all union candidates only.
+
+Recommended function:
+
+Python
+运行
+def robust01(raw_scores, calibration_scores, eps=1e-8):
+    """
+    raw_scores: scores for union candidates for one source
+    calibration_scores: scores from that source's own topK retrieval
+    returns: [0, 1] normalized scores
+    """
+    cal = calibration_scores[np.isfinite(calibration_scores)]
+    cal = cal[cal > -np.inf]
+
+    if len(cal) < 5:
+        return np.zeros_like(raw_scores, dtype=np.float32)
+
+    lo = np.percentile(cal, 5)
+    hi = np.percentile(cal, 95)
+
+    if hi - lo < eps:
+        # fallback: rank-only source is safer than unstable score scaling
+        return np.zeros_like(raw_scores, dtype=np.float32)
+
+    y = (raw_scores - lo) / (hi - lo + eps)
+    y = np.clip(y, 0.0, 1.0)
+    y[~np.isfinite(raw_scores)] = 0.0
+    return y.astype(np.float32)
+
+Then blend robust score with a rank feature:
+
+Python
+运行
+def rank01(rank, topk):
+    if rank is None:
+        return 0.0
+    return 1.0 - min(rank - 1, topk - 1) / max(topk - 1, 1)
+
+Final per-source normalized feature:
+
+source_feature = 0.75 * robust_score_norm + 0.25 * rank01
+
+This prevents one source from dominating because of raw-score scale while still rewarding tracks that were genuinely high-ranked by that retriever.
+
+For BM25, use log1p(bm25_raw) before normalization:
+
+bm25_raw_for_norm = log1p(bm25_raw)
+
+For dense cosine sources, use raw cosine. For user_cf, use raw BPR dot product, then robust-normalize.
+
+Initial fusion formula
+
+Start with a transparent hand-tuned fusion:
+
+final_score =
+    1.00 * bm25
+  + 0.35 * g_seed      * seed_metadata
+  + 0.30 * g_seed      * seed_attributes
+  + 0.20 * g_seed_cf   * seed_cf
+  + 0.25 * g_user_cf   * user_cf
+  + 0.05 * source_agreement
+
+Where:
+
+g_seed    = min(1.0, effective_seed_count / 2.0)
+g_seed_cf = min(1.0, effective_seed_count / 3.0)
+g_user_cf = 1.0 if user_cf exists else 0.0
+
+source_agreement = number_of_sources_with_norm_score_above_0.5 / number_of_available_sources
+
+Add one protective gate:
+
+if bm25 top score is very strong and query contains exact track/artist constraints:
+    reduce user_cf weight by 50%
+
+Rationale: user_cf reflects general taste, but a turn like “play songs by Daft Punk” should not be overwhelmed by the user’s historical preference vector.
+
+Concrete implementation steps
+Step 1: add channel-level topK methods to TrackEmbeddingStore
+
+You already have raw/L2-normalized matrices and masks. Add methods like:
+
+Python
+运行
+def topk_cosine(self, channel: str, query_vec: np.ndarray, k: int):
+    X = self.norm[channel]          # shape [n_tracks, dim], float32 or float16
+    mask = self.mask[channel]       # shape [n_tracks]
+
+    q = query_vec.astype(np.float32)
+    q = q / (np.linalg.norm(q) + 1e-8)
+
+    scores = X @ q
+    scores = scores.astype(np.float32)
+    scores[~mask] = -np.inf
+
+    idx = np.argpartition(-scores, kth=min(k, len(scores)-1))[:k]
+    idx = idx[np.argsort(-scores[idx])]
+    return idx, scores[idx], scores
+
+For user_cf:
+
+Python
+运行
+def topk_user_cf(self, user_vec_raw: np.ndarray, k: int):
+    X = self.raw["cf-bpr"]
+    mask = self.mask["cf-bpr"]
+
+    scores = X @ user_vec_raw.astype(np.float32)
+    scores = scores.astype(np.float32)
+    scores[~mask] = -np.inf
+
+    idx = np.argpartition(-scores, kth=min(k, len(scores)-1))[:k]
+    idx = idx[np.argsort(-scores[idx])]
+    return idx, scores[idx], scores
+Step 2: implement seed query construction
+Python
+运行
+def build_seed_query(store, channel, seed_track_indices, seed_weights):
+    valid = store.mask[channel][seed_track_indices]
+    idx = np.asarray(seed_track_indices)[valid]
+    w = np.asarray(seed_weights, dtype=np.float32)[valid]
+
+    if len(idx) == 0:
+        return None
+
+    X = store.norm[channel][idx].astype(np.float32)
+    w = w / (w.sum() + 1e-8)
+
+    q = (X * w[:, None]).sum(axis=0)
+    q = q / (np.linalg.norm(q) + 1e-8)
+    return q
+
+For metadata and attributes, use the corresponding Qwen3 embedding channels. For seed_cf, use normalized cf-bpr.
+
+Step 3: implement dense source retrieval
+
+Per turn:
+
+Python
+运行
+dense_sources = {}
+
+if q_seed_metadata is not None:
+    dense_sources["seed_metadata"] = store.topk_cosine(
+        "metadata-qwen3_embedding_0.6b", q_seed_metadata, k=300
+    )
+
+if q_seed_attributes is not None:
+    dense_sources["seed_attributes"] = store.topk_cosine(
+        "attributes-qwen3_embedding_0.6b", q_seed_attributes, k=300
+    )
+
+if q_seed_cf is not None:
+    dense_sources["seed_cf"] = store.topk_cosine(
+        "cf-bpr", q_seed_cf, k=300
+    )
+
+if user_cf_available:
+    dense_sources["user_cf"] = store.topk_user_cf(user_vec_raw, k=500)
+Step 4: build candidate union
+Python
+运行
+candidate_ids = OrderedDict()
+
+for idx, score in bm25_results:
+    candidate_ids[idx] = None
+
+for source_name, (idxs, scores, full_scores) in dense_sources.items():
+    for idx in idxs:
+        candidate_ids[idx] = None
+
+candidate_indices = np.array(list(candidate_ids.keys()), dtype=np.int64)
+
+Do not cap too aggressively before scoring. If you need a cap for memory/debugging, cap after keeping each source’s topK contribution.
+
+Step 5: compute features for all union candidates
+
+For dense sources, you already have full_scores; slice it:
+
+Python
+运行
+seed_metadata_raw = full_scores_metadata[candidate_indices]
+
+For BM25, initialize zeros and fill known BM25 scores:
+
+Python
+运行
+bm25_raw = np.zeros(len(candidate_indices), dtype=np.float32)
+for rank, (idx, score) in enumerate(bm25_results, start=1):
+    pos = candidate_index_to_pos.get(idx)
+    if pos is not None:
+        bm25_raw[pos] = score
+
+Compute rank features per source from each source’s retrieved list.
+
+Step 6: normalize each source independently
+Python
+运行
+bm25_norm = robust01(
+    np.log1p(bm25_raw),
+    np.log1p(np.array([s for _, s in bm25_results], dtype=np.float32))
+)
+
+seed_metadata_norm = robust01(
+    seed_metadata_raw,
+    seed_metadata_top_scores
+)
+
+seed_attributes_norm = robust01(
+    seed_attributes_raw,
+    seed_attributes_top_scores
+)
+
+seed_cf_norm = robust01(
+    seed_cf_raw,
+    seed_cf_top_scores
+)
+
+user_cf_norm = robust01(
+    user_cf_raw,
+    user_cf_top_scores
+)
+
+Then combine with rank features:
+
+Python
+运行
+bm25_feat = 0.75 * bm25_norm + 0.25 * bm25_rank01
+seed_metadata_feat = 0.75 * seed_metadata_norm + 0.25 * seed_metadata_rank01
+...
+Step 7: final linear scoring
+Python
+运行
+score = (
+    1.00 * bm25_feat
+    + 0.35 * g_seed * seed_metadata_feat
+    + 0.30 * g_seed * seed_attributes_feat
+    + 0.20 * g_seed_cf * seed_cf_feat
+    + 0.25 * g_user_cf * user_cf_feat
+    + 0.05 * source_agreement
+)
+
+Sort descending, remove duplicates, verify valid track IDs, output top 20.
+
+The official evaluator requires ordered, unique predicted_track_ids and computes retrieval nDCG at k = 1, 10, and 20, with diversity metrics also reported. 
+GitHub
+
+Feature set to log from day one
+
+Even before training a ranker, log the features. This makes ablations and failure analysis much faster.
+
+Minimum feature columns:
+
+session_id
+turn_number
+user_id
+track_id
+
+final_score
+bm25_raw
+bm25_norm
+bm25_rank
+seed_metadata_raw
+seed_metadata_norm
+seed_metadata_rank
+seed_attributes_raw
+seed_attributes_norm
+seed_attributes_rank
+seed_cf_raw
+seed_cf_norm
+seed_cf_rank
+user_cf_raw
+user_cf_norm
+user_cf_rank
+
+source_count
+source_agreement
+num_seed_tracks
+effective_seed_count
+user_cf_available
+
+has_metadata_emb
+has_attributes_emb
+has_cf_emb
+
+candidate_from_bm25
+candidate_from_seed_metadata
+candidate_from_seed_attributes
+candidate_from_seed_cf
+candidate_from_user_cf
+
+Useful derived diagnostics:
+
+min_rank_any_source
+max_embedding_norm_score
+mean_embedding_norm_score
+std_embedding_norm_score
+bm25_minus_best_embedding_rank
+best_source_name
+
+Later, these become direct inputs to LightGBM/logistic reranking if the challenge rules and validation setup allow it.
+
+Memory and performance
+
+At this catalog size, exact dense search is fine. You do not need FAISS first.
+
+Approximate memory for the full track embeddings:
+
+metadata 1024 dims
+attributes 1024 dims
+lyrics 1024 dims
+audio 512 dims
+image 768 dims
+cf 128 dims
+total ≈ 4480 dims / track
+tracks ≈ 47k
+
+All six channels as one float32 matrix would be roughly:
+
+47,071 * 4,480 * 4 bytes ≈ 804 MB
+
+If you store both raw and normalized float32 versions, that is roughly 1.6 GB before overhead. For the first extension, you only need metadata, attributes, and CF:
+
+47,071 * (1024 + 1024 + 128) * 4 bytes ≈ 391 MB
+
+Raw plus normalized float32 for these three channels is around 780 MB. With float16 storage, about half that.
+
+Practical recommendation:
+
+Store normalized matrices as C-contiguous float32 memmaps if CPU BLAS speed matters.
+
+Store raw CF as float32.
+
+Store unused channels — lyrics/audio/image — unloaded for now.
+
+Use argpartition for topK, then sort the selected topK.
+
+Batch dense scoring by channel when running many turns:
+
+Python
+运行
+scores = Q @ X.T
+
+where Q is [batch_size, dim].
+
+For ~47k tracks, metadata or attributes exact scoring is only about 48 million multiply-adds per query. That is acceptable on a modern CPU and trivial on GPU. The complexity cost is much lower than adding an LLM reranker.
+
+First ablation order
+
+Use the official dev evaluator for nDCG@1/10/20 and diversity; the evaluator macro-averages over turns and sessions. 
+GitHub
+ Also track non-official diagnostic recall: oracle union recall@20/100/500/1000.
+
+A0 — frozen BM25 baseline
+
+No embedding changes. Confirm your reproduced BM25 numbers and output formatting.
+
+A1 — infrastructure-only candidate union sanity check
+
+Run BM25 plus dense candidate generation, but final score is still BM25 only.
+
+Expected result: nDCG should be identical or nearly identical to BM25. If not, you have a bug in ID mapping, duplicate removal, or catalog filtering.
+
+A2 — BM25 + seed_metadata
+
+Add only:
+
+BM25 + seed_metadata
+
+This is the lowest-risk embedding win. Evaluate separately on:
+
+turns with seed tracks
+turns without seed tracks
+early turns
+late turns
+
+Expected: gains mostly on seed-present and later turns.
+
+A3 — BM25 + seed_attributes
+
+Run attributes alone:
+
+BM25 + seed_attributes
+
+Compare against A2. This tells you whether the attributes channel is independently useful or mostly redundant.
+
+A4 — BM25 + seed_metadata + seed_attributes
+
+This is probably the first “submit-worthy” embedding hybrid.
+
+Tune only three weights:
+
+bm25 weight
+seed_metadata weight
+seed_attributes weight
+
+Do not add CF until this is stable.
+
+A5 — BM25 + seed_cf
+
+Run seed CF alone:
+
+BM25 + seed_cf
+
+Then run:
+
+BM25 + seed_metadata + seed_attributes + seed_cf
+
+Break down by number of seeds. seed_cf may be weak or noisy with one seed but stronger with multiple seeds.
+
+A6 — BM25 + user_cf
+
+Run user CF alone:
+
+BM25 + user_cf
+
+Break down by:
+
+warm users with user_cf
+cold/missing users
+turn number
+query specificity
+
+If it helps only warm users but hurts exact textual requests, keep the gate.
+
+A7 — full minimal hybrid
+
+Run:
+
+BM25
++ seed_metadata
++ seed_attributes
++ seed_cf
++ user_cf
++ robust normalization
++ source agreement
+
+This is the proposed first complete extension.
+
+A8 — normalization ablation
+
+Compare:
+
+raw min-max per source
+robust p5/p95 per source
+rank-only fusion
+0.75 robust + 0.25 rank
+RRF-only fusion
+
+The expected winner is usually robust-plus-rank. If results are unstable across turns, rank-only or RRF-only is the safer fallback.
+
+A9 — candidate union size ablation
+
+Try:
+
+BM25: 200 / 500 / 1000
+seed channels: 100 / 300 / 500
+user_cf: 200 / 500 / 1000
+
+Track both nDCG and oracle union recall. If oracle recall improves but nDCG drops, reranking/normalization is the bottleneck. If oracle recall does not improve, seed extraction or dense source quality is the bottleneck.
+
+A10 — only after the above: learned reranker
+
+Once the hand-tuned hybrid is stable, train a small pointwise or pairwise reranker using the logged features. But do not make this the first extension; it makes failures harder to diagnose.
+
+Main failure modes and guards
+Bad seed linking
+
+Problem: wrong track matched from ambiguous title.
+
+Guard: high-precision seed linker only. Require artist match when possible. Skip ambiguous title-only matches.
+
+Query drift from previous recommendations
+
+Problem: your own bad recommendations become future seeds.
+
+Guard: only use previous recommendations as seeds if the user reacted positively or the dialogue state marks them as accepted. Otherwise give them very low weight or skip.
+
+user_cf overwhelms the current request
+
+Problem: the user asks for a specific genre/artist, but user history pulls general favorites.
+
+Guard: cap user_cf weight and reduce it when BM25 has a strong exact-match signal.
+
+CF popularity/norm bias
+
+Problem: raw BPR scores favor high-norm popular tracks.
+
+Guard: use raw dot only for user-track user_cf; use cosine for item-item seed_cf. Robust-normalize both. Ablate raw item-item dot later.
+
+Multi-intent conversations
+
+Problem: centroid averaging collapses “I like A and B” into a bland middle.
+
+Guard: include max_seed_score alongside centroid score. Consider per-seed max more important as seed diversity increases.
+
+Missing embeddings
+
+Problem: channels have empty lists or invalid masks.
+
+Guard: every source score must be mask-aware. Missing channel means source_available = 0, score = 0, and no weight contribution.
+
+Candidate union hurts precision
+
+Problem: embeddings add many plausible but irrelevant candidates.
+
+Guard: keep BM25 weight dominant. Add dense candidates, but require robust normalization and source agreement. Inspect top false positives by source.
+
+Turn leakage or invalid catalog usage
+
+Problem: accidentally using labels, future turns, or non-all_tracks subsets.
+
+Guard: seed extraction must use only inference-time-visible context. Retrieval must be over the full all_tracks catalog, as the baseline README warns. 
+GitHub
+
+My suggested first implementation target
+
+Build A4 first as the first real improvement:
+
+BM25 + seed_metadata + seed_attributes
+
+Then add user_cf, then seed_cf.
+
+Reason: metadata/attributes are closest to the current BM25 baseline, easiest to debug, and least likely to inject collaborative-filtering artifacts. Once the content seed hybrid is stable, user_cf gives personalization for warm users, and seed_cf adds collaborative item-neighborhood behavior when multiple seeds are available.
+
+Final first strong version:
+
+BM25 top500
+∪ seed_metadata top300
+∪ seed_attributes top300
+∪ seed_cf top300
+∪ user_cf top500
+
+rerank with:
+1.00 BM25
+0.35 seed_metadata
+0.30 seed_attributes
+0.20 seed_cf gated by seed count
+0.25 user_cf gated by user availability
+0.05 source agreement
+
+This gives you a clean, explainable embedding extension with strong debugging hooks and a natural path to a learned reranker later.
+
+来源
+
+进阶专业
+ChatGPT 也可能会犯错。请核查重要信息。

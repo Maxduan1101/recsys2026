@@ -15,6 +15,9 @@ def parse_args():
     parser.add_argument("--retrieval-top-k", type=int, default=260)
     parser.add_argument("--rerank-pool-size", type=int, default=1200)
     parser.add_argument("--legacy-head-k", type=int, default=20)
+    parser.add_argument("--fusion-mode", choices=["standard", "gated"], default="standard")
+    parser.add_argument("--tail-diversity-start", type=int, default=20)
+    parser.add_argument("--global-repeat-penalty", type=float, default=0.0)
     parser.add_argument("--rrf-k", type=int, default=60)
     parser.add_argument("--dev-limit", type=int, default=None)
     parser.add_argument("--rebuild-cache", action="store_true")
@@ -35,6 +38,9 @@ def main():
         retrieval_top_k=args.retrieval_top_k,
         rerank_pool_size=args.rerank_pool_size,
         legacy_head_k=args.legacy_head_k,
+        fusion_mode=args.fusion_mode,
+        tail_diversity_start=args.tail_diversity_start,
+        global_repeat_penalty=args.global_repeat_penalty,
         rrf_k=args.rrf_k,
         dev_limit=args.dev_limit,
     )

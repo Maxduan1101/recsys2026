@@ -1,0 +1,461 @@
+You are advising response generation for RecSys Challenge 2026 Music-CRS. Public blind metrics show lexical_diversity=0.0125 and llm_judge_score=1.0, so the text is too templated and weakly personalized. Research question: design a metadata-grounded response generator that improves Distinct-2 and LLM-as-a-Judge personalization/explanation quality without hallucinating and without relying on paid API calls at inference. Include template-bank design, controlled variation, profile/history/feedback use, self-check rules, and examples.
+
+
+我会先基于公开的 Music-CRS 任务背景，设计一个离线可运行、元数据驱动的生成方案，覆盖模板库、受控变化、个性化信号、防幻觉自检和示例输出。
+
+关键点是 Distinct-2 按全局小写空白 bigram 计算，因此不能只换形容词；要变化句式、话语结构和证据选择，同时每句话都绑定到曲库、画像或对话字段。
+
+已思考 10m 47s
+Recommendation: replace free-form response generation with an Evidence-Planned Template Bank
+
+For Music-CRS, the response generator should not be a generic LLM completion step. The official task asks systems to use dialogue history and user context to recommend tracks and produce natural-language responses, and the dataset provides conversations, track metadata, user profiles, and embeddings. 
+RecSys
+ The public evaluator defines lexical_diversity as Distinct-2: unique bigrams divided by total bigrams across all predicted responses, using lowercased whitespace tokenization. 
+GitHub
++1
+ So the goal is not “longer text”; it is many genuinely different, grounded bigrams without repeating boilerplate.
+
+I would implement this as:
+
+ranking model produces predicted_track_ids → metadata evidence planner → controlled template-bank generator → self-checker → global diversity selector
+
+This avoids paid API calls at inference, improves personalization signals visible to an LLM judge, and keeps every claim traceable to metadata or conversation text.
+
+1. Evidence available at inference
+
+Use only fields available from the challenge inputs and shared catalogs. The track metadata includes fields such as track_name, artist_name, album_name, tag_list, popularity, release_date, and duration. 
+Hugging Face
+ The user-side data includes profile information such as age group, country, and gender in the user metadata, while the conversation dataset examples also expose richer user_profile, conversation_goal, conversations, and goal-progress-style annotations in the public viewer. 
+Hugging Face
++1
+ Use only the subset actually present in the blind inference files; do not rely on hidden labels.
+
+The generator should build a compact evidence ledger before writing:
+
+JSON
+{
+  "current_request": {
+    "mood": ["mellow", "easy to listen to"],
+    "activity": null,
+    "era": null,
+    "artist_constraints": [],
+    "negative_constraints": []
+  },
+  "profile_signal": {
+    "preferred_musical_culture": "Indie Folk",
+    "safe_to_mention": false
+  },
+  "history_signal": {
+    "liked_tags": ["acoustic", "reflective"],
+    "avoid_tags": ["aggressive"]
+  },
+  "recommended_track": {
+    "title": "With Rainy Eyes",
+    "artist": "Emancipator",
+    "album": "Soon It Will Be Cold Enough",
+    "year": 2006,
+    "tags_used": ["relaxing", "piano", "ambient", "downtempo"]
+  }
+}
+
+The response should be generated only from this ledger.
+
+2. Template-bank design
+
+Use a compositional template bank, not one large list of whole responses. This gives controlled diversity while preserving grounding.
+
+Banks
+Bank	Purpose	Example variants
+opener	Acknowledge the request or feedback	“For that {mood} direction,” / “Sticking with your {genre} thread,” / “To move away from the last pick,”
+history_bridge	Connect to prior likes/dislikes	“since you responded well to {liked_tag} tracks” / “after the {negative_tag} pick felt off”
+track_intro	Present recommendation	“I’d start with {title} by {artist}” / “Try {title} — {artist}”
+metadata_reason	Ground explanation	“it is tagged {tag_phrase}” / “its {year} release keeps it in the {era} window” / “the album context, {album}, matches your {album_constraint} cue”
+contrast_or_next	Explain refinement	“This keeps the energy lower than {prev_track}.” / “It gives you a cleaner entry point before the deeper cuts.”
+closer	Optional short close	“That makes it a safer first play.” / “I’d put this near the top of the queue.”
+
+A single response is assembled from 3–5 clauses. For example:
+
+{opener} {track_intro}. {metadata_reason}; {history_bridge}. {closer}
+Template classes by conversation state
+
+Use different templates for different user intents:
+
+Specific lookup: user is trying to identify one song/album/artist.
+Response should be cautious: “I’d try X first” unless there is an exact match.
+
+Mood/activity request: user wants music for studying, gym, rain, relaxation.
+Ground in tags such as relaxing, ambient, energetic, dance, acoustic, downtempo.
+
+Era/genre request: user asks for 90s rock, early-2000s punk, classic jazz.
+Ground in release_date, tags, artist, album.
+
+More like previous: user likes a prior item.
+Mention shared tags, same artist, same album, same decade, or similar catalog cluster.
+
+Negative feedback/refinement: user rejects a previous item.
+Explicitly say how the new pick moves away from the rejected attribute.
+
+Exploration/discovery: user asks for “new artists” or broad discovery.
+Mention why the top pick opens a lane, then optionally name one contrast pick.
+
+3. Controlled variation for Distinct-2
+
+A lexical diversity score of 0.0125 suggests the system is producing the same few bigrams repeatedly. Since the evaluator counts unique lowercased bigrams across all responses, every repeated opener like “Here are” or “you might” harms the ratio. 
+GitHub
+
+Use deterministic diversity, not random paraphrasing:
+
+Python
+运行
+seed = hash(session_id + str(turn_number) + top_track_id)
+rng = Random(seed)
+
+Generate 20–50 candidate responses per prediction, then choose the best one with a score like:
+
+Python
+运行
+score = (
+    3.0 * personalization_score
+  + 2.0 * metadata_grounding_score
+  + 1.5 * feedback_alignment_score
+  + 1.0 * novel_bigram_ratio
+  - 2.5 * hallucination_risk
+  - 0.5 * length_penalty
+)
+
+Add two anti-template constraints:
+
+Python
+运行
+reject if response starts with a 4-token prefix already used too often
+reject if more than 35% of response bigrams appeared in the previous 200 responses
+
+This directly optimizes the public Distinct-2 metric while still preserving naturalness.
+
+Important: do not add nonsense words, random adjectives, or fake facts to inflate Distinct-2. The server-side LLM judge will likely punish that. Use variation from real metadata: title, artist, album, year, genre tags, mood tags, prior feedback, and user wording.
+
+4. How to use profile, history, and feedback
+Current user utterance: strongest signal
+
+Extract explicit constraints first:
+
+User: “I want something rainy, soft, reflective, with acoustic elements.”
+
+Planner facts:
+
+JSON
+{
+  "mood": ["rainy", "soft", "reflective"],
+  "instrument_or_texture": ["acoustic"],
+  "avoid": [],
+  "specificity": "high"
+}
+
+Response should visibly reuse one or two of those words.
+
+Session history: second strongest signal
+
+Track previous recommended item IDs and map them back to metadata. If the user gives positive feedback, promote shared tags. If the user gives negative feedback, demote or avoid those tags.
+
+Examples:
+
+“that was too heavy” → avoid tags: heavy, metal, loud, aggressive
+“I liked the piano but want less sleepy” → keep: piano; avoid: sleepy, slow, ambient
+“more like the last one” → prefer shared artist/tag/album/decade
+Profile: weak but useful signal
+
+Use profile for ranking and evidence selection, but be careful about mentioning it. Do not say “because you are a 20-year-old female listener…” That feels creepy and may be judged poorly. Safer uses:
+
+Good: “This stays close to your indie-folk leaning.”
+Risky: “Because you are a Canadian woman in your 20s…”
+
+Mention profile only when it is musically meaningful, such as preferred_musical_culture, and only if that field is explicitly available in the input.
+
+Conversation goal: use if exposed
+
+If conversation_goal.listener_goal is available, treat it as a high-level intent summary, but still prioritize the latest user turn. The public dataset viewer shows conversation goals like “discover multiple mellow and pleasant songs” or “find one specific Nine Inch Nails song.” 
+Hugging Face
+
+5. Metadata grounding rules
+
+Every response should contain:
+
+At least one track title and artist from predicted_track_ids.
+
+At least one user-specific reason from current utterance, history, or profile.
+
+At least one metadata-backed fact from title, artist, album, tag, year, duration, or popularity.
+
+No unsupported audio/lyric/biography claims.
+
+Good:
+
+“For the mellow, easy-listening mood, I’d start with ‘With Rainy Eyes’ by Emancipator. It is tagged relaxing, piano, ambient, and downtempo, so it fits the calm lane without needing a big stylistic jump.”
+
+Bad:
+
+“You’ll love the emotional lyrics and warm analog production.”
+
+Unless lyrics or production are in the metadata or user text, that is hallucinated.
+
+Use “tagged as” for tag-derived claims:
+
+“it is tagged as ambient and downtempo”
+
+rather than:
+
+“it has a spacious ambient mix”
+
+The first is safely metadata-grounded; the second infers audio details.
+
+6. Self-check rules
+
+Run these checks after candidate generation.
+
+Entity whitelist
+
+Reject any named entity not found in:
+
+current user utterance
+previous dialogue turns
+recommended track metadata
+previously recommended track metadata
+user profile fields
+
+This prevents invented artist names, albums, genres, and external facts.
+
+Claim-source ledger
+
+For each non-generic adjective, require a source:
+
+JSON
+{
+  "relaxing": "track.tag_list",
+  "downtempo": "track.tag_list",
+  "early 2000s": "release_date or user_request",
+  "Black Keys": "user_request or artist_name"
+}
+
+If no source exists, delete or soften the claim.
+
+Contradiction checks
+
+Reject if:
+
+user says “not too heavy” and response says “keeps the heavy sound”
+user asks for 2000s and response says a 1991 track “matches the 2000s era”
+user disliked last artist and response says “since you liked that artist”
+Sensitive profile check
+
+Do not mention age, gender, or country unless the user explicitly brought it up. These fields may help modeling, but they rarely improve response quality.
+
+Minimum quality check
+
+Require:
+
+20–55 words
+title + artist present
+one explicit user-intent phrase
+one metadata-backed reason
+no duplicate track IDs
+no unsupported claims
+
+The official submission format requires predicted_track_ids and predicted_response, with track IDs valid and ordered by relevance. 
+GitHub
+
+7. Example template definitions
+YAML
+- id: mood_tag_single
+  condition:
+    user_has_mood: true
+    tag_overlap_min: 1
+  text:
+    - "{opener_mood}, I’d start with “{title}” by {artist}. It is tagged {tags}, which lines up with your {user_mood_phrase} request."
+    - "For {user_mood_phrase}, “{title}” by {artist} is the safest first pick: the catalog tags it {tags}."
+    - "“{title}” by {artist} fits the {user_mood_phrase} lane because its metadata points to {tags}."
+  required_sources:
+    title: track.track_name
+    artist: track.artist_name
+    tags: track.tag_list
+    user_mood_phrase: current_user_utterance
+
+- id: negative_refinement
+  condition:
+    has_negative_feedback: true
+  text:
+    - "Moving away from {negative_phrase}, try “{title}” by {artist}. Its {tags} tags make it a better match for {positive_phrase}."
+    - "Since the last pick felt {negative_phrase}, I’d switch to “{title}” by {artist}; it leans on {tags} instead."
+  required_sources:
+    negative_phrase: current_or_previous_user_feedback
+    title: track.track_name
+    artist: track.artist_name
+    tags: track.tag_list
+
+- id: era_match
+  condition:
+    user_has_era: true
+    release_year_known: true
+  text:
+    - "For the {era_phrase} angle, “{title}” by {artist} is a strong candidate from {year}. The {tags} tags keep it close to your requested style."
+    - "“{title}” by {artist} keeps the timing right for {era_phrase}: it was released in {year} and is tagged {tags}."
+  required_sources:
+    year: track.release_date
+8. Example outputs
+Example A: mellow mood request
+
+Input facts:
+
+JSON
+{
+  "user": "Play something mellow and easy to listen to.",
+  "track": "With Rainy Eyes",
+  "artist": "Emancipator",
+  "album": "Soon It Will Be Cold Enough",
+  "tags": ["relaxing", "piano", "ambient", "downtempo", "chillout"],
+  "release_date": "2006-12-06"
+}
+
+Weak templated response:
+
+Here are some songs you might enjoy.
+
+Better grounded response:
+
+For a mellow, easy-listening start, I’d queue “With Rainy Eyes” by Emancipator. Its relaxing, piano, ambient, and downtempo tags fit the calm lane you asked for.
+
+Why it helps: it uses the user’s wording, names the recommendation, cites metadata, and creates distinctive bigrams like “downtempo tags” and “calm lane.”
+
+Example B: negative feedback
+
+Input facts:
+
+JSON
+{
+  "previous_feedback": "That was too loud and aggressive.",
+  "new_request": "Can you make it smoother?",
+  "track": "(I Left My Heart) In San Francisco",
+  "artist": "Tony Bennett",
+  "tags": ["vocal jazz", "easy listening", "lounge"],
+  "release_date": "1962-06-18"
+}
+
+Better response:
+
+Moving away from the loud, aggressive feel, try “(I Left My Heart) In San Francisco” by Tony Bennett. The vocal jazz, easy listening, and lounge tags make it a smoother pivot.
+
+Why it helps: the response explicitly reacts to feedback instead of pretending the previous pick worked.
+
+Example C: cover/alternative request
+
+Input facts:
+
+JSON
+{
+  "user": "I want an alternative cover, something familiar but not too polished.",
+  "track": "Time After Time",
+  "artist": "The Wind and The Wave",
+  "album": "Covers One",
+  "tags": ["Alternative"],
+  "release_date": "2015-02-17"
+}
+
+Better response:
+
+For an alternative-leaning cover, “Time After Time” by The Wind and The Wave is a grounded pick. It comes from “Covers One” and carries an Alternative tag.
+
+Note the wording: it does not claim the recording is “raw,” “acoustic,” or “emotional” unless those facts are present.
+
+Example D: early-2000s rock request with mismatch protection
+
+Input facts:
+
+JSON
+{
+  "user": "Give me early 2000s alternative rock.",
+  "track": "Suck My Kiss",
+  "artist": "Red Hot Chili Peppers",
+  "tags": ["alternative rock", "funk metal", "energetic"],
+  "release_date": "1991-09-24"
+}
+
+Bad hallucinating response:
+
+This is a great early-2000s alternative rock track.
+
+Safe response if ranking still selects it:
+
+“Suck My Kiss” by Red Hot Chili Peppers matches the alternative-rock side of your request, but its 1991 release is earlier than the 2000s window. I’d treat it as a stylistic fallback rather than the exact-era pick.
+
+This kind of honesty can help the judge because it shows awareness of the constraint instead of forcing a false explanation.
+
+9. Practical inference algorithm
+Python
+运行
+def generate_response(example, predicted_track_ids, catalog, global_bigram_counts):
+    state = parse_dialogue_state(example.conversations)
+    profile = parse_profile(example.user_profile)
+
+    top_tracks = [catalog[tid] for tid in predicted_track_ids[:3]]
+    evidence = build_evidence_ledger(state, profile, top_tracks)
+
+    candidates = []
+    for template in select_template_classes(state, evidence):
+        for variant in template.variants:
+            text = fill_template(variant, evidence)
+            if passes_self_checks(text, evidence, state):
+                candidates.append(text)
+
+    if not candidates:
+        candidates = [fallback_response(evidence)]
+
+    return max(
+        candidates,
+        key=lambda r: (
+            personalization_score(r, state, profile),
+            metadata_grounding_score(r, evidence),
+            feedback_alignment_score(r, state),
+            novel_bigram_ratio(r, global_bigram_counts),
+            -hallucination_risk(r, evidence),
+            -length_penalty(r),
+        )
+    )
+
+The fallback should still be grounded:
+
+“I’d start with “{title}” by {artist}. Its catalog metadata gives the closest match I found to your latest request.”
+
+Even this is better than a universal “Here are some songs you might enjoy.”
+
+10. Ablation plan
+
+Run these variants on dev before blind submission:
+
+Variant	Expected effect
+Static baseline response	Very low Distinct-2, weak judge score
+Track-title-only response	Better Distinct-2, still weak personalization
+Metadata tags + user request	Strong jump in judge quality
+Metadata + feedback handling	Better multi-turn personalization
+Metadata + global bigram selector	Best Distinct-2 without nonsense
+Full self-checker	Slightly less flashy text, fewer hallucinations
+
+Track four diagnostics:
+
+Distinct-2
+% responses with title + artist
+% responses with user-intent phrase
+% responses with unsupported claim detected
+
+A good target is not just “higher lexical diversity.” A strong submission should have a response distribution where most outputs say something like:
+
+Because you asked for X / reacted to Y, I recommend TITLE by ARTIST; metadata fact Z explains why.
+
+—but with many different openers, bridges, metadata reasons, and closers.
+
+Bottom line
+
+Your current public scores point to a response field that is probably near-static. The fastest high-confidence fix is a metadata-grounded, self-checking template bank with global bigram-aware candidate selection. It uses the challenge’s own track metadata and dialogue context, requires no paid inference API, naturally increases Distinct-2, and gives the LLM judge visible evidence of personalization: user intent, feedback handling, and concrete explanations tied to catalog facts.
+
+来源
+
+进阶专业
+ChatGPT 也可能会犯错。请核查重要信息。
