@@ -1,0 +1,440 @@
+You are advising low-risk ranking improvements for RecSys Challenge 2026 Music-CRS. Current best public-safe package preserves BM25 top20 because blind nDCG@20 was strong. Multi-source RRF improves recall but hurts head ranking. What low-risk ranking changes can improve nDCG without sacrificing the known BM25 anchor? Consider reranking only positions 11-20 or 16-20, entity exact-match promotion, per-intent gates, popularity/train priors, and blind-like validation. Give a concrete ordered experiment plan.
+
+主人，我会把它当成“不要动已验证强 BM25 头部，只在可控尾部和确定性强的 case 上榨 nDCG”的提交策略来设计。重点是每个实验都要能随时回滚，并且用 blind-like 验证防止本地 dev 误导。
+
+我已经核对了官方 evaluator 的关键点：nDCG@1/10/20 是按 turn/session 宏平均，排序本身会影响分数；所以“只动 16-20”是最安全但上限小，“动 11-20”风险稍高但更可能有可见 nDCG 增益。
+
+已思考 1m 8s
+
+主人，lowest-risk answer: keep BM25 top-15 frozen first, only edit 16–20; then try top-10 frozen / edit 11–20 only if blind-like validation is consistently positive. Do not submit any package that lets multi-source RRF enter the head unless it passes very strict intent/entity gates.
+
+The official evaluator makes this a good strategy: predictions are ordered, duplicates are invalid, and nDCG uses the discounted position formula, macro-averaged over turns and sessions. So moving or adding a correct item in positions 11–20 can help, while freezing top-10 protects nDCG@10 and most of the proven BM25 signal. 
+GitHub
+ The baseline/evaluator docs also stress full-catalog inference, so every variant should still retrieve from all_tracks, not a filtered candidate subset. 
+GitHub
+
+Core rule
+
+Use BM25 as the anchor, not one feature among many.
+
+final_top20 =
+  BM25[1:K] frozen
+  + guarded_rerank_or_replace(BM25[K+1:20], extra_candidates)
+
+Run scopes in this order:
+
+Scope A: K = 15, editable = 16–20   # submit-safe
+Scope B: K = 10, editable = 11–20   # only if validation is robust
+Scope C: K = 5,  editable = 6–20    # probably too risky; research only
+
+For the current situation, Scope A is the first serious submission candidate.
+
+Scoring candidates in the editable tail
+
+Candidate pool per row:
+
+C = original_BM25_tail
+  ∪ exact_entity_candidates_topM
+  ∪ gated_RRF_candidates_topM
+  ∪ seed/history similarity candidates_topM
+  ∪ popularity/train-prior candidates_topM
+
+But a new candidate may enter only if it passes eligibility:
+
+eligible(c) =
+  c not in frozen_topK
+  and c not duplicate
+  and c valid track_id
+  and evidence_count(c) >= threshold
+  and not contradicted by negative feedback
+
+Use a conservative rank-based score, not raw source scores:
+
+score(c) =
+  2.00 * legacy_bm25_rank_score(c)
++ 1.50 * exact_entity_score(c)
++ 0.70 * intent_source_score(c)
++ 0.40 * seed_positive_score(c)
++ 0.25 * popularity_prior(c)
++ 0.25 * train_prior(c)
++ 0.20 * original_tail_bonus(c)
+- 1.00 * negative_feedback_penalty(c)
+- 0.50 * generic_tag_penalty(c)
+
+Where:
+
+rank_score_s(c) = 1 / log2(rank_s(c) + 1), else 0
+
+The key is original_tail_bonus: BM25 tail items should win ties. A replacement must beat the original candidate by a margin:
+
+replace only if score(new) > score(weakest_original_tail_item) + τ
+
+Suggested margins:
+
+τ = 0.08 for positions 16–20
+τ = 0.12 for positions 11–20
+τ = 0.18 for any attempt touching 6–10
+Ordered experiment plan
+0. Build the diff/eval harness first
+
+Before changing ranking, log for every session-turn:
+
+bm25_gold_pos
+new_gold_pos
+changed_positions
+changed_track_count
+frozen_topK_changed
+promoted_source
+intent_type
+entity_confidence
+was_gold_in_bm25_top20
+was_gold_in_rrf_top20
+was_gold_in_entity_pool
+
+Report:
+
+nDCG@1 / nDCG@10 / nDCG@20
+hit@20
+delta vs BM25
+delta only on changed rows
+delta on exact-entity rows
+delta on broad/mood/tag rows
+delta on feedback/continue rows
+bootstrap CI over sessions
+
+Hard gate:
+
+top10_changed must be 0 for Scope A/B
+duplicates must be 0
+invalid IDs must be 0
+nDCG@10 must be unchanged for top10-frozen variants
+
+The official format requires ranked, unique, valid track IDs for every session-turn, so make this a pre-submit check, not just an evaluator failure mode. 
+GitHub
+
+1. Baseline tail reorder only: no new tracks
+
+First test:
+
+freeze 1–15
+rerank only original BM25 positions 16–20
+
+Then:
+
+freeze 1–10
+rerank only original BM25 positions 11–20
+
+No external candidates yet. This answers: “Is BM25’s own tail order suboptimal?”
+
+Use:
+
+score = BM25_score
+      + exact_entity_bonus
+      + positive_seed_bonus
+      + train_prior_tiebreak
+
+Expected result: tiny but very safe. If this loses, your entity parser/prior is hurting and should not be trusted for replacement.
+
+2. Positions 16–20 exact-entity replacement
+
+This is the first real improvement candidate.
+
+freeze 1–15
+editable 16–20
+candidate_pool = BM25[16:20] ∪ exact_entity_candidates
+
+Promote only high-confidence entity matches:
+
+track title exact in last user utterance or goal
+artist exact with artist-intent wording
+album exact with album-intent wording
+title + artist both match
+
+Do not promote on weak matches:
+
+single common word title
+generic tag
+negated entity: "not X", "tired of X", "avoid X"
+history-only mention without current preference
+noisy user tags: sleep, cds I own, to live by, etc.
+
+Recommended promotion rule:
+
+if title_exact and not negated:
+    can enter 16–20
+if artist_exact and candidate has BM25/RRF support:
+    can enter 16–20
+if album_exact and candidate has album/title/artist support:
+    can enter 16–20
+else:
+    no replacement
+
+This is the best low-risk nDCG move because exact entities are one of the few signals strong enough to beat the BM25 anchor without learning a full reranker.
+
+3. Positions 16–20 gated RRF replacement
+
+Now let RRF help only when it is not fighting BM25.
+
+freeze 1–15
+editable 16–20
+candidate_pool = BM25[16:20] ∪ RRF_top50
+
+Eligibility:
+
+candidate must satisfy at least 2:
+  appears in legacy BM25 top100
+  appears in train-context BM25 top50
+  appears in title/artist/album source top50
+  positive seed similarity top50
+  exact entity weak/medium match
+  popularity/train prior above median
+
+Reject if:
+
+only tags source supports it
+only train-context source supports it
+source support comes from noisy tags
+artist/album contradicts explicit request
+negative feedback similarity is high
+
+Use per-intent source gates:
+
+Intent type	Allowed extra sources	Unsafe sources
+Exact track	title/artist, metadata_all, exact entity	tags-only, popularity-only
+Exact artist	title_artist, artist_album, metadata_all	mood tags-only
+Album request	album_artist, metadata_all	generic train-context
+Mood/activity	tags, metadata_all, attributes, popularity	exact title random matches
+“more like this”	seed sim, CF/user sim, metadata_all	pure popularity
+Negative feedback	sources dissimilar to rejected track	same artist/album/tag unless explicitly requested
+Broad recommendation	popularity/train prior + BM25	aggressive RRF
+
+This should be submitted only if the changed-row delta is positive and unchanged-row count remains high.
+
+4. Popularity/train priors as tie-breakers, not drivers
+
+Use popularity and train priors only after BM25/entity/source evidence. The challenge metadata includes popularity and release-date fields, and the dataset/evaluator setup is grounded in track metadata and user/context fields. 
+GitHub
+
+Good use:
+
+candidate A and B have similar BM25/RRF/entity evidence
+choose the one with stronger train prior or popularity
+
+Bad use:
+
+insert globally popular tracks into 16–20 with no query evidence
+
+Suggested priors:
+
+pop_prior = clipped_zscore(log1p(track_popularity))
+train_prior = clipped_zscore(log1p(train_gold_count))
+artist_prior = clipped_zscore(log1p(train_artist_gold_count))
+
+Cap them hard:
+
+pop_prior, train_prior ∈ [-1, +1]
+combined prior contribution <= 0.40
+
+Also test a turn-aware prior:
+
+turn_prior(track, turn_number)
+intent_prior(track, intent_type)
+
+This is safer than global popularity because the public blind distribution may reward common “synthetic listener” patterns, but global head stuffing can easily collapse catalog diversity and hurt exact-intent rows.
+
+5. Scope B: edit 11–20 only after Scope A works
+
+Only try this once 16–20 replacement is stable.
+
+freeze 1–10
+editable 11–20
+candidate_pool = BM25[11:20] ∪ exact_entity ∪ gated_RRF ∪ seed_sim
+
+Add stronger constraints:
+
+at least 6 of original BM25[11:20] must remain
+max 4 new candidates
+max 2 candidates from same non-BM25 source
+exact entity candidates may enter 11–15
+RRF-only candidates may enter 16–20 only
+
+Position caps:
+
+exact title+artist: can enter 11–15
+exact artist/album: can enter 13–20
+mood/tag/seed/RRF: can enter 16–20
+pop/train prior only: can reorder, not replace
+
+This is probably the best second submission after the top15-frozen version.
+
+6. Tiny rule reranker / logistic reranker on editable tail only
+
+Do not train a full LambdaRank head reranker yet. Train a small classifier/ranker only to decide tail replacement.
+
+Training row:
+
+(session_turn, candidate_track)
+label = 1 if gold track else 0
+candidate_pool = BM25 top20 ∪ RRF top50 ∪ entity top50 ∪ seed top50
+
+Features:
+
+legacy_bm25_rank
+legacy_bm25_score_norm
+rrf_rank
+source_count
+best_source_rank
+title_exact
+artist_exact
+album_exact
+tag_match_count_safe
+positive_seed_similarity
+negative_seed_similarity
+track_popularity
+train_gold_count
+artist_train_count
+turn_number
+intent_type
+is_original_bm25_tail
+
+Inference rule remains conservative:
+
+freeze top15 or top10
+rank editable candidates by model score
+replace only if model_score(new) > model_score(original) + margin
+
+This gives learning signal without letting the model destroy your known BM25 head.
+
+Blind-like validation protocol
+
+Because your local dev nDCG and public blind nDCG have already diverged, do not trust one dev aggregate.
+
+Use five validation views:
+
+A. Full dev
+
+Normal evaluator result.
+
+B. BM25-stratified dev
+
+Separate rows into:
+
+gold in BM25 top1–5
+gold in BM25 top6–10
+gold in BM25 top11–20
+gold outside BM25 top20 but inside RRF/entity pool
+gold outside all candidate pools
+
+A good tail strategy should mainly improve:
+
+gold in BM25 11–20
+gold outside BM25 but inside exact/RRF pool
+
+It must not harm:
+
+gold in BM25 1–10
+C. Intent-stratified dev
+
+Report delta by:
+
+exact track
+artist/album
+mood/activity
+similar-to/history
+negative feedback
+broad recommendation
+
+Submit only if gains are not coming from one tiny fragile bucket while losses spread everywhere.
+
+D. Blind-A-size bootstrap
+
+Since public Blind A is small/noisy in practice, simulate that uncertainty:
+
+sample N rows/sessions similar to blind size
+repeat 1,000 times
+compute delta nDCG@20
+
+Submission rule:
+
+median delta > 0
+5th percentile delta > -0.001
+changed_rows <= 35–45% for 11–20 edit
+changed_rows <= 20–30% for 16–20 edit
+
+For top15-frozen 16–20 edit, I would accept smaller upside:
+
+median delta > +0.0005
+5th percentile delta >= -0.0005
+
+For top10-frozen 11–20 edit, demand more:
+
+median delta > +0.0015
+5th percentile delta >= -0.001
+E. “Known anchor preservation” report
+
+For every candidate package print:
+
+top1 identical rate
+top5 identical rate
+top10 identical rate
+top15 identical rate
+top20 Jaccard with BM25
+average number of replacements
+nDCG delta on changed rows
+nDCG delta on unchanged rows
+
+A low-risk package should look like:
+
+top10 identical: 100%
+top15 identical: 100% for first submit candidate
+avg replacements: <= 1.5 tracks / row
+most replacements from exact/entity/gated evidence
+no duplicate/invalid tracks
+Recommended experiment order
+
+Run exactly in this order:
+
+Order	Experiment	Freeze	Editable	New candidates?	Submit potential
+0	Reproduce BM25 anchor + diff harness	all	none	no	baseline
+1	Original tail reorder only	1–15	16–20	no	yes if positive
+2	Original tail reorder only	1–10	11–20	no	maybe
+3	Exact-entity replacement	1–15	16–20	entity only	best first upgrade
+4	Exact-entity + prior tie-break	1–15	16–20	entity only	strong candidate
+5	Gated RRF replacement	1–15	16–20	yes, strict	candidate if stable
+6	Exact-entity + gated RRF	1–10	11–20	yes, strict	second upgrade
+7	Add seed/history similarity gate	1–10	11–20	yes	only if feedback rows improve
+8	Tiny tail-only learned reranker	1–15 or 1–10	tail only	yes	later, not first
+9	Full RRF or full LTR rerank	none/top5	6–20	yes	not low-risk
+My submit recommendation
+
+First submit candidate after current BM25-safe package:
+
+BM25 top15 frozen
+positions 16–20 reranked/replaced by:
+  exact-entity candidates
+  + popularity/train prior as tie-breaker
+  + original BM25 tail bonus
+  + strict negative/noisy-tag filters
+
+Second candidate:
+
+BM25 top10 frozen
+positions 11–20 reranked by:
+  exact-entity candidates can enter 11–15
+  gated RRF/seed candidates can enter only 16–20
+  at least 6 original BM25 tail items retained
+
+Do not submit:
+
+full RRF top20
+RRF replacing BM25 top10
+popularity-heavy global prior
+tag-only promotion
+learned reranker without topK freezing
+
+The philosophy should be: BM25 decides the answer; extra sources only rescue obvious BM25 tail mistakes.
+
+来源
+
+深入
+ChatGPT 也可能会犯错。请核查重要信息。

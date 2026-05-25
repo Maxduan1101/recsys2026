@@ -11,7 +11,7 @@
 当前优先提交包：
 
 ```text
-experiments/goalflow_head20_compactresp_v2/blindset_A/submission.zip
+experiments/goalflow_head20_compact_broad/blindset_A/submission.zip
 ```
 
 ## 1. 比赛任务一句话
@@ -699,7 +699,8 @@ label 更可能是下一轮用户对上一轮推荐的反馈。
 | GoalFlow v2 nDCG@20 | 0.07450 | 加权后仍不够 |
 | head10 nDCG@20 | 0.08378 | 接近 baseline |
 | head20 nDCG@20 | 0.08587 | 完全保住 baseline |
-| head20 compact response lexical diversity | 0.17580 | 回复文本大幅改善，同时不动排名 |
+| head20 compact broad response lexical diversity | 0.17571 | 回复文本大幅改善，同时清理噪声 tag |
+| head19 tail diversity nDCG@20 | 0.08576 | 只动最后 1 个位置，风险最低的多样性备选 |
 | head18 tail diversity nDCG@20 | 0.08527 | 只动最后 2 个位置，排名损失很小 |
 | head18 tail diversity catalog diversity | 0.61433 | 比 head20 更覆盖曲库 |
 | best-source hit@20 | 0.4715 | 说明召回源有潜力 |
@@ -712,14 +713,14 @@ label 更可能是下一轮用户对上一轮推荐的反馈。
 当前最推荐 Blind A 包：
 
 ```text
-experiments/goalflow_head20_compactresp_v2/blindset_A/submission.zip
+experiments/goalflow_head20_compact_broad/blindset_A/submission.zip
 ```
 
 特点：
 
 - 推荐 ID 仍由强 BM25 baseline top20 锚定；
 - 修正了 progress label shifted feedback；
-- response 改成 compact metadata-grounded v2；
+- response 改成 compact broad metadata-grounded：保留高 Distinct-2，同时过滤私人/脏 tag；
 - 校验通过。
 
 为什么安全：
@@ -729,10 +730,18 @@ experiments/goalflow_head20_compactresp_v2/blindset_A/submission.zip
 当前第二备选 Blind A 包：
 
 ```text
-experiments/goalflow_taildiv_head18_compactresp_v2/blindset_A/submission.zip
+experiments/goalflow_taildiv_head19_compact_broad/blindset_A/submission.zip
 ```
 
-它只改最后 2 个推荐位置，dev nDCG@20 从 `0.08587` 轻微降到 `0.08527`，Blind A unique track 从 `1216` 提升到 `1268`。
+它只改最后 1 个推荐位置，dev nDCG@20 从 `0.08587` 轻微降到 `0.08576`，Blind A unique track 从 `1216` 提升到 `1244`。
+
+更强多样性备选：
+
+```text
+experiments/goalflow_taildiv_head18_compact_broad/blindset_A/submission.zip
+```
+
+它改最后 2 个推荐位置，dev nDCG@20 是 `0.08527`，Blind A unique track 提升到 `1268`。Blind-like 抽样更偏向这个包，但全量 dev 更偏向 head19。
 
 ## 12. 下一步路线
 
@@ -1013,6 +1022,7 @@ legacy/BM25 头部先保护住
 | `goalflow_taildiv_head10` | 0.0721 | 0.8323 | 0.1019 | 太激进，排名掉太多 |
 | `goalflow_taildiv_head15` | 0.0818 | 0.7676 | 0.1019 | 当前最稳的多样性候选 |
 | `goalflow_taildiv_head18_compactresp_v2` | 0.0853 | 0.6143 | 0.1758 | 更适合作为第二备选，只动最后 2 位 |
+| `goalflow_taildiv_head19_compact_broad` | 0.0858 | 0.5084 | 0.1757 | 当前中间备选，只动最后 1 位 |
 
 保留的激进多样性候选包：
 
@@ -1065,17 +1075,62 @@ Blind A 本地无 gold 摘要：
 | `goalflow_taildiv_head18_compactresp_v2` | 1268 | 0.02694 | 0.66542 |
 | `goalflow_taildiv_head15_compactresp_v2` | 1348 | 0.02864 | 0.66542 |
 
-结论：第一优先提交 `head20_compactresp_v2`，因为它不动已经有公共反馈支持的 ranking；`head18` 是更稳的多样性备选；`head15` 暂时不要优先交。
+旧结论：`head20_compactresp_v2` 是第一优先，`head18` 是多样性备选。后续 `compact_broad` 进一步清理了 response tag，因此当前提交顺序见下一节。
 
-### 16.5 新一批 Pro 问题
+### 16.5 Compact Broad 和 Blind-like 验证
 
-我又把 5 个研究问题发给网页端 Pro：
+compact response v2 的 Distinct-2 很好，但仍可能把一些私人标签或脏词变体写进解释里。于是我又做了 `compact_broad`：
+
+```text
+保留 tag 带来的词汇多样性；
+过滤 albums i own / seen live / lastfm / playlist 等私人或噪声标签；
+过滤 profanity-like tag variants；
+保留原来的 track / artist / album / year / feedback / profile 结构。
+```
+
+效果：
+
+| Run | nDCG@20 | Catalog Diversity | Lexical Diversity |
+|---|---:|---:|---:|
+| `goalflow_head20_style_compact_broad` | 0.08587 | 0.38897 | 0.17571 |
+| `goalflow_taildiv_head19_compact_broad` | 0.08576 | 0.50840 | 0.17570 |
+| `goalflow_taildiv_head18_compact_broad` | 0.08527 | 0.61433 | 0.17570 |
+
+Blind A 本地无 gold 摘要：
+
+| Package | Unique Tracks | Catalog Diversity | Distinct-2 |
+|---|---:|---:|---:|
+| `goalflow_head20_compact_broad` | 1216 | 0.02583 | 0.66418 |
+| `goalflow_taildiv_head19_compact_broad` | 1244 | 0.02643 | 0.66418 |
+| `goalflow_taildiv_head18_compact_broad` | 1268 | 0.02694 | 0.66418 |
+
+我还新增了 `scripts/evaluate_blind_like.py`。它按照 Blind A 的 turn/category/specificity 分布，从 dev 里反复抽 80 条小面板，比较 head20、head19、head18、head17。500 次抽样结果：
+
+| Candidate | Mean Delta nDCG@20 vs head20 | Median Delta | 结论 |
+|---|---:|---:|---|
+| head18 | +0.00070 | +0.00044 | Blind-like 最支持 |
+| head19 | +0.00031 | +0.00018 | 更保守 |
+| head17 | -0.00174 | -0.00172 | 淘汰 |
+
+所以目前提交顺序更新为：先交 `head20_compact_broad`，再考虑 `head19_compact_broad`，最后才是更激进一点的 `head18_compact_broad`。
+
+### 16.6 新一批 Pro 问题
+
+前面一批 Pro 问题聚焦：
 
 - 公共 Blind A 后处理策略；
 - metadata-grounded response generation；
 - catalog diversity 的 batch-level 策略；
 - dev / blind 分数错位诊断；
 - 下一步最高 ROI：LTR、embedding、CF、cross-encoder 还是 response。
+
+最新一批 Pro 问题聚焦：
+
+- response generator 怎样兼顾 Distinct-2 和 LLM judge；
+- 低风险 ranking 改动应该怎么保护 BM25 头部；
+- LTR 应该先做尾部 reranker 还是替换全排序；
+- embedding / CF 如何作为尾部 evidence 接入；
+- 如何做 Blind-A-shaped 离线验证。
 
 已保存的完整回答：
 
@@ -1085,4 +1140,9 @@ research/pro_answers/round3/tab2_next_step_modeling_roi.txt
 research/pro_answers/round3/tab4_dev_blind_evaluation_analysis.txt
 research/pro_answers/round3/tab5_metadata_grounded_response_design.txt
 research/pro_answers/round4/tab1_submission_package_decision.txt
+research/pro_answers/round5/tab1_response_generator_design.txt
+research/pro_answers/round5/tab2_low_risk_ranking_improvements.txt
+research/pro_answers/round5/tab3_ranker_implementation_guidance.txt
+research/pro_answers/round5/tab4_embedding_cf_integration.txt
+research/pro_answers/round5/tab5_offline_validation_design.txt
 ```

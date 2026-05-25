@@ -53,6 +53,11 @@ def parse_args():
     parser.add_argument("--conversation-dataset-name", default=CONVERSATION_DATASET)
     parser.add_argument("--blind-dataset-name", default=BLIND_A_DATASET)
     parser.add_argument("--track-metadata-name", default=TRACK_METADATA)
+    parser.add_argument(
+        "--response-style",
+        choices=["compact", "compact_broad", "concise", "setwise", "natural"],
+        default="compact",
+    )
     parser.add_argument("--copy-to-official-evaluator", action="store_true")
     parser.add_argument("--zip", action="store_true", help="Write blindset_A/submission.zip.")
     return parser.parse_args()
@@ -77,7 +82,12 @@ def main():
         if state is None:
             missing.append(key)
             continue
-        row["predicted_response"] = generate_response(state, catalog, row["predicted_track_ids"])
+        row["predicted_response"] = generate_response(
+            state,
+            catalog,
+            row["predicted_track_ids"],
+            style=args.response_style,
+        )
     if missing:
         raise ValueError(f"Missing state rows for {len(missing)} predictions; first={missing[:3]}")
 

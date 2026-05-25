@@ -15,6 +15,11 @@ Development-set scores from the official evaluator.
 | `goalflow_head20_compactresp_v2` | 0.009625 | 0.067601 | 0.085870 | 0.388966 | 0.175800 | Recommended public submission candidate: unchanged safe ranking, compact grounded response. |
 | `goalflow_taildiv_head18_compactresp_v2` | 0.009875 | 0.067536 | 0.085271 | 0.614327 | 0.175789 | Safer diversity backup: preserves first 18, diversifies final 2. |
 | `goalflow_taildiv_head15_compactresp_v2` | 0.009875 | 0.067536 | 0.081796 | 0.767628 | 0.175789 | More aggressive backup; not recommended before head20/head18 because nDCG loss is larger. |
+| `goalflow_head20_style_compact_broad` | 0.009625 | 0.067601 | 0.085870 | 0.388966 | 0.175710 | Current best response style: compact v2 diversity with broader cleaned tags. |
+| `goalflow_taildiv_head19_compact_clean` | 0.009875 | 0.067536 | 0.085758 | 0.508402 | 0.169888 | Conservative tail-diversity variant; only rank 20 can be diversified. |
+| `goalflow_taildiv_head19_compact_broad` | 0.009875 | 0.067536 | 0.085758 | 0.508402 | 0.175699 | Current middle backup with compact broad responses. |
+| `goalflow_taildiv_head18_compact_broad` | 0.009875 | 0.067536 | 0.085271 | 0.614327 | 0.175699 | Current stronger diversity backup with compact broad responses. |
+| `goalflow_taildiv_head17_compact_clean` | 0.009875 | 0.067536 | 0.084303 | 0.688598 | 0.169888 | Too much nDCG loss; held back. |
 
 Immediate interpretation:
 
@@ -41,7 +46,8 @@ Interpretation:
 - The conservative BM25/legacy-head ranking is materially useful on the public blind split.
 - The public bottleneck is highly templated/weak response text. Catalog diversity looked small numerically, but Blind A's 80-row ceiling is only `0.0340`, and the previous package already used about 76% of its available unique slots.
 - The composite score is consistent with `0.5 * nDCG + 0.1 * catalog_diversity + 0.1 * lexical_diversity + 0.3 * ((llm_judge_score - 1) / 4)`. This is an inference, but it exactly explains the reported `0.1006`.
-- Pro sanity check saved at `research/pro_answers/round4/tab1_submission_package_decision.txt`: submit `head20_compactresp_v2` first; use `head18` as a later backup.
+- Pro sanity check saved at `research/pro_answers/round4/tab1_submission_package_decision.txt`: submit the safest head20 response-first package before diversity-heavy variants.
+- Latest response iteration upgrades the response style to `compact_broad`, which keeps compact v2 lexical diversity while filtering noisy/private tag artifacts.
 
 ## Blind A Local Diversity Summaries
 
@@ -52,6 +58,24 @@ These are gold-free checks from `scripts/summarize_predictions.py`; they do not 
 | `goalflow_head20_compactresp_v2` | 1216 | 0.7600 | 0.025833 | 0.033991 | 0.665424 | Submit first: preserves known ranking. |
 | `goalflow_taildiv_head18_compactresp_v2` | 1268 | 0.7925 | 0.026938 | 0.033991 | 0.665424 | Backup if one more submission is available. |
 | `goalflow_taildiv_head15_compactresp_v2` | 1348 | 0.8425 | 0.028638 | 0.033991 | 0.665424 | Useful experiment, but nDCG risk is likely too high for first retry. |
+| `goalflow_head20_compact_broad` | 1216 | 0.7600 | 0.025833 | 0.033991 | 0.664176 | Current first-choice package: same safe ranking, cleaner broad-tag response. |
+| `goalflow_taildiv_head19_compact_broad` | 1244 | 0.7775 | 0.026428 | 0.033991 | 0.664176 | Middle backup: small tail diversity gain, lower full-dev nDCG risk than head18. |
+| `goalflow_taildiv_head18_compact_broad` | 1268 | 0.7925 | 0.026938 | 0.033991 | 0.664176 | Stronger diversity backup; blind-like panels favor it, full-dev nDCG is lower. |
+
+## Blind-Like Dev Panels
+
+Script: `scripts/evaluate_blind_like.py`
+
+This samples 80-row dev panels matching Blind A's `(turn_number, category, specificity)` distribution, then compares prediction files against a baseline. It is not a substitute for Codabench, but it catches changes that look good on full dev while being risky for the Blind A-shaped slice.
+
+Latest 500-panel result, baseline `head20`:
+
+| Candidate | Mean nDCG@20 | Median nDCG@20 | P10 nDCG@20 | Mean Delta vs Head20 | Median Delta | Notes |
+|---|---:|---:|---:|---:|---:|---|
+| `head20` | 0.086485 | 0.085973 | 0.065782 | 0.000000 | 0.000000 | Safe ranking anchor. |
+| `head18` | 0.087183 | 0.086981 | 0.066606 | +0.000698 | +0.000437 | Best blind-like tail-diversity signal. |
+| `head19` | 0.086794 | 0.086925 | 0.065330 | +0.000309 | +0.000182 | More conservative middle option. |
+| `head17` | 0.084748 | 0.085102 | 0.062943 | -0.001737 | -0.001721 | Rejected. |
 
 ## Retrieval Source Diagnostics
 
@@ -130,10 +154,15 @@ Interpretation:
 - Recommended current package: `experiments/goalflow_head20_compactresp_v2/blindset_A/submission.zip`
 - Safer diversity backup: `experiments/goalflow_taildiv_head18_compactresp_v2/blindset_A/submission.zip`
 - Aggressive diversity backup: `experiments/goalflow_taildiv_head15_compactresp_v2/blindset_A/submission.zip`
+- Current first-choice package: `experiments/goalflow_head20_compact_broad/blindset_A/submission.zip`
+- Current middle backup: `experiments/goalflow_taildiv_head19_compact_broad/blindset_A/submission.zip`
+- Current diversity backup: `experiments/goalflow_taildiv_head18_compact_broad/blindset_A/submission.zip`
 
 The `head20_compactresp_v2` package keeps `legacy_head_k=20` and therefore preserves the safe ranking anchor while replacing the weak response text with compact metadata-grounded explanations.
 
 The `head18` tail-diversity package uses `legacy_head_k=18`, `tail_diversity_start=18`, and `global_repeat_penalty=0.06`. It changes only the final two positions and is the safer diversity experiment. The `head15` package is more aggressive and should be held back unless the first response-focused retry already succeeds.
+
+The `compact_broad` response package is the current response default for submissions. It keeps compact v2's high lexical diversity, blocks offensive/private tag artifacts such as `albums i own`, `seen live`, `lastfm`, and profanity-like tag variants, and avoids the lower Distinct-2 of the more natural long-response experiments.
 
 ## Embedding Schema
 
@@ -177,6 +206,11 @@ Saved answers:
 - `research/pro_answers/round3/tab4_dev_blind_evaluation_analysis.txt`
 - `research/pro_answers/round3/tab5_metadata_grounded_response_design.txt`
 - `research/pro_answers/round4/tab1_submission_package_decision.txt`
+- `research/pro_answers/round5/tab1_response_generator_design.txt`
+- `research/pro_answers/round5/tab2_low_risk_ranking_improvements.txt`
+- `research/pro_answers/round5/tab3_ranker_implementation_guidance.txt`
+- `research/pro_answers/round5/tab4_embedding_cf_integration.txt`
+- `research/pro_answers/round5/tab5_offline_validation_design.txt`
 
 Operational takeaways:
 
@@ -186,3 +220,4 @@ Operational takeaways:
 - Track document augmentation dev reporting must stay train-only; train+dev augmentation is only a separately marked final blind retrain after freezing choices.
 - LambdaRank groups are `session_id × turn_number`, with binary exact-track labels and hard negatives from per-source top candidates.
 - Public blind feedback shifts the immediate priority toward richer metadata-grounded response realization. Tail diversification is secondary on 80-row Blind A because catalog diversity has a low ceiling.
+- Round 5 Pro answers reinforce a conservative strategy: protect the BM25 head, use extra retrieval/ranking only as tail evidence, and validate changes on Blind-A-shaped panels.

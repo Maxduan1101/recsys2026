@@ -1,0 +1,363 @@
+You are advising official embeddings and CF integration for RecSys Challenge 2026 Music-CRS. We confirmed Challenge track embeddings overlap catalog: metadata-qwen3, lyrics-qwen3, attributes-qwen3, audio CLAP, image SigLIP2, track cf-bpr; user cf-bpr exists. Current pipeline has BM25 only and an embedding store but not integrated. What is the safest first embedding/CF feature or retrieval channel that can improve candidate recall or tail ranking without hurting top nDCG? Provide exact scoring and ablation plan.
+
+主人，我会把它收敛成“先做不会破坏 BM25 头部”的方案：只让 embedding/CF 扩召和尾部重排，先不碰 top-10/top-15。Need use web.
+
+我已经确认官方页面/数据集层面确实是多模态 Music-CRS：任务要求基于对话和用户上下文产出 ranked tracks；track embeddings 的 all_tracks split 是约 47.1k 行，并含 metadata/lyrics/attributes Qwen3、audio CLAP、image SigLIP2、track cf-bpr 等列。用户侧也有 cf-bpr。
+
+已思考 1m 59s
+
+主人，safest first move：不要先做全局 embedding fusion；先做“BM25 头部保护 + seed/user CF 的候选扩召与尾部重排”。也就是：BM25 top-15 原封不动，embedding/CF 只影响 16–20，最多替换 1 个新候选。这样能测试 recall/tail gain，同时把 nDCG 风险压到最低。
+
+官方任务本身就是根据 dialogue history 和 user context 产出 ranked track recommendations；track embedding 数据里 all_tracks 约 47.1k 行，并提供 metadata/lyrics/attributes Qwen3、audio CLAP、image SigLIP2、track cf-bpr 等列，其中 cf-bpr 是 128 维，Qwen3 文本向量约 1.02k 维。用户 embedding 数据也提供 user_id 到 128 维 cf-bpr，并区分 train/test_warm/test_cold。
+RecSys
++2
+Hugging Face
++2
+
+结论：第一优先做 seed-CF + user-CF，但只进尾部
+
+优先级：
+
+Seed track → track cf-bpr nearest neighbors
+最安全，因为它不是“从文本瞎语义匹配”，而是从对话中已经出现、可能被用户接受的 track 出发扩召相似曲目。适合 “more like this / similar vibe / playlist continuation”。
+
+User cf-bpr → track cf-bpr score
+作为个性化 prior 很有用，但风险比 seed-CF 大，因为它可能推荐“用户长期偏好”而不是“当前 query 目标”。所以第一版只做 feature 或 tail gate，不要直接冲 top-10。
+
+metadata-qwen3 / attributes-qwen3 seed similarity
+用作 guard，不作为主力。它能防止 CF 漂到不相关曲风。
+lyrics/audio/image 暂时不要全局启用；只在后续按 intent gate 加。
+
+Exact scoring
+1. 预处理
+
+对所有可用 embedding 做 L2 normalize：
+
+Python
+运行
+E_cf[i]      = normalize(track_cf_bpr[i])
+E_meta[i]    = normalize(track_metadata_qwen3[i])
+E_attr[i]    = normalize(track_attributes_qwen3[i])
+U_cf[u]      = normalize(user_cf_bpr[u])
+
+缺失向量直接 mask 掉。不要混 raw cosine；不同模态尺度不同，最终用 rank-normalized score。
+
+2. 构造 seed profile
+
+从历史对话里取 seed tracks：
+
+positive seeds:
+- 明确被用户喜欢 / 要求类似 / 上一轮 MOVES_TOWARD_GOAL 的 track
+- 如果 goal_progress 对齐还没完全验证，则只给普通历史 track 低权重
+
+negative seeds:
+- 用户说不喜欢、不对、换一个
+- DOES_NOT_MOVE_TOWARD_GOAL 的 track，前提是你已确认 label 对齐
+
+权重：
+
+Python
+运行
+w_pos = {
+    "explicit_like": 1.0,
+    "moves_toward_goal": 0.8,
+    "previous_music_uncertain": 0.3,
+}
+
+w_neg = {
+    "explicit_reject": 1.0,
+    "does_not_move_toward_goal": 0.7,
+}
+
+time_decay = 0.85 ** turns_ago
+
+每个 channel 的 seed profile：
+
+Python
+运行
+q_c = normalize(
+    sum(w_j * decay_j * E_c[j] for j in positive_seeds)
+    - 0.6 * sum(w_j * decay_j * E_c[j] for j in negative_seeds)
+)
+
+其中 c ∈ {cf, metadata, attributes}。
+
+3. Embedding candidate scores
+
+对每个 channel 检索 top-K：
+
+Python
+运行
+sim_seed_cf[i]   = dot(q_cf,   E_cf[i])
+sim_seed_meta[i] = dot(q_meta, E_meta[i])
+sim_seed_attr[i] = dot(q_attr, E_attr[i])
+
+sim_user_cf[i] = dot(U_cf[user_id], E_cf[i])
+
+建议 K：
+
+Python
+运行
+K_seed_cf = 100
+K_seed_meta = 50
+K_seed_attr = 50
+K_user_cf = 200
+
+把 rank 转成稳健分数：
+
+Python
+运行
+R(rank) = 1 / log2(rank + 1)
+
+然后：
+
+Python
+运行
+S_seed(i) =
+    0.50 * R(rank_seed_cf(i))
+  + 0.30 * R(rank_seed_meta(i))
+  + 0.20 * R(rank_seed_attr(i))
+
+S_user(i) = R(rank_user_cf(i))
+
+如果某 item 不在某 channel top-K，那个 channel 给 0。
+
+Final ranking：BM25 top-15 冻结
+
+第一版不要动 top-15：
+
+Python
+运行
+final[1:15] = bm25[1:15]
+
+只重排 16–20。
+
+候选池：
+
+Python
+运行
+tail_pool =
+    bm25[16:80]
+  ∪ seed_cf_top100
+  ∪ seed_meta_top50
+  ∪ seed_attr_top50
+  ∪ user_cf_top200
+
+BM25 rank score：
+
+Python
+运行
+S_bm25(i) = 1 / log2(rank_bm25(i) + 1) if i in bm25_top80 else 0
+
+尾部重排分数：
+
+Python
+运行
+S_tail(i) =
+    1.00 * S_bm25(i)
+  + 0.08 * S_seed(i)
+  + 0.05 * intent_user_cf_gate * S_user(i)
+  + 0.03 * popularity_prior(i)
+  - 0.10 * seen_or_already_recommended(i)
+  - 0.08 * negative_seed_neighbor_penalty(i)
+  - 0.05 * artist_overcap_penalty(i)
+
+初始权重故意小：embedding/CF 只能帮助 BM25 tail 排序，不能推翻 BM25 anchor。
+
+强 gate：embedding-only 候选最多 1 个
+
+第一版最多允许 1 个非 BM25 top-80 候选进入 top-20，而且只能放在 rank 20：
+
+Python
+运行
+can_inject_new(i) =
+    i not in bm25_top80
+    and S_seed(i) >= 0.45
+    and metadata_support(i)
+    and not exact_lookup_query
+    and not negative_neighbor(i)
+
+metadata_support(i) 可以定义为：
+
+Python
+运行
+metadata_support(i) =
+    i in metadata_bm25_top300
+    or i shares requested artist/genre/tag
+    or rank_seed_meta(i) <= 30
+    or rank_seed_attr(i) <= 30
+
+exact_lookup_query 包括：
+
+specific title / specific album / specific artist-track lookup /
+cover-art identification / “what is the song called”
+
+这些场景 BM25 和 exact metadata 更可信，CF 很容易跑偏。
+
+Intent gates
+开启 seed-CF 的场景
+more like this
+similar vibe
+continue the playlist
+same mood / energy / era / genre
+broad discovery
+user liked previous recommendation
+开启 user-CF 的场景
+broad personalized recommendation
+playlist building
+“something I would like”
+“based on my taste”
+关闭或弱化 CF 的场景
+exact title / artist / album query
+cover-art identification
+lyrics-specific query
+user asks for a very specific metadata constraint
+current BM25 top results have exact entity match
+
+对 exact-match query：
+
+Python
+运行
+intent_user_cf_gate = 0
+lambda_seed = 0.02  # at most tiny tie-breaker
+
+对 broad / playlist query：
+
+Python
+运行
+intent_user_cf_gate = 1
+lambda_seed = 0.08
+lambda_user = 0.05
+Ablation plan
+A0. Shadow expansion only，先不改 ranking
+
+目的：看 embedding/CF 有没有真实 recall 增益。
+
+比较：
+
+B200 = BM25 top200
+B200 + seed_cf_top100
+B200 + seed_meta_top50
+B200 + seed_attr_top50
+B200 + user_cf_top200
+B200 + all_embedding_channels
+
+看：
+
+gold_in_pool@200
+gold_in_pool@300
+new_gold_found_count
+per-intent new_gold_found_count
+
+如果 seed_cf_top100 找到很多 BM25 没找到的 gold，说明值得进 tail。
+如果 user_cf_top200 只在 broad intent 有 gain，就必须加 intent gate。
+
+A1. 只重排 BM25 16–20，不引入新候选
+final top15 = BM25 top15
+rank 16–20 = rerank BM25 16–40 using S_tail
+
+这一步最安全，测试 embedding/CF feature 能不能在已有 BM25 候选里把 gold 往前挪。
+
+通过标准：
+
+overall nDCG@20 >= BM25 - 0.001
+hit@20 不下降
+exact-query subset 不下降
+broad-query subset 有提升
+A2. seed-CF position-20 injection
+top15 frozen
+16–19 from reranked BM25 tail
+20 may be replaced by one gated seed-CF candidate
+
+记录四个数：
+
+new_hit: 原 BM25 top20 没中，注入后中
+lost_hit: 原 BM25 rank20 是 gold，被替换后丢
+net_dcg = gained_dcg - lost_dcg
+unsafe_injection_rate
+
+只有当：
+
+new_hit > lost_hit
+and exact-query subset 不下降
+and overall nDCG 不低于 baseline
+
+才保留。
+
+A3. user-CF position-20 injection
+
+和 A2 一样，但只在 broad/personalized intent 开启：
+
+Python
+运行
+can_inject_user_cf =
+    warm_user_has_cf
+    and broad_intent
+    and S_user(i) >= 0.55
+    and metadata_support(i)
+
+如果 user-CF 在 dev 上提升 recall 但 nDCG 不稳，就保留为 feature，不直接进 top20。
+
+A4. H=15 → H=10 逐步放开
+
+只有 A1/A2/A3 都稳定后，才测试：
+
+freeze top10
+rerank 11–20
+max_new_embedding_candidates = 1
+
+不要直接 freeze top5。你的 BM25 public nDCG anchor 已经强，top-10 不该轻易动。
+
+实验顺序
+
+按这个顺序跑：
+
+0. BM25 baseline
+1. BM25 top15 frozen + BM25 16–40 tail rerank with seed/user CF features
+2. + seed_cf candidate injection at rank20 only
+3. + seed_meta/attr guard, not as standalone injection
+4. + user_cf injection for broad intent only
+5. freeze top10 variant
+6. per-intent tuned gates
+
+每个实验输出：
+
+overall nDCG@20
+hit@20
+MRR or first_relevant_rank if available
+gold_in_candidate_pool@200
+catalog_diversity
+changed_rows
+changed_positions
+new_hit / lost_hit
+per-intent nDCG delta
+exact-query nDCG delta
+broad-query nDCG delta
+最推荐的 first submission candidate
+
+我会先交这个版本：
+
+BM25 top15 exact preserve
+BM25 16–20 reranked using:
+  + seed_cf score
+  + seed_metadata score
+  + seed_attributes score
+  + weak user_cf score only for broad/personalized intents
+
+At most one embedding-only candidate can enter rank20.
+No CF promotion for exact lookup / cover-art / title-artist queries.
+
+这版的目标不是暴力提升，而是做到：
+
+nDCG risk ≈ very low
+candidate recall ↑
+tail hit chance ↑
+catalog diversity slight ↑
+future LTR features ready
+
+最重要的一句：第一阶段让 embedding/CF 做“补 BM25 尾部的证据”，不要让它做“推翻 BM25 头部的主排序器”。
+
+来源
+
+深入
+ChatGPT 也可能会犯错。请核查重要信息。

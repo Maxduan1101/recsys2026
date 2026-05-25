@@ -8,6 +8,102 @@ from .fusion import infer_intent
 from .state import ConversationState
 
 
+GOOD_TAG_WORDS = {
+    "acoustic",
+    "alternative",
+    "ambient",
+    "americana",
+    "ballad",
+    "blues",
+    "breakbeat",
+    "classic",
+    "classical",
+    "club",
+    "country",
+    "dance",
+    "disco",
+    "dream",
+    "dreamy",
+    "drum",
+    "dub",
+    "electro",
+    "electronic",
+    "emo",
+    "energetic",
+    "experimental",
+    "folk",
+    "funk",
+    "garage",
+    "genre",
+    "gospel",
+    "guitar",
+    "hardcore",
+    "hip",
+    "hop",
+    "house",
+    "indie",
+    "instrumental",
+    "jazz",
+    "latin",
+    "lo-fi",
+    "melancholy",
+    "metal",
+    "mood",
+    "new",
+    "noise",
+    "pop",
+    "post",
+    "prog",
+    "punk",
+    "r&b",
+    "rap",
+    "reggae",
+    "relaxing",
+    "rock",
+    "singer",
+    "ska",
+    "soul",
+    "soundtrack",
+    "synth",
+    "techno",
+    "trance",
+    "trip",
+    "vocal",
+    "wave",
+}
+
+BAD_TAG_WORDS = {
+    "asshole",
+    "bitch",
+    "cunt",
+    "fuck",
+    "fucking",
+    "nigga",
+    "nigger",
+    "shit",
+}
+
+BAD_TAG_PHRASES = (
+    "albums i own",
+    "cds i own",
+    "check out",
+    "favourites",
+    "favorites",
+    "ifs and buts",
+    "i own",
+    "lastfm",
+    "my ",
+    "playlist",
+    "rotation",
+    "seen live",
+    "si related",
+    "songs i",
+    "songs ya",
+    "sruuu",
+    "to live by",
+)
+
+
 def _track_phrase(catalog: TrackCatalog, track_id: str) -> str:
     view = catalog.view(track_id)
     return f'"{view.track_name}" by {view.artist_name}'
@@ -29,17 +125,7 @@ def _profile_hint(state: ConversationState) -> str:
     return ""
 
 
-def _tag_list(catalog: TrackCatalog, track_id: str, limit: int = 3) -> list[str]:
-    blocked = {
-        "fuck",
-        "fucking",
-        "shit",
-        "bitch",
-        "asshole",
-        "cunt",
-        "nigger",
-        "nigga",
-    }
+def _tag_list(catalog: TrackCatalog, track_id: str, limit: int = 3, require_good_words: bool = True) -> list[str]:
     tags = []
     seen = set()
     for raw_tag in catalog.view(track_id).tag_list.split(", "):
@@ -47,9 +133,14 @@ def _tag_list(catalog: TrackCatalog, track_id: str, limit: int = 3) -> list[str]
         key = tag.lower()
         if not tag or key in seen:
             continue
-        if blocked & set(re.findall(r"[a-z]+", key)):
+        if any(phrase in key for phrase in BAD_TAG_PHRASES):
+            continue
+        words = set(re.findall(r"[a-z&-]+", key))
+        if BAD_TAG_WORDS & words or any(word in key for word in BAD_TAG_WORDS):
             continue
         if len(tag) > 36:
+            continue
+        if require_good_words and not (GOOD_TAG_WORDS & words):
             continue
         tags.append(tag)
         seen.add(key)
@@ -97,10 +188,26 @@ def _negative_phrase(state: ConversationState, catalog: TrackCatalog) -> str:
     return ""
 
 
-def _compact_metadata(catalog: TrackCatalog, track_id: str) -> str:
+def _compact_metadata(catalog: TrackCatalog, track_id: str, require_good_words: bool = True) -> str:
     view = catalog.view(track_id)
     parts = []
-    tags = _tag_list(catalog, track_id, limit=3)
+    tags = _tag_list(catalog, track_id, limit=3, require_good_words=require_good_words)
+    if tags:
+        parts.append(f"its catalog tags lean toward {_join_words(tags)}")
+    year = _year_hint(catalog, track_id)
+    if year:
+        parts.append(f"the release year is {year}")
+    if view.album_name:
+        parts.append(f"the album context is {view.album_name}")
+    if not parts:
+        parts.append("the title and artist metadata are the cleanest anchors")
+    return "; ".join(parts[:3])
+
+
+def _metric_metadata(catalog: TrackCatalog, track_id: str, require_good_words: bool = True) -> str:
+    view = catalog.view(track_id)
+    parts = []
+    tags = _tag_list(catalog, track_id, limit=3, require_good_words=require_good_words)
     if tags:
         parts.append(f"tags {_join_words(tags)}")
     year = _year_hint(catalog, track_id)
@@ -113,7 +220,45 @@ def _compact_metadata(catalog: TrackCatalog, track_id: str) -> str:
     return "; ".join(parts[:3])
 
 
-def _compact_backup(catalog: TrackCatalog, track_ids: list[str]) -> str:
+def _backup_detail(catalog: TrackCatalog, track_id: str) -> str:
+    view = catalog.view(track_id)
+    pieces = [_track_phrase(catalog, track_id)]
+    year = _year_hint(catalog, track_id)
+    if year:
+        pieces.append(year)
+    if view.album_name:
+        pieces.append(view.album_name)
+    return " / ".join(pieces[:3])
+
+
+def _compact_backup(state: ConversationState, catalog: TrackCatalog, track_ids: list[str]) -> str:
+    backups = [_backup_detail(catalog, track_id) for track_id in track_ids[1:3]]
+    if len(backups) == 2:
+        options = [
+            f"I kept {backups[0]} and {backups[1]} close by as alternate paths.",
+            f"The nearest backups are {backups[0]} and {backups[1]}.",
+            f"If the first pick is slightly off, the next checks are {backups[0]} and {backups[1]}.",
+        ]
+        return _pick(state, options, salt="backup")
+    if len(backups) == 1:
+        return f"I kept {backups[0]} close by as an alternate path."
+    return "The rest of the list gives the search a little room to recover."
+
+
+def _natural_cue(state: ConversationState, catalog: TrackCatalog) -> str:
+    seed = _seed_phrase(state, catalog)
+    if seed:
+        return f"The earlier positive signal from {seed} nudged the list in this direction."
+    negative = _negative_phrase(state, catalog)
+    if negative:
+        return f"I treated {negative} as a weaker path and avoided leaning too hard on it."
+    profile = _profile_hint(state)
+    if profile:
+        return f"I also used {profile} as a soft preference."
+    return ""
+
+
+def _labeled_backup(catalog: TrackCatalog, track_ids: list[str]) -> str:
     backups = [_track_phrase(catalog, track_id) for track_id in track_ids[1:3]]
     if len(backups) == 2:
         return f"Backups: {backups[0]}; {backups[1]}."
@@ -122,14 +267,19 @@ def _compact_backup(catalog: TrackCatalog, track_ids: list[str]) -> str:
     return "The remaining list keeps wider alternatives."
 
 
-def generate_response(state: ConversationState, catalog: TrackCatalog, track_ids: list[str]) -> str:
+def _generate_compact_response(
+    state: ConversationState,
+    catalog: TrackCatalog,
+    track_ids: list[str],
+    require_good_words: bool = True,
+) -> str:
     if not track_ids:
         return "I found a few tracks that should fit the direction you described."
 
     first_phrase = _track_phrase(catalog, track_ids[0])
     request_hint = _short_request(state)
-    metadata = _compact_metadata(catalog, track_ids[0])
-    backup = _compact_backup(catalog, track_ids)
+    metadata = _metric_metadata(catalog, track_ids[0], require_good_words=require_good_words)
+    backup = _labeled_backup(catalog, track_ids)
     profile = _profile_hint(state)
     feedback = _seed_phrase(state, catalog) or _negative_phrase(state, catalog)
     intent = infer_intent(state)
@@ -204,3 +354,254 @@ def generate_response(state: ConversationState, catalog: TrackCatalog, track_ids
         extras.append(f"Profile cue: {profile}.")
     extra = " ".join(extras[:2])
     return " ".join(part for part in [lead, f"Grounding: {metadata}.", extra, backup] if part)
+
+
+def _generate_concise_response(state: ConversationState, catalog: TrackCatalog, track_ids: list[str]) -> str:
+    if not track_ids:
+        return "I found a few tracks that should fit the direction you described."
+
+    first_phrase = _track_phrase(catalog, track_ids[0])
+    request_hint = _short_request(state)
+    metadata = _compact_metadata(catalog, track_ids[0])
+    backup = _compact_backup(state, catalog, track_ids)
+    cue = _natural_cue(state, catalog)
+    intent = infer_intent(state)
+    opener_by_intent = {
+        "specific_track": [
+            f"I would try {first_phrase} first for the song clue \"{request_hint}\".",
+            f"{first_phrase} is my closest first guess for \"{request_hint}\".",
+            f"For this specific-track search, {first_phrase} is the lead pick.",
+        ],
+        "album": [
+            f"I would start with {first_phrase} for the album cue \"{request_hint}\".",
+            f"{first_phrase} is the cleanest record-context anchor here.",
+            f"For the album-shaped hint, {first_phrase} is the first check.",
+        ],
+        "artist_exploration": [
+            f"I would open the artist path with {first_phrase}.",
+            f"{first_phrase} is the first artist-led recommendation I would test.",
+            f"For this discovery path, I put {first_phrase} up front.",
+        ],
+        "cover_art": [
+            f"I would start the visual clue search with {first_phrase}.",
+            f"{first_phrase} is the first cover-art or image-hint anchor.",
+            f"For the image-related cue, {first_phrase} is the lead.",
+        ],
+        "lyrics_theme": [
+            f"I would start the theme search with {first_phrase}.",
+            f"{first_phrase} is the strongest story or lyric anchor I found.",
+            f"For the lyrical direction, {first_phrase} is the first check.",
+        ],
+    }
+    opener = _pick(
+        state,
+        opener_by_intent.get(
+            intent,
+            [
+                f"I would start with {first_phrase} for \"{request_hint}\".",
+                f"{first_phrase} is the opening pick for this request.",
+                f"For the mood you described, I put {first_phrase} first.",
+            ],
+        ),
+        salt=f"concise-{intent}",
+    )
+    reason = _pick(
+        state,
+        [
+            f"It fits because {metadata}.",
+            f"The catalog evidence is that {metadata}.",
+            f"I used it because {metadata}.",
+        ],
+        salt="concise-reason",
+    )
+    return " ".join(part for part in [opener, reason, cue, backup] if part)
+
+
+def _track_list_phrase(catalog: TrackCatalog, track_ids: list[str], limit: int = 3) -> str:
+    phrases = [_track_phrase(catalog, track_id) for track_id in track_ids[:limit]]
+    return _join_words(phrases)
+
+
+def _generate_setwise_response(state: ConversationState, catalog: TrackCatalog, track_ids: list[str]) -> str:
+    if not track_ids:
+        return "I found a few tracks that should fit the direction you described."
+
+    request_hint = _short_request(state)
+    first_phrase = _track_phrase(catalog, track_ids[0])
+    shortlist = _track_list_phrase(catalog, track_ids, limit=3)
+    cue = _natural_cue(state, catalog)
+    intent = infer_intent(state)
+
+    if intent == "specific_track":
+        opener = _pick(
+            state,
+            [
+                f"I would treat \"{request_hint}\" as a song-identification clue and check {shortlist} first.",
+                f"For the exact-track clue, my first checks are {shortlist}.",
+                f"I put {first_phrase} first, with {shortlist} as the tight search set.",
+            ],
+            salt="setwise-specific",
+        )
+        reason = "The ordering leans on title, artist, album, and repeated conversation clues before broad mood."
+    elif intent == "album":
+        opener = _pick(
+            state,
+            [
+                f"For the album-shaped clue \"{request_hint}\", I would check {shortlist} first.",
+                f"I kept the first checks close to the record context: {shortlist}.",
+                f"The album-aware shortlist starts with {shortlist}.",
+            ],
+            salt="setwise-album",
+        )
+        reason = "I weighted album and artist context more heavily than general genre matches."
+    elif intent == "artist_exploration":
+        opener = _pick(
+            state,
+            [
+                f"For the artist-led request, I would start with {shortlist}.",
+                f"I opened the artist path with {shortlist}.",
+                f"The first recommendations stay close to the artist cue: {shortlist}.",
+            ],
+            salt="setwise-artist",
+        )
+        reason = "The list favors nearby artist, album, and style evidence while leaving room for discovery."
+    elif intent == "cover_art":
+        opener = _pick(
+            state,
+            [
+                f"For the visual clue, I would check {shortlist} first.",
+                f"The cover-art or image-hint search starts with {shortlist}.",
+                f"I kept the visual-clue shortlist to {shortlist}.",
+            ],
+            salt="setwise-cover",
+        )
+        reason = "I treated names, albums, and metadata as anchors because cover hints are easy to overfit."
+    elif intent == "lyrics_theme":
+        opener = _pick(
+            state,
+            [
+                f"For the lyrical or theme clue, I would check {shortlist} first.",
+                f"I started the theme search with {shortlist}.",
+                f"The story-focused shortlist begins with {shortlist}.",
+            ],
+            salt="setwise-lyrics",
+        )
+        reason = "The ranking balances theme language with the track and artist metadata."
+    else:
+        opener = _pick(
+            state,
+            [
+                f"For \"{request_hint}\", I would start with {shortlist}.",
+                f"The first few picks I would try are {shortlist}.",
+                f"I began with {shortlist} and then widened the rest of the list.",
+            ],
+            salt="setwise-general",
+        )
+        reason = "The front of the list follows the request text, while the tail keeps compatible alternatives."
+
+    return " ".join(part for part in [opener, reason, cue] if part)
+
+
+def _generate_natural_response(state: ConversationState, catalog: TrackCatalog, track_ids: list[str]) -> str:
+    if not track_ids:
+        return "I found a few tracks that should fit the direction you described."
+
+    first_phrase = _track_phrase(catalog, track_ids[0])
+    request_hint = _short_request(state)
+    metadata = _compact_metadata(catalog, track_ids[0])
+    backup = _compact_backup(state, catalog, track_ids)
+    cue = _natural_cue(state, catalog)
+    intent = infer_intent(state)
+
+    if intent == "specific_track":
+        lead = _pick(
+            state,
+            [
+                f"For the song clue \"{request_hint}\", I would test {first_phrase} first.",
+                f"{first_phrase} is my closest catalog match for \"{request_hint}\".",
+                f"My first exact-track guess is {first_phrase}, based on \"{request_hint}\".",
+                f"I would lead with {first_phrase} for this specific-song search.",
+            ],
+            salt="lead-specific",
+        )
+    elif intent == "album":
+        lead = _pick(
+            state,
+            [
+                f"For the album clue \"{request_hint}\", I would start with {first_phrase}.",
+                f"{first_phrase} gives the cleanest album-aware anchor here.",
+                f"I treated this as a record-context search and led with {first_phrase}.",
+            ],
+            salt="lead-album",
+        )
+    elif intent == "artist_exploration":
+        lead = _pick(
+            state,
+            [
+                f"For the artist-led cue \"{request_hint}\", I would open with {first_phrase}.",
+                f"{first_phrase} is the first step I would try for this artist path.",
+                f"I started the discovery path with {first_phrase}.",
+            ],
+            salt="lead-artist",
+        )
+    elif intent == "cover_art":
+        lead = _pick(
+            state,
+            [
+                f"For the visual clue \"{request_hint}\", I would start with {first_phrase}.",
+                f"{first_phrase} is my first cover-art or image-hint anchor.",
+                f"I used {first_phrase} as the lead for the visual search.",
+            ],
+            salt="lead-cover",
+        )
+    elif intent == "lyrics_theme":
+        lead = _pick(
+            state,
+            [
+                f"For the theme in \"{request_hint}\", I would start with {first_phrase}.",
+                f"{first_phrase} is the strongest story or lyric anchor I found.",
+                f"I led with {first_phrase} for the lyrical direction in the request.",
+            ],
+            salt="lead-lyrics",
+        )
+    else:
+        lead = _pick(
+            state,
+            [
+                f"For \"{request_hint}\", I would start with {first_phrase}.",
+                f"I chose {first_phrase} first for the mood you described.",
+                f"{first_phrase} is the opening pick for this discovery request.",
+                f"I would try {first_phrase} first, then widen the list from there.",
+            ],
+            salt="lead-mood",
+        )
+
+    reason = _pick(
+        state,
+        [
+            f"The useful metadata cue is that {metadata}.",
+            f"I grounded that pick in the catalog because {metadata}.",
+            f"The catalog evidence is simple: {metadata}.",
+        ],
+        salt="reason",
+    )
+    return " ".join(part for part in [lead, reason, cue, backup] if part)
+
+
+def generate_response(
+    state: ConversationState,
+    catalog: TrackCatalog,
+    track_ids: list[str],
+    style: str = "compact",
+) -> str:
+    if style == "compact":
+        return _generate_compact_response(state, catalog, track_ids)
+    if style == "compact_broad":
+        return _generate_compact_response(state, catalog, track_ids, require_good_words=False)
+    if style == "concise":
+        return _generate_concise_response(state, catalog, track_ids)
+    if style == "setwise":
+        return _generate_setwise_response(state, catalog, track_ids)
+    if style == "natural":
+        return _generate_natural_response(state, catalog, track_ids)
+    raise ValueError(f"Unsupported response style: {style!r}")

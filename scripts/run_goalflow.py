@@ -19,6 +19,11 @@ def parse_args():
     parser.add_argument("--tail-diversity-start", type=int, default=20)
     parser.add_argument("--global-repeat-penalty", type=float, default=0.0)
     parser.add_argument("--rrf-k", type=int, default=60)
+    parser.add_argument(
+        "--response-style",
+        choices=["compact", "compact_broad", "concise", "setwise", "natural"],
+        default="compact",
+    )
     parser.add_argument("--dev-limit", type=int, default=None)
     parser.add_argument("--rebuild-cache", action="store_true")
     parser.add_argument("--no-train-augmentation", action="store_true")
@@ -42,6 +47,7 @@ def main():
         tail_diversity_start=args.tail_diversity_start,
         global_repeat_penalty=args.global_repeat_penalty,
         rrf_k=args.rrf_k,
+        response_style=args.response_style,
         dev_limit=args.dev_limit,
     )
     if args.mode == "dev":

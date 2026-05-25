@@ -1,0 +1,395 @@
+You are advising response generation for RecSys Challenge 2026 Music-CRS. Current compact local generator gets high Distinct-2 but can cite noisy metadata tags such as sleep/to live by/cds I own and may look mechanical. Public LLM judge was 1.0. Design a no-API inference response generator that maximizes Gemini-style personalization/explanation quality while keeping lexical diversity high. Include safe tag filtering, when to mention profile/history/feedback, length, tone, examples, and red flags.
+
+主人，我会把它当成“马上能让 Codex 改生成器”的设计来写：优先保住 ranking，不调用 API，只用已有 profile/history/feedback/metadata 做更像人写的解释，同时过滤掉会让 judge 扣分的脏标签。
+
+我查了一下官方/比赛页确认指标口径：这类系统确实同时交 top-20 推荐和自然语言 response；评价里包含 nDCG@20、catalog diversity、Distinct-2 lexical diversity 和 LLM-as-a-Judge，所以生成器不能只刷 bigram，多半要让解释“看起来像理解了对话”。
+
+已思考 1m 6s
+
+主人，结论：不要继续只优化 Distinct-2；要做一个 evidence-gated template planner。也就是每句话必须来自“当前请求 / 历史正反馈 / 明确负反馈 / 安全 metadata”之一，模板只负责自然表达和多样化。官方页把 response 也纳入评价，且 lexical diversity 用 Distinct-2；Codabench 也列出 nDCG@20、catalog diversity、lexical diversity、LLM-as-a-Judge，所以生成器要同时像“懂对话”和“不重复机器模板”。
+Recsys Challenge
++1
+
+1. 最推荐的生成结构
+
+每条 response 控制在 45–75 words，2–3 sentences。复杂多约束最多 90 words。不要解释 20 首歌，通常只点名 top-1 到 top-3。
+
+标准结构：
+
+Sentence 1: acknowledge current intent + name 1 anchor track
+Sentence 2: explain why it fits, using one strong evidence source
+Sentence 3 optional: mention feedback/history/profile or next-list direction
+
+不要写成：
+
+Here are 20 recommendations based on your preferences: ...
+
+应该像：
+
+I leaned into the late-night electronic side here, with <track> by <artist> as the safest first pick. It keeps the softer, atmospheric feel you asked for, while the rest of the list stays away from heavier dance tracks and focuses more on smooth, low-pressure momentum.
+
+这类 response 的优势是：不像刷 Distinct-2，但 bigram 仍然多；同时 Gemini judge 会看到“当前意图 + 解释 + 约束遵守”。
+
+2. Safe tag filtering：先把脏 tag 杀干净
+
+你现在最大风险是 raw tag 直接进 response，比如 sleep / to live by / cds I own。这些在检索里可能有用，但在 explanation 里会显得诡异。
+
+2.1 三层 tag gate
+
+Hard blacklist：永不外显
+
+cds i own
+vinyl i own
+albums i own
+seen live
+wishlist
+owned
+my library
+to live by
+songs i like
+favorite songs
+spotify
+lastfm
+scrobble
+youtube
+mp3
+playlist
+misc
+unknown
+
+Contextual blacklist：默认不说，除非用户明确提到
+
+sleep
+study
+work
+gym
+driving
+sad
+sexy
+party
+christmas
+wedding
+funeral
+
+比如 sleep 不是绝对不能用。用户说“sleep music / help me fall asleep”时可以转写成：
+
+quiet, slow, bedtime-friendly
+
+但用户只是要“dreamy electronic”，不要说：
+
+because it is tagged sleep
+
+Allowlist：可以说，但要 canonicalize
+
+genre: synth-pop, indie rock, jazz, hip-hop, ambient, folk, metal
+mood: mellow, upbeat, dreamy, melancholic, energetic, warm, atmospheric
+era: 80s, 90s, early-2000s, recent
+style: acoustic, vocal-led, guitar-driven, electronic, orchestral
+language/region: only if metadata is reliable
+2.2 tag 外显评分
+
+只允许外显 tag 满足：
+
+tag_score = source_quality * idf_quality * context_match * cleanliness
+
+建议规则：
+
+if tag in hard_blacklist: never mention
+if tag in contextual_blacklist and not matched_current_request: do not mention
+if tag is too personal/list-like: do not mention
+if tag appears in >= 15% catalog: do not mention, too generic
+if tag appears in only 1 weird user list: do not mention, too noisy
+mention at most 2 tags per response
+
+更重要的是：不要原样说 tag，而是转成自然解释。
+
+dream pop + ambient + slowcore
+→ "a softer, hazy, atmospheric direction"
+
+sleep
+→ only if user asked for sleep: "quiet enough for winding down"
+
+cds I own
+→ never mention
+3. 什么时候提 profile / history / feedback
+
+优先级应该是：
+
+current user request > explicit feedback > recent accepted tracks > stable profile > generic metadata
+3.1 当前请求：几乎每次都要提
+
+如果用户当前 turn 有明确约束，response 必须回应：
+
+"since you asked for..."
+"this keeps the focus on..."
+"I stayed close to..."
+"I avoided..."
+
+例子：
+
+Since you asked for something upbeat but not too aggressive, I kept the list in a bright pop/rock lane rather than pushing into heavier tracks.
+3.2 feedback：只有明确正负反馈才提
+
+可以提：
+
+user liked X
+user rejected Y
+user asked for more/less of genre, energy, artist, era
+goal_progress says previous music item moved toward goal
+
+不要提：
+
+neutral history
+ambiguous assistant text
+previously recommended but user did not react
+
+好的写法：
+
+I moved away from the heavier guitar picks you pushed back on and chose tracks that keep the same energy in a cleaner pop-rock direction.
+
+差的写法：
+
+Based on your feedback history and latent user profile, this recommendation is optimal.
+3.3 profile：少用、谨慎用
+
+只有在 profile 特征稳定时才说，比如：
+
+top genre count >= 2 or 3
+positive seed similarity high
+same artist/genre repeatedly accepted
+
+表达要保守：
+
+"you seem to be leaning toward..."
+"your recent choices point more toward..."
+"this matches the pattern in your earlier picks..."
+
+不要写：
+
+"you love..."
+"your favorite genre is..."
+"you always listen to..."
+
+除非数据里真的有明确字段。
+
+4. Explanation fact builder
+
+给每个 top candidate 构造可解释证据，不要直接让模板读 metadata。
+
+Python
+运行
+facts = [
+  ExactArtistMatch(artist, confidence=1.0),
+  ExactGenreMatch(genre, confidence=0.8),
+  SimilarToPositiveSeed(seed_track, shared_genre, confidence=0.75),
+  AvoidsNegativeFeedback(negative_style, confidence=0.9),
+  SafeMoodTag("dreamy", confidence=0.7),
+  EraMatch("early-2000s", confidence=0.65),
+]
+
+选择 facts 时按这个顺序：
+
+1. exact constraint match
+2. explicit feedback correction
+3. similarity to liked/accepted seed
+4. safe genre/mood/era metadata
+5. popularity/familiarity only as fallback
+
+每条 response 最多用 2 个 explanation facts。多了会像 tag dump。
+
+5. Template bank：不是随机模板，而是 intent-specific planner
+
+按 intent 分模板族。
+
+5.1 exact artist / album / track
+I stayed close to <anchor_artist> here instead of drifting into only loosely related tracks. <track> by <artist> is the strongest anchor, and the rest of the list keeps the same <style/era/mood> thread.
+5.2 mood / activity
+I leaned into the <mood> side of your request without making the list feel one-note. <track> by <artist> gives you the clearest version of that sound, while the follow-ups keep the same <energy/style> but vary the texture.
+5.3 similar-to request
+I treated <seed_track/artist> as the center of gravity, especially its <safe_style_fact>. <track> by <artist> should be the safest first play because it keeps that feel without copying the seed too literally.
+5.4 negative feedback / correction
+I adjusted away from <rejected_style/artist> and kept the recommendations closer to <desired_style>. <track> by <artist> is a better fit because it preserves <positive_trait> while avoiding <negative_trait>.
+5.5 discovery request
+I mixed a familiar anchor with a few less obvious picks so the list does not collapse into the same artists again. <track> by <artist> is the safest entry point, and the rest explores nearby <genre/mood> territory.
+
+Use deterministic variation:
+
+Python
+运行
+variant_id = hash(session_id, turn_id, top1_track_id) % num_variants
+
+This keeps reproducibility while improving Distinct-2.
+
+6. Tone rules
+
+Use a calm music-assistant tone:
+
+"I leaned into..."
+"I kept this close to..."
+"This should work if..."
+"The list moves toward..."
+"The safest first pick is..."
+
+Avoid mechanical phrases:
+
+"Based on your preferences..."
+"Here are recommendations..."
+"This song matches your tags..."
+"The algorithm selected..."
+"Because the metadata contains..."
+
+Avoid over-hype:
+
+"perfect"
+"guaranteed"
+"you will love"
+"ultimate"
+"best ever"
+
+Good tone = confident but not fake.
+
+7. Examples
+Example A: noisy tags
+
+Input evidence:
+
+User: wants dreamy electronic for late night
+Candidate tags: sleep, cds I own, ambient, electronic, dream pop
+
+Bad:
+
+I recommend <track> because it has sleep, cds I own, and dream pop tags.
+
+Good:
+
+I leaned into the late-night electronic side here rather than treating it as literal sleep music. <track> by <artist> is the safest first pick because it has a softer, atmospheric feel, while the rest of the list keeps that hazy texture without becoming too slow or background-only.
+Example B: feedback correction
+
+Input evidence:
+
+User rejected heavy rock, asks for something warmer
+History has positive acoustic/folk seed
+
+Good:
+
+I moved away from the heavier guitar picks and kept this round warmer and more acoustic. <track> by <artist> is a better first play because it preserves the melodic focus from your earlier liked picks without pushing the energy too hard.
+Example C: exact artist request
+
+Input evidence:
+
+User asks for songs like artist X
+Top-1 is same artist or highly similar metadata
+
+Good:
+
+I kept <artist X> as the main anchor instead of over-diversifying the list. <track> by <artist> should be the safest starting point, and the rest stays close to that <era/style/mood> lane while giving you a little variety around it.
+8. Local quality checks before submission
+
+Add validators that run on every generated response:
+
+banned_tag_leak_rate == 0
+mean_words between 45 and 75
+track_name_mentioned in top20
+artist_name matches selected track
+no more than 2 tag-like descriptors
+no raw tag with "i own", "to live by", "playlist", "scrobble"
+no repeated opening phrase > 10% of rows
+Distinct-2 high but not caused by garbage rare tags
+
+Also compute:
+
+intent_coverage_rate:
+  response mentions current constraint or direct paraphrase
+
+feedback_coverage_rate:
+  if explicit negative feedback exists, response acknowledges correction
+
+evidence_coverage_rate:
+  each explanation phrase maps to a stored fact
+
+template_entropy:
+  distribution over template families should not be dominated by one family
+
+For manual review, sample 80 rows:
+
+20 exact artist/album/track
+20 mood/activity
+20 feedback/refinement
+20 vague/general discovery
+
+Score each 1–5 for:
+
+groundedness
+personalization
+naturalness
+constraint satisfaction
+noise-free explanation
+
+Your current public judge = 1.0 probably means the response looked either generic, unpersonalized, or mechanically templated. The new target is not “more creative”; it is more visibly grounded.
+
+9. Red flags
+
+Do not submit if you see these:
+
+Raw noisy tags appear in response.
+Response mentions metadata that is not in the track fields.
+Response says "you like X" from a single weak signal.
+Every row starts with the same phrase.
+The response explains the recommender system instead of the music.
+It lists too many genres: "indie, rock, pop, alternative, mellow, sleep, acoustic..."
+It says "sleep" when user did not ask for sleep-related music.
+It recommends diversity when user asked for exact artist/album matching.
+It mentions negative feedback but the ranking still contains the rejected thing at top.
+It cites profile/history in every response, making it feel fake.
+10. Concrete implementation plan
+
+Implement these modules:
+
+TagFilter
+  normalize_tag()
+  is_hard_banned()
+  is_context_allowed()
+  canonicalize_tag()
+  select_safe_descriptors(max_n=2)
+
+ConversationState
+  current_intent
+  positive_seeds
+  negative_constraints
+  recent_accepted_items
+  stable_profile_traits
+
+ExplanationFactBuilder
+  build_facts(track, state)
+  rank_facts()
+  select_response_facts()
+
+ResponsePlanner
+  choose_template_family(intent)
+  choose_anchor_tracks(top20)
+  fill_template(facts, state, safe_tags)
+
+ResponseValidator
+  banned_tag_check()
+  hallucination_check()
+  length_check()
+  repetition_check()
+  evidence_alignment_check()
+
+The highest-ROI version is:
+
+top20 unchanged
+generate response from top1/top3 only
+filter all tags through allowlist/blacklist/canonicalizer
+mention current intent every time
+mention feedback only when explicit
+mention profile only when stable
+use 10–15 intent-specific template families with deterministic variation
+validate banned leakage and repeated openings
+
+That should raise judge quality much more safely than making the text longer or more randomly diverse.
+
+来源
+
+深入
+ChatGPT 也可能会犯错。请核查重要信息。

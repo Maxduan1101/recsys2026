@@ -35,6 +35,7 @@ class GoalFlowConfig:
     tail_diversity_start: int = 20
     global_repeat_penalty: float = 0.0
     rrf_k: int = 60
+    response_style: str = "compact"
     dev_limit: int | None = None
 
     @property
@@ -158,7 +159,7 @@ def _predict_states(config: GoalFlowConfig, states, catalog: TrackCatalog, retri
                 "user_id": state.user_id,
                 "turn_number": state.turn_number,
                 "predicted_track_ids": track_ids,
-                "predicted_response": generate_response(state, catalog, track_ids),
+                "predicted_response": generate_response(state, catalog, track_ids, style=config.response_style),
             }
         )
     return predictions
@@ -232,6 +233,7 @@ def write_run_summary(config: GoalFlowConfig, output_path: Path, mode: str) -> P
         "tail_diversity_start": config.tail_diversity_start,
         "global_repeat_penalty": config.global_repeat_penalty,
         "rrf_k": config.rrf_k,
+        "response_style": config.response_style,
         "query_weights": default_query_weights(),
         "index_weights": default_index_weights(),
     }
