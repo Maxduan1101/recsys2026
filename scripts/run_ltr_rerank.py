@@ -5,6 +5,7 @@ import json
 import math
 import zipfile
 from collections import Counter
+from itertools import product
 from pathlib import Path
 from typing import Iterable
 
@@ -168,6 +169,11 @@ def train_ltr(
     train_groups: Iterable[int],
     *,
     n_estimators: int,
+    learning_rate: float,
+    num_leaves: int,
+    min_child_samples: int,
+    subsample: float,
+    colsample_bytree: float,
 ) -> tuple[lgb.LGBMRanker, list[str], list[str], dict[str, list[str]], dict[str, int]]:
     df, feature_cols, categorical, category_values = prepare_features(df)
     train_groups = set(train_groups)
@@ -180,11 +186,11 @@ def train_ltr(
         objective="lambdarank",
         metric="ndcg",
         n_estimators=n_estimators,
-        learning_rate=0.04,
-        num_leaves=31,
-        min_child_samples=40,
-        subsample=0.9,
-        colsample_bytree=0.9,
+        learning_rate=learning_rate,
+        num_leaves=num_leaves,
+        min_child_samples=min_child_samples,
+        subsample=subsample,
+        colsample_bytree=colsample_bytree,
         random_state=2026,
         force_row_wise=True,
     )
@@ -353,6 +359,31 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rrf-k", type=int, default=60)
     parser.add_argument("--valid-mod", type=int, default=5)
     parser.add_argument("--n-estimators", type=int, default=260)
+    parser.add_argument("--learning-rate", type=float, default=0.04)
+    parser.add_argument("--num-leaves", type=int, default=31)
+    parser.add_argument("--min-child-samples", type=int, default=40)
+    parser.add_argument("--subsample", type=float, default=0.9)
+    parser.add_argument("--colsample-bytree", type=float, default=0.9)
+    parser.add_argument(
+        "--estimator-grid",
+        default="",
+        help="Validate-mode comma-separated n_estimators values trained on the same candidate frame.",
+    )
+    parser.add_argument(
+        "--learning-rate-grid",
+        default="",
+        help="Validate-mode comma-separated learning_rate values trained on the same candidate frame.",
+    )
+    parser.add_argument(
+        "--num-leaves-grid",
+        default="",
+        help="Validate-mode comma-separated num_leaves values trained on the same candidate frame.",
+    )
+    parser.add_argument(
+        "--min-child-samples-grid",
+        default="",
+        help="Validate-mode comma-separated min_child_samples values trained on the same candidate frame.",
+    )
     parser.add_argument("--preserve-head-k", type=int, default=18)
     parser.add_argument(
         "--preserve-grid",
@@ -361,7 +392,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--response-style",
-        choices=["compact", "compact_broad", "concise", "setwise", "natural", "polished"],
+        choices=["compact", "compact_broad", "concise", "setwise", "natural", "polished", "judge_v1", "judge_v2"],
         default="compact_broad",
     )
     parser.add_argument("--dev-limit", type=int, default=None)
@@ -369,6 +400,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-train-augmentation", action="store_true")
     parser.add_argument("--no-zip", action="store_true")
     return parser.parse_args()
+
+
+def parse_int_grid(value: str) -> list[int]:
+    return [int(part) for part in value.split(",") if part.strip()]
+
+
+def parse_float_grid(value: str) -> list[float]:
+    return [float(part) for part in value.split(",") if part.strip()]
+
+
+def model_key(
+    *,
+    n_estimators: int,
+    learning_rate: float,
+    num_leaves: int,
+    min_child_samples: int,
+) -> str:
+    return (
+        f"n{n_estimators}_lr{learning_rate:g}_"
+        f"leaves{num_leaves}_minchild{min_child_samples}"
+    )
 
 
 def main() -> None:
@@ -402,37 +454,91 @@ def main() -> None:
     train_groups = [group_id for group_id in all_groups if group_id not in valid_groups]
 
     if args.mode == "validate":
-        ranker, feature_cols, _categorical, category_values, train_stats = train_ltr(
-            dev_df,
-            train_groups,
-            n_estimators=args.n_estimators,
-        )
-        valid_df, _, _, _ = prepare_features(
-            dev_df[dev_df["group_id"].isin(valid_groups)].copy(),
-            feature_cols=feature_cols,
-            category_values=category_values,
-        )
-        valid_df["model_score"] = ranker.predict(valid_df[feature_cols])
         preserve_values = [int(value) for value in args.preserve_grid.split(",") if value.strip()]
-        grid = evaluate_preserve_grid(
-            df=valid_df,
-            groups=valid_groups,
-            legacy_by_group=dev_legacy,
-            state_by_group=dev_state_by_group,
-            preserve_values=preserve_values,
+        estimator_values = parse_int_grid(args.estimator_grid) or [args.n_estimators]
+        learning_rate_values = parse_float_grid(args.learning_rate_grid) or [args.learning_rate]
+        num_leaves_values = parse_int_grid(args.num_leaves_grid) or [args.num_leaves]
+        min_child_values = parse_int_grid(args.min_child_samples_grid) or [args.min_child_samples]
+        estimator_results = {}
+        first_grid = None
+        first_train_stats = None
+        first_valid_df = None
+        for n_estimators, learning_rate, num_leaves, min_child_samples in product(
+            estimator_values,
+            learning_rate_values,
+            num_leaves_values,
+            min_child_values,
+        ):
+            ranker, feature_cols, _categorical, category_values, train_stats = train_ltr(
+                dev_df,
+                train_groups,
+                n_estimators=n_estimators,
+                learning_rate=learning_rate,
+                num_leaves=num_leaves,
+                min_child_samples=min_child_samples,
+                subsample=args.subsample,
+                colsample_bytree=args.colsample_bytree,
+            )
+            valid_df, _, _, _ = prepare_features(
+                dev_df[dev_df["group_id"].isin(valid_groups)].copy(),
+                feature_cols=feature_cols,
+                category_values=category_values,
+            )
+            valid_df = valid_df.copy()
+            valid_df["model_score"] = ranker.predict(valid_df[feature_cols])
+            grid = evaluate_preserve_grid(
+                df=valid_df,
+                groups=valid_groups,
+                legacy_by_group=dev_legacy,
+                state_by_group=dev_state_by_group,
+                preserve_values=preserve_values,
+            )
+            key = model_key(
+                n_estimators=n_estimators,
+                learning_rate=learning_rate,
+                num_leaves=num_leaves,
+                min_child_samples=min_child_samples,
+            )
+            estimator_results[key] = {
+                "params": {
+                    "n_estimators": n_estimators,
+                    "learning_rate": learning_rate,
+                    "num_leaves": num_leaves,
+                    "min_child_samples": min_child_samples,
+                    "subsample": args.subsample,
+                    "colsample_bytree": args.colsample_bytree,
+                },
+                "train": train_stats,
+                "grid": grid,
+            }
+            if first_grid is None:
+                first_grid = grid
+                first_train_stats = train_stats
+                first_valid_df = valid_df
+        if first_grid is None or first_train_stats is None or first_valid_df is None:
+            raise ValueError("No validate estimator values were provided.")
+        best_estimator = max(
+            estimator_results,
+            key=lambda key: estimator_results[key]["grid"].get("head0", {}).get("ndcg@20", -1.0),
         )
+        best_params = estimator_results[best_estimator]["params"]
         summary = {
             "mode": "validate",
             "tid": args.tid,
             "valid_mod": args.valid_mod,
             "max_candidates_per_group": args.max_candidates_per_group,
-            "n_estimators": args.n_estimators,
-            "train": train_stats,
+            "n_estimators": estimator_values[0],
+            "learning_rate": learning_rate_values[0],
+            "num_leaves": num_leaves_values[0],
+            "min_child_samples": min_child_values[0],
+            "best_ltr_config_by_head0": best_params,
+            "train": first_train_stats,
             "valid_groups": len(valid_groups),
             "valid_groups_with_positive_candidates": int(
-                (valid_df.groupby("group_id")["label"].sum() > 0).sum()
+                (first_valid_df.groupby("group_id")["label"].sum() > 0).sum()
             ),
-            "grid": grid,
+            "grid": first_grid,
+            "estimator_grid": estimator_results,
         }
         out_dir = config.experiments_dir / "ltr"
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -452,12 +558,18 @@ def main() -> None:
                 dev_df,
                 fold_train_groups,
                 n_estimators=args.n_estimators,
+                learning_rate=args.learning_rate,
+                num_leaves=args.num_leaves,
+                min_child_samples=args.min_child_samples,
+                subsample=args.subsample,
+                colsample_bytree=args.colsample_bytree,
             )
             fold_df, _, _, _ = prepare_features(
                 dev_df[dev_df["group_id"].isin(fold_valid_groups)].copy(),
                 feature_cols=feature_cols,
                 category_values=category_values,
             )
+            fold_df = fold_df.copy()
             fold_df["model_score"] = ranker.predict(fold_df[feature_cols])
             fold_scores = evaluate_preserve_grid(
                 df=fold_df,
@@ -497,6 +609,9 @@ def main() -> None:
             "valid_mod": args.valid_mod,
             "max_candidates_per_group": args.max_candidates_per_group,
             "n_estimators": args.n_estimators,
+            "learning_rate": args.learning_rate,
+            "num_leaves": args.num_leaves,
+            "min_child_samples": args.min_child_samples,
             "preserve_head_k": args.preserve_head_k,
             "output": str(output),
             "folds": fold_stats,
@@ -514,6 +629,11 @@ def main() -> None:
         dev_df,
         train_groups_for_output,
         n_estimators=args.n_estimators,
+        learning_rate=args.learning_rate,
+        num_leaves=args.num_leaves,
+        min_child_samples=args.min_child_samples,
+        subsample=args.subsample,
+        colsample_bytree=args.colsample_bytree,
     )
 
     if args.mode == "blind":
@@ -535,6 +655,7 @@ def main() -> None:
         feature_cols=feature_cols,
         category_values=category_values,
     )
+    apply_df = apply_df.copy()
     apply_df["model_score"] = ranker.predict(apply_df[feature_cols])
     output = write_predictions(
         config=config,

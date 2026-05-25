@@ -78,6 +78,8 @@ BAD_TAG_WORDS = {
     "cunt",
     "fuck",
     "fucking",
+    "negro",
+    "negroes",
     "nigga",
     "nigger",
     "shit",
@@ -119,10 +121,19 @@ def _profile_hint(state: ConversationState) -> str:
     culture = state.user_profile.get("preferred_musical_culture")
     country = state.user_profile.get("country_name")
     if culture:
-        return f"your {culture} listening background"
+        return f"your {_display_profile_value(culture)} listening background"
     if country:
-        return f"your {country} profile"
+        return f"your {_display_profile_value(country)} profile"
     return ""
+
+
+def _display_profile_value(value: object) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not text:
+        return ""
+    if text.lower() == text or text.upper() == text:
+        return text.title()
+    return text
 
 
 def _tag_list(catalog: TrackCatalog, track_id: str, limit: int = 3, require_good_words: bool = True) -> list[str]:
@@ -130,6 +141,8 @@ def _tag_list(catalog: TrackCatalog, track_id: str, limit: int = 3, require_good
     seen = set()
     for raw_tag in catalog.view(track_id).tag_list.split(", "):
         tag = raw_tag.strip()
+        tag = re.sub(r"\s*/\s*", "-", tag)
+        tag = re.sub(r"\s+", " ", tag).strip(" -_/")
         key = tag.lower()
         if not tag or key in seen:
             continue
@@ -169,6 +182,26 @@ def _short_request(state: ConversationState, max_words: int = 12) -> str:
     words = re.findall(r"[A-Za-z0-9][A-Za-z0-9'/-]*", text)
     if not words:
         return "this request"
+    clipped = words[:max_words]
+    suffix = "" if len(words) <= max_words else "..."
+    return " ".join(clipped) + suffix
+
+
+def _request_focus(state: ConversationState, max_words: int = 18) -> str:
+    current_words = re.findall(r"[A-Za-z0-9][A-Za-z0-9'/-]*", state.current_user_query)
+    current_norm = " ".join(word.lower() for word in current_words)
+    feedback_only = bool(
+        current_words
+        and len(current_words) <= 6
+        and re.fullmatch(
+            r"(yes|yeah|yep|no|nope|ok|okay|closer|close|more|less|another|again|continue|try|maybe|not|wrong|right|different|similar|that|this|one|please|thanks|thank you|cool|great|good|bad|fine|nah|hmm|hmmm|still)(\s+(yes|yeah|yep|no|nope|ok|okay|closer|close|more|less|another|again|continue|try|maybe|not|wrong|right|different|similar|that|this|one|please|thanks|thank|you|cool|great|good|bad|fine|nah|hmm|hmmm|still))*",
+            current_norm,
+        )
+    )
+    text = state.listener_goal if feedback_only and state.listener_goal else state.current_user_query or state.listener_goal
+    words = re.findall(r"[A-Za-z0-9][A-Za-z0-9'/-]*", text)
+    if not words:
+        return "the direction you described"
     clipped = words[:max_words]
     suffix = "" if len(words) <= max_words else "..."
     return " ".join(clipped) + suffix
@@ -661,6 +694,387 @@ def _profile_sentence(state: ConversationState) -> str:
     )
 
 
+def _judge_profile_phrase(state: ConversationState) -> str:
+    culture = _display_profile_value(state.user_profile.get("preferred_musical_culture"))
+    country = _display_profile_value(state.user_profile.get("country_name"))
+    age_group = _display_profile_value(state.user_profile.get("age_group"))
+    if culture and country:
+        return f"your {culture} background and {country} profile"
+    if culture:
+        return f"your {culture} listening background"
+    if country and age_group:
+        return f"your {age_group} listener profile from {country}"
+    if country:
+        return f"your {country} listener profile"
+    return ""
+
+
+def _judge_track_detail(catalog: TrackCatalog, track_id: str) -> str:
+    view = catalog.view(track_id)
+    tags = _tag_list(catalog, track_id, limit=3, require_good_words=True)
+    bits = []
+    if tags:
+        bits.append(_join_words(tags))
+    year = _year_hint(catalog, track_id)
+    if year:
+        bits.append(f"{year} release")
+    if view.album_name:
+        bits.append(f"album context from {view.album_name}")
+    if not bits:
+        bits.append("the strongest title and artist match")
+    return _join_words(bits[:3])
+
+
+def _judge_direction_phrase(state: ConversationState, intent: str) -> str:
+    focus = _request_focus(state)
+    if intent == "specific_track":
+        return f"the specific song clue about \"{focus}\""
+    if intent == "album":
+        return f"the album-centered clue about \"{focus}\""
+    if intent == "artist_exploration":
+        return f"the artist-led direction in \"{focus}\""
+    if intent == "cover_art":
+        return f"the visual or cover-art clue in \"{focus}\""
+    if intent == "lyrics_theme":
+        return f"the lyric or theme clue in \"{focus}\""
+    return f"the mood and style direction in \"{focus}\""
+
+
+def _judge_feedback_sentence(state: ConversationState, catalog: TrackCatalog) -> str:
+    seed = _seed_phrase(state, catalog)
+    negative = _negative_phrase(state, catalog)
+    if seed and negative:
+        return _pick(
+            state,
+            [
+                f"I kept the useful signal from {seed}, while moving away from the weaker path around {negative}.",
+                f"The order keeps what worked about {seed} and avoids repeating the direction that made {negative} less convincing.",
+                f"I used {seed} as the better anchor here and treated {negative} as a boundary for the search.",
+            ],
+            salt="judge-feedback-both",
+        )
+    if seed:
+        return _pick(
+            state,
+            [
+                f"Because {seed} had moved the session in the right direction, I kept the front of the list near that lane.",
+                f"The positive signal from {seed} is carried into this pick instead of resetting the conversation.",
+                f"I used {seed} as a useful anchor and looked for nearby evidence in the catalog.",
+            ],
+            salt="judge-feedback-positive",
+        )
+    if negative:
+        return _pick(
+            state,
+            [
+                f"I did not lean too hard on {negative}, since that earlier route looked less helpful.",
+                f"The ranking backs away from the direction around {negative} and tries a cleaner match first.",
+                f"I treated {negative} as a useful negative clue, so the lead pick is not just more of the same.",
+            ],
+            salt="judge-feedback-negative",
+        )
+    return ""
+
+
+def _generate_judge_response(state: ConversationState, catalog: TrackCatalog, track_ids: list[str]) -> str:
+    if not track_ids:
+        return "I found a few tracks that should fit the direction you described."
+
+    first_phrase = _track_phrase(catalog, track_ids[0])
+    second_phrase = _track_phrase(catalog, track_ids[1]) if len(track_ids) > 1 else ""
+    third_phrase = _track_phrase(catalog, track_ids[2]) if len(track_ids) > 2 else ""
+    intent = infer_intent(state)
+    direction = _judge_direction_phrase(state, intent)
+    detail = _judge_track_detail(catalog, track_ids[0])
+    profile = _judge_profile_phrase(state)
+    feedback = _judge_feedback_sentence(state, catalog)
+
+    if intent == "specific_track":
+        lead = _pick(
+            state,
+            [
+                f"I would put {first_phrase} first as the best direct answer to {direction}.",
+                f"My lead answer is {first_phrase}, because it is the tightest catalog match for {direction}.",
+                f"I would check {first_phrase} first before broadening the search, since it fits {direction}.",
+            ],
+            salt="judge-specific",
+        )
+    elif intent == "album":
+        lead = _pick(
+            state,
+            [
+                f"I started with {first_phrase} because it gives the strongest album-aware match for {direction}.",
+                f"{first_phrase} is first because the record context is the clearest way into {direction}.",
+                f"For {direction}, {first_phrase} is the most focused first check.",
+            ],
+            salt="judge-album",
+        )
+    elif intent == "artist_exploration":
+        lead = _pick(
+            state,
+            [
+                f"I led with {first_phrase} because it stays close to {direction} without making the list too narrow.",
+                f"{first_phrase} is the first artist-path pick, and the rest of the ranking keeps adjacent options nearby.",
+                f"For {direction}, I put {first_phrase} first and then widened into related tracks.",
+            ],
+            salt="judge-artist",
+        )
+    elif intent == "cover_art":
+        lead = _pick(
+            state,
+            [
+                f"I would test {first_phrase} first for {direction}, then use the next tracks as safeguards.",
+                f"{first_phrase} is my lead for {direction}, where title and album context are the safest anchors.",
+                f"For the image-based clue, I started with {first_phrase} and kept the backups close.",
+            ],
+            salt="judge-cover",
+        )
+    elif intent == "lyrics_theme":
+        lead = _pick(
+            state,
+            [
+                f"I led with {first_phrase} because it is the strongest first check for {direction}.",
+                f"{first_phrase} is first because its catalog evidence lines up best with {direction}.",
+                f"For the story or lyric angle, I would try {first_phrase} before the looser alternatives.",
+            ],
+            salt="judge-lyrics",
+        )
+    else:
+        lead = _pick(
+            state,
+            [
+                f"I started with {first_phrase} because it best matches {direction}.",
+                f"{first_phrase} is first because it gives the cleanest entry point into {direction}.",
+                f"I put {first_phrase} up front, then let the rest of the list explore nearby versions of {direction}.",
+            ],
+            salt="judge-mood",
+        )
+
+    reason = _pick(
+        state,
+        [
+            f"The concrete clues I can verify are {detail}.",
+            f"The grounded reason is {detail}, rather than a vague similarity claim.",
+            f"What makes it a credible first pick is {detail}.",
+        ],
+        salt="judge-reason",
+    )
+
+    support = []
+    if feedback:
+        support.append(feedback)
+    if profile:
+        support.append(
+            _pick(
+                state,
+                [
+                    f"I also used {profile} only as a soft tie-breaker.",
+                    f"When several candidates were close, {profile} helped order the safer options.",
+                    f"{profile.capitalize()} helped shape the final ordering without overriding the conversation.",
+                ],
+                salt="judge-profile",
+            )
+        )
+
+    backup = ""
+    if second_phrase and third_phrase:
+        backup = _pick(
+            state,
+            [
+                f"If the lead is a little off, I would next try {second_phrase}, then {third_phrase}.",
+                f"I kept {second_phrase} and {third_phrase} right behind it as the closest alternate paths.",
+                f"The next checks are {second_phrase} for a tighter match and {third_phrase} as a nearby fallback.",
+            ],
+            salt="judge-backup-two",
+        )
+    elif second_phrase:
+        backup = f"If the lead is a little off, I would next try {second_phrase}."
+
+    return " ".join(part for part in [lead, reason, *support[:2], backup] if part)
+
+
+def _judge_v2_evidence(catalog: TrackCatalog, track_id: str) -> str:
+    view = catalog.view(track_id)
+    tags = _tag_list(catalog, track_id, limit=2, require_good_words=True)
+    facts = []
+    if tags:
+        facts.append(_join_words(tags))
+    year = _year_hint(catalog, track_id)
+    if year:
+        facts.append(f"the {year} era")
+    if view.album_name:
+        facts.append(f"{view.album_name} as the album anchor")
+    if not facts:
+        facts.append("the title and artist match")
+    return _join_words(facts[:2])
+
+
+def _judge_v2_feedback_clause(state: ConversationState, catalog: TrackCatalog) -> str:
+    seed = _seed_phrase(state, catalog)
+    negative = _negative_phrase(state, catalog)
+    if seed and negative:
+        return _pick(
+            state,
+            [
+                f"keeps the useful thread from {seed} while avoiding the weaker turn around {negative}",
+                f"borrows the better signal from {seed} and does not repeat the less helpful path around {negative}",
+                f"uses {seed} as the center of gravity and treats {negative} as a boundary",
+            ],
+            salt="judge-v2-feedback-both",
+        )
+    if seed:
+        return _pick(
+            state,
+            [
+                f"keeps following the useful signal from {seed}",
+                f"uses {seed} as the closest session anchor",
+                f"continues the direction that worked around {seed}",
+            ],
+            salt="judge-v2-feedback-positive",
+        )
+    if negative:
+        return _pick(
+            state,
+            [
+                f"moves away from the less helpful route around {negative}",
+                f"avoids making the same bet as {negative}",
+                f"uses {negative} as a negative cue instead of repeating it",
+            ],
+            salt="judge-v2-feedback-negative",
+        )
+    return ""
+
+
+def _generate_judge_v2_response(state: ConversationState, catalog: TrackCatalog, track_ids: list[str]) -> str:
+    if not track_ids:
+        return "I found a few tracks that should fit the direction you described."
+
+    first_phrase = _track_phrase(catalog, track_ids[0])
+    second_phrase = _track_phrase(catalog, track_ids[1]) if len(track_ids) > 1 else ""
+    third_phrase = _track_phrase(catalog, track_ids[2]) if len(track_ids) > 2 else ""
+    intent = infer_intent(state)
+    focus = _request_focus(state)
+    evidence = _judge_v2_evidence(catalog, track_ids[0])
+    feedback_clause = _judge_v2_feedback_clause(state, catalog)
+    profile = _judge_profile_phrase(state)
+
+    if intent == "specific_track":
+        lead = _pick(
+            state,
+            [
+                f"I put {first_phrase} first as the most direct answer to \"{focus}\".",
+                f"{first_phrase} is the tightest first check for the exact-song clue in \"{focus}\".",
+                f"For \"{focus}\", the lead pick is {first_phrase} before the search opens wider.",
+            ],
+            salt="judge-v2-specific",
+        )
+    elif intent == "album":
+        lead = _pick(
+            state,
+            [
+                f"I stayed close to the record clue in \"{focus}\" and led with {first_phrase}.",
+                f"{first_phrase} is first because this looks album-centered rather than purely mood-based.",
+                f"For the album-shaped request, {first_phrase} gives the cleanest first anchor.",
+            ],
+            salt="judge-v2-album",
+        )
+    elif intent == "artist_exploration":
+        lead = _pick(
+            state,
+            [
+                f"I kept the artist path in focus and started with {first_phrase}.",
+                f"{first_phrase} is the safest entry point for the artist-led direction in \"{focus}\".",
+                f"I led with {first_phrase}, then used the rest of the list for nearby artist and style options.",
+            ],
+            salt="judge-v2-artist",
+        )
+    elif intent == "cover_art":
+        lead = _pick(
+            state,
+            [
+                f"For the visual clue in \"{focus}\", I started with {first_phrase}.",
+                f"{first_phrase} is my first cover-clue check, with the next tracks kept close in case the image hint is indirect.",
+                f"I treated this as a visual identification search and led with {first_phrase}.",
+            ],
+            salt="judge-v2-cover",
+        )
+    elif intent == "lyrics_theme":
+        lead = _pick(
+            state,
+            [
+                f"I treated \"{focus}\" as a lyric or story clue and put {first_phrase} first.",
+                f"{first_phrase} is the clearest first play for the theme you described.",
+                f"For the story angle in \"{focus}\", I would start with {first_phrase}.",
+            ],
+            salt="judge-v2-lyrics",
+        )
+    else:
+        lead = _pick(
+            state,
+            [
+                f"I leaned into \"{focus}\" and started with {first_phrase}.",
+                f"{first_phrase} is the safest first play for the mood you described in \"{focus}\".",
+                f"I put {first_phrase} first, then let the rest of the list explore nearby versions of \"{focus}\".",
+            ],
+            salt="judge-v2-mood",
+        )
+
+    reason = _pick(
+        state,
+        [
+            f"The strongest grounded clue is {evidence}.",
+            f"The evidence I can safely cite is {evidence}.",
+            f"It earns the lead slot through {evidence}.",
+        ],
+        salt="judge-v2-reason",
+    )
+
+    context = ""
+    if feedback_clause and profile:
+        context = _pick(
+            state,
+            [
+                f"The ordering {feedback_clause}; I used {profile} only as a tie-breaker.",
+                f"It also {feedback_clause}, while {profile} only nudged close calls.",
+            ],
+            salt="judge-v2-context-both",
+        )
+    elif feedback_clause:
+        context = _pick(
+            state,
+            [
+                f"The rest of the ranking {feedback_clause}.",
+                f"That choice {feedback_clause}.",
+            ],
+            salt="judge-v2-context-feedback",
+        )
+    elif profile:
+        context = _pick(
+            state,
+            [
+                f"I used {profile} only as a soft tie-breaker.",
+                f"{profile.capitalize()} nudged the ordering without overriding the request.",
+            ],
+            salt="judge-v2-context-profile",
+        )
+
+    backup = ""
+    if second_phrase and third_phrase:
+        backup = _pick(
+            state,
+            [
+                f"Next I would check {second_phrase}, then {third_phrase}.",
+                f"{second_phrase} and {third_phrase} stay close enough to recover if the first guess misses.",
+                f"The backups are {second_phrase} for continuity and {third_phrase} for a nearby alternate.",
+            ],
+            salt="judge-v2-backups",
+        )
+    elif second_phrase:
+        backup = f"Next I would check {second_phrase}."
+
+    return " ".join(part for part in [lead, reason, context, backup] if part)
+
+
 def _generate_polished_response(state: ConversationState, catalog: TrackCatalog, track_ids: list[str]) -> str:
     if not track_ids:
         return "I found a few tracks that should fit the direction you described."
@@ -778,4 +1192,8 @@ def generate_response(
         return _generate_natural_response(state, catalog, track_ids)
     if style == "polished":
         return _generate_polished_response(state, catalog, track_ids)
+    if style == "judge_v1":
+        return _generate_judge_response(state, catalog, track_ids)
+    if style == "judge_v2":
+        return _generate_judge_v2_response(state, catalog, track_ids)
     raise ValueError(f"Unsupported response style: {style!r}")

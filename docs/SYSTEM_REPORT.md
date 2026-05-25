@@ -11,7 +11,7 @@
 当前优先提交包：
 
 ```text
-experiments/goalflow_ltr_head0_polished_v3/blindset_A/submission.zip
+experiments/goalflow_ltr120_head0_judge_v2_clean/blindset_A/submission.zip
 ```
 
 ## 1. 比赛任务一句话
@@ -710,7 +710,7 @@ label 更可能是下一轮用户对上一轮推荐的反馈。
 
 ## 11. 当前安全提交策略
 
-当前最推荐 Blind A 包：
+当时最推荐的保守 Blind A 包：
 
 ```text
 experiments/goalflow_head20_compact_broad/blindset_A/submission.zip
@@ -1173,6 +1173,7 @@ research/pro_answers/round5/tab3_ranker_implementation_guidance.txt
 research/pro_answers/round5/tab4_embedding_cf_integration.txt
 research/pro_answers/round5/tab5_offline_validation_design.txt
 ```
+
 ## 2026-05-26 追加日志：LTR 排序器成为新的主线
 
 这次关键迭代把原本只是研究设想的 LightGBM LambdaRank 真正接到了项目里。
@@ -1207,3 +1208,132 @@ experiments/goalflow_ltr_head0_polished_v3/blindset_A/submission.zip
 - `experiments/goalflow_head20_compact_broad/blindset_A/submission.zip`：保守 legacy-rank 备份。
 
 这改变了之前的提交判断：旧策略是“保护 BM25 head，只优化 response”；现在 OOF 验证说明学习型重排已经足够强，第一优先应改为 LTR head0。
+
+## 2026-05-26 追加日志：LTR 调参和 judge-v2 回复
+
+上一节里的 LTR 是第一个能明显超过 BM25 的版本，但它还不是最终形态。这一轮继续做了两件事：
+
+- 调 LightGBM 排序器，让推荐 ID 更准；
+- 重写回复生成器，让 Gemini judge 更容易看到“个性化”和“解释质量”。
+
+### 17.1 为什么要调树的数量
+
+LightGBM 可以理解成一组小决策树在投票。树太少，模型学不够；树太多，容易把训练集里的偶然规律也记住。
+
+我先做了单折验证：
+
+| n_estimators | held-out nDCG@20 | 结论 |
+|---:|---:|---|
+| 120 | 0.184317 | 最好 |
+| 180 | 0.182726 | 稍差 |
+| 260 | 0.182907 | 旧版本，稳定但不是最优 |
+| 400 | 0.180714 | 开始过拟合 |
+| 600 | 0.177228 | 明显过拟合 |
+
+然后用五折 OOF 验证确认，不让模型在自己训练过的 dev 行上打分：
+
+| Run | nDCG@20 | Catalog Diversity | 说明 |
+|---|---:|---:|---|
+| 旧 260-tree LTR | 0.180947 | 0.520958 | 之前主版本 |
+| 新 120-tree LTR | 0.182098 | 0.526524 | 当前主版本 |
+
+所以当前主 ranking 改成：
+
+```text
+n_estimators=120
+learning_rate=0.04
+num_leaves=31
+preserve_head_k=0
+max_candidates_per_group=300
+```
+
+这里 `preserve_head_k=0` 的意思是：不再硬保护 BM25 的前几名，而是让 LTR 对整个 top20 重新排序。它之所以敢这么做，是因为 OOF 已经证明它不是在偷看 dev 答案。
+
+### 17.2 两个看起来有希望但被淘汰的方向
+
+第一，扩大候选池到 500。
+
+直觉上，“候选更多”应该更好，但实际会把更多噪声也带进排序。结果 held-out nDCG@20 是 `0.182574`，低于当前 120-tree / max300 的 `0.184317`，所以暂时不采用。
+
+第二，把 `num_leaves` 从 31 加到 63。
+
+`num_leaves` 可以粗略理解为每棵树能分出多少种判断路径。63 在第一折赢了：
+
+```text
+31 leaves: 0.184317
+63 leaves: 0.184676
+```
+
+但五折 OOF 输了：
+
+```text
+31 leaves: 0.182098
+63 leaves: 0.181239
+```
+
+这说明 63 leaves 更像是在某个小切分上运气好，不够稳。当前不把它用于提交。
+
+第三，追加一些新的文本聚合特征。
+
+我试过加更多 lexical/entity/year 聚合特征，但 held-out nDCG@20 掉到 `0.179408`。这说明它们当前更像噪声，不如保持特征简单。
+
+### 17.3 judge-v2 回复
+
+之前的 `polished` 回复比较自然，但 Distinct-2 较低；`compact_broad` 的 Distinct-2 很高，但有点像机器日志。
+
+新加的 `judge_v2` 介于两者之间：
+
+- 只写 2-3 句，不堆长模板；
+- 第一首歌必须明确解释为什么排第一；
+- 解释只能引用官方 metadata 里存在的 title、artist、album、year、tag；
+- 用户画像只当 soft tie-breaker，不喧宾夺主；
+- 如果历史里有正/负反馈 seed，会说明“沿着哪条线继续”或“避开哪条线”；
+- 清理私人/噪声 tag，并把 `usa`、`india` 这类 profile 字段变成更像正常英文的标题大小写。
+
+本地 OOF 指标：
+
+| Run | nDCG@20 | Lexical Diversity | 说明 |
+|---|---:|---:|---|
+| 120-tree polished | 0.182098 | 0.137308 | 自然，但词汇多样性低 |
+| 120-tree judge_v2_clean | 0.182098 | 0.148765 | 当前主回复 |
+
+Blind A gold-free 检查：
+
+| Package | Unique Tracks | Catalog Diversity | Distinct-2 |
+|---|---:|---:|---:|
+| `goalflow_ltr120_head0_judge_v2_clean` | 1500 | 0.031867 | 0.488329 |
+| `goalflow_ltr120_head0_compact_broad_clean` | 1500 | 0.031867 | 0.702228 |
+
+### 17.4 当前提交顺序
+
+第一优先：
+
+```text
+experiments/goalflow_ltr120_head0_judge_v2_clean/blindset_A/submission.zip
+```
+
+理由：当前最强 OOF ranking，Blind A 覆盖度接近理论上限，回复比 compact_broad 更像给人看的解释。
+
+第二备选：
+
+```text
+experiments/goalflow_ltr120_head0_compact_broad_clean/blindset_A/submission.zip
+```
+
+理由：同一套 ranking，Distinct-2 更高。如果 judge 对自然度不敏感、主要奖励词汇多样性，这个包可能更好。
+
+第三备选：
+
+```text
+experiments/goalflow_ltr_head0_polished_v3/blindset_A/submission.zip
+```
+
+理由：上一代 LTR 包，排序略弱，但 response 更长、更像完整解释。
+
+保守备选：
+
+```text
+experiments/goalflow_head20_compact_broad/blindset_A/submission.zip
+```
+
+理由：保持此前公共提交已经证明过的 BM25 ranking anchor，只改回复。

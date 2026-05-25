@@ -1,26 +1,42 @@
 # Blind A Submission Decision
 
-Recommended first retry after LTR OOF validation:
+Recommended first retry after LTR tuning and response cleanup:
 
 ```text
-experiments/goalflow_ltr_head0_polished_v3/blindset_A/submission.zip
+experiments/goalflow_ltr120_head0_judge_v2_clean/blindset_A/submission.zip
 ```
 
 Why this one:
 
-- Five-fold out-of-fold dev validation reaches official `nDCG@20=0.18095`, versus `0.08587` for the conservative legacy head20 dev baseline.
+- Five-fold out-of-fold dev validation reaches official `nDCG@20=0.18210`, versus `0.18095` for the previous 260-tree LTR and `0.08587` for the conservative legacy head20 dev baseline.
 - Blind-A-shaped 500-panel validation gives mean nDCG@20 `0.16737`, with mean delta `+0.08088` over head20.
-- Local Blind A catalog diversity is `0.03180`, close to the 80-row ceiling `0.03399`.
-- Local Blind A Distinct-2 is `0.45124`; this is lower than compact-broad but the response is much more natural for the Gemini judge.
+- Local Blind A catalog diversity is `0.03187`, close to the 80-row ceiling `0.03399`.
+- Local Blind A Distinct-2 is `0.48833`, with shorter metadata-grounded responses designed for personalization/explanation judging.
+- The response cleanup removes private/noisy tag artifacts and title-cases profile fields before writing them into the explanation.
 - It directly attacks the previous public weak points: `lexical_diversity=0.0125` and `llm_judge_score=1.0`, while also improving local ranking validation.
 
 High-lexical LTR backup:
 
 ```text
-experiments/goalflow_ltr_head0_compact_broad/blindset_A/submission.zip
+experiments/goalflow_ltr120_head0_compact_broad_clean/blindset_A/submission.zip
 ```
 
-Use this if the first LTR polished package unexpectedly loses on LLM judge or if maximizing Distinct-2 becomes the only goal. It has the same LTR ranking and local Blind A catalog diversity, but Distinct-2 is higher at `0.69996` and the response is more mechanical.
+Use this if the first LTR judge-v2 package unexpectedly loses on lexical diversity or if maximizing Distinct-2 becomes the only goal. It has the same best 120-tree LTR ranking and local Blind A catalog diversity, but Distinct-2 is higher at `0.70223` and the response is more mechanical.
+
+Previous LTR backup:
+
+```text
+experiments/goalflow_ltr_head0_polished_v3/blindset_A/submission.zip
+```
+
+This was the earlier first-choice package. It is still useful as a fallback, but its OOF ranking is slightly weaker (`nDCG@20=0.18095`) and Blind A local coverage is slightly lower (`1497` unique tracks instead of `1500`).
+
+Rejected near-misses:
+
+- `n_estimators=260`: stable but lower OOF than 120 trees.
+- `num_leaves=63`: won the first held-out fold, but five-fold OOF dropped to `nDCG@20=0.18124`, so it did not generalize.
+- `max_candidates_per_group=500`: added more candidates but lowered the main held-out score compared with max 300.
+- Extra lexical/entity/year aggregate features: held-out nDCG@20 fell to `0.17941`, so the added features were noise.
 
 Key correction:
 

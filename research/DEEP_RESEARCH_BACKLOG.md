@@ -29,9 +29,11 @@ This file tracks questions and optimization directions that deserve a dedicated 
    - Safer diversity backup: `experiments/goalflow_taildiv_head18_compactresp_v2/blindset_A/submission.zip`; dev nDCG@20 `0.08527`, Blind A unique tracks `1268`.
    - Pro answer saved at `research/pro_answers/round4/tab1_submission_package_decision.txt`: submit head20 compact response first, not head15.
    - Implemented `compact_broad` response style. It keeps dev lexical diversity at `0.1757` while filtering bad/private tag artifacts that compact v2 allowed.
-   - Current first-choice package: `experiments/goalflow_head20_compact_broad/blindset_A/submission.zip`.
+   - Previous response-only first-choice package: `experiments/goalflow_head20_compact_broad/blindset_A/submission.zip`.
    - Current middle backup: `experiments/goalflow_taildiv_head19_compact_broad/blindset_A/submission.zip`; dev nDCG@20 `0.08576`, Blind A unique tracks `1244`.
    - Current diversity backup: `experiments/goalflow_taildiv_head18_compact_broad/blindset_A/submission.zip`; Blind-A-shaped dev panels favor head18, while full dev favors head19.
+   - Current first-choice package after LTR tuning: `experiments/goalflow_ltr120_head0_judge_v2_clean/blindset_A/submission.zip`.
+   - Current high-lexical backup after LTR tuning: `experiments/goalflow_ltr120_head0_compact_broad_clean/blindset_A/submission.zip`.
 
 1. **Progress-label semantics**
    - Is `goal_progress_assessment[turn_number]` judging the recommendation in the same turn, or the transition into the next turn?
@@ -79,7 +81,12 @@ This file tracks questions and optimization directions that deserve a dedicated 
    - Round 5 Pro answer saved at `research/pro_answers/round5/tab3_ranker_implementation_guidance.txt`: LTR should initially protect legacy top ranks and act as a tail reranker/tie-breaker, not a wholesale replacement.
    - Implemented `scripts/probe_lgbm_ltr.py` and `scripts/run_ltr_rerank.py`.
    - Contrary to the conservative prior, unprotected LTR head0 is strongest in held-out validation: five-fold OOF official dev `nDCG@20=0.18095`, Blind-A-shaped mean `0.16737` versus `0.08648` for head20.
-   - Next research question: why does wholesale LTR replacement work so well offline despite Pro's earlier caution, and does that hold on Blind B/private splits?
+   - Tuned tree count: 120 estimators beats the older 260-tree run in five-fold OOF (`nDCG@20=0.18210` vs `0.18095`).
+   - Rejected larger candidate pools for now: `max_candidates_per_group=500` lowered held-out nDCG@20 relative to max 300.
+   - Rejected extra lexical/entity/year aggregate features: held-out nDCG@20 dropped to `0.17941`.
+   - Rejected `num_leaves=63` despite a better first held-out fold; five-fold OOF dropped to `0.18124`, below 31 leaves.
+   - Deep research question: why do LTR hyperparameters show fold-specific wins that fail OOF, and can we design a more reliable early-stopping/model-selection protocol for only 80-row Blind A?
+   - Deep research question: why does wholesale LTR replacement work so well offline despite Pro's earlier caution, and does that hold on Blind B/private splits?
 
 7. **Cross-encoder reranking**
    - Compare `bge-reranker-v2-m3`, DeBERTa, and Qwen reranker-style LoRA for top-100 reranking.
@@ -116,7 +123,9 @@ This file tracks questions and optimization directions that deserve a dedicated 
    - Implemented compact response v2 with current-query snippets, profile cues, feedback cues, album/year/tag grounding, and tag profanity filtering. This raises dev lexical diversity to `0.1758` and Blind A local Distinct-2 to `0.6654` on the 80-row split.
    - Implemented `compact_broad`, `compact`, `concise`, `setwise`, and `natural` response styles. `compact_broad` is the current submission default; `natural` and `setwise` were more judge-friendly in tone but lowered Distinct-2 to roughly `0.10-0.12`.
    - Implemented `polished` response style for LTR submissions. Blind A local Distinct-2 is `0.4512` for `goalflow_ltr_head0_polished_v3` versus `0.7000` for compact-broad, but the text is much more natural and should be better for LLM judge.
-   - Next research question: does Gemini judge prefer compact-broad's high lexical diversity or polished's more natural explanations, and what is the minimum lexical diversity needed before judge quality dominates?
+   - Implemented `judge_v1` and `judge_v2`. `judge_v2_clean` keeps the 120-tree OOF ranking, raises OOF lexical diversity to `0.14877`, and Blind A local Distinct-2 to `0.48833` while staying more natural than compact-broad.
+   - Next research question: does Gemini judge prefer compact-broad's high lexical diversity, polished's longer explanations, or judge_v2's shorter first-track reasoning?
+   - Next research question: what is the minimum lexical diversity needed before judge quality dominates, given the inferred composite weight for `llm_judge_score`?
    - Pro answers saved at `research/pro_answers/round2/tab4_recsys_2026_response_generation.txt` and `research/pro_answers/round3/tab5_metadata_grounded_response_design.txt`.
    - Additional Pro answer saved at `research/pro_answers/round5/tab1_response_generator_design.txt`.
 

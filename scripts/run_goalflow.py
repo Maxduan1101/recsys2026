@@ -21,7 +21,7 @@ def parse_args():
     parser.add_argument("--rrf-k", type=int, default=60)
     parser.add_argument(
         "--response-style",
-        choices=["compact", "compact_broad", "concise", "setwise", "natural", "polished"],
+        choices=["compact", "compact_broad", "concise", "setwise", "natural", "polished", "judge_v1", "judge_v2"],
         default="compact",
     )
     parser.add_argument("--dev-limit", type=int, default=None)

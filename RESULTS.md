@@ -25,6 +25,9 @@ Development-set scores from the official evaluator.
 | `goalflow_taildiv_head18_cf_tail18` | 0.009875 | 0.067536 | 0.085299 | 0.611077 | 0.175699 | CF rescue stacked on head18 gives tiny nDCG gain but lower diversity. |
 | `goalflow_ltr_head0_oof_compact_broad` | 0.067500 | 0.159372 | 0.180947 | 0.520958 | 0.220660 | Five-fold out-of-fold LTR validation; each dev row scored by a model that did not train on it. |
 | `goalflow_ltr_head0_oof_polished_v3` | 0.067500 | 0.159372 | 0.180947 | 0.520958 | 0.136947 | Same OOF LTR ranking, more natural response text for LLM judge. |
+| `goalflow_ltr120_head0_oof_polished_v1` | 0.069250 | 0.161358 | 0.182098 | 0.526524 | 0.137308 | Better LTR tree count: 120 estimators, lr 0.04, 31 leaves. |
+| `goalflow_ltr120_head0_oof_judge_v2_clean` | 0.069250 | 0.161358 | 0.182098 | 0.526524 | 0.148765 | Same improved LTR ranking, shorter judge-focused responses after tag/profile cleanup. |
+| `goalflow_ltr120_lr004_leaves63_head0_oof_judge_v2` | 0.068875 | 0.160685 | 0.181239 | 0.531516 | 0.148933 | Rejected: single-fold looked better, but five-fold OOF was worse than 31 leaves. |
 
 Immediate interpretation:
 
@@ -32,7 +35,8 @@ Immediate interpretation:
 - They do improve response diversity and candidate diversity.
 - Real Blind A feedback suggests the conservative ranking anchor is strong, while response quality/diversity is the biggest immediate score bottleneck.
 - Blind A has only 80 rows, so catalog diversity is capped at `1600 / 47071 = 0.0340`; improving catalog by a few hundred unique tail tracks has a small composite effect compared with preserving nDCG and improving response text.
-- LightGBM LambdaRank is now the strongest local ranking path; next useful work is response judge validation, candidate-feature caching, and richer dense/embedding recall.
+- LightGBM LambdaRank is now the strongest local ranking path. The current best OOF ranking is 120 estimators / 31 leaves / learning rate 0.04, not the larger 260-tree model.
+- The remaining high-impact work is response judge calibration, better candidate recall without head-rank dilution, and richer dense/embedding features.
 
 ## Public Blind A Feedback
 
@@ -63,12 +67,14 @@ These are gold-free checks from `scripts/summarize_predictions.py`; they do not 
 | `goalflow_head20_compactresp_v2` | 1216 | 0.7600 | 0.025833 | 0.033991 | 0.665424 | Submit first: preserves known ranking. |
 | `goalflow_taildiv_head18_compactresp_v2` | 1268 | 0.7925 | 0.026938 | 0.033991 | 0.665424 | Backup if one more submission is available. |
 | `goalflow_taildiv_head15_compactresp_v2` | 1348 | 0.8425 | 0.028638 | 0.033991 | 0.665424 | Useful experiment, but nDCG risk is likely too high for first retry. |
-| `goalflow_head20_compact_broad` | 1216 | 0.7600 | 0.025833 | 0.033991 | 0.664176 | Current first-choice package: same safe ranking, cleaner broad-tag response. |
+| `goalflow_head20_compact_broad` | 1216 | 0.7600 | 0.025833 | 0.033991 | 0.664176 | Previous response-only first choice: same safe ranking, cleaner broad-tag response. |
 | `goalflow_taildiv_head19_compact_broad` | 1244 | 0.7775 | 0.026428 | 0.033991 | 0.664176 | Middle backup: small tail diversity gain, lower full-dev nDCG risk than head18. |
 | `goalflow_taildiv_head18_compact_broad` | 1268 | 0.7925 | 0.026938 | 0.033991 | 0.664176 | Stronger diversity backup; blind-like panels favor it, full-dev nDCG is lower. |
 | `goalflow_head20_cf_tail19` | 1217 | 0.7606 | 0.025855 | 0.033991 | 0.664176 | Experimental only: seed-CF changes just 1 Blind A row. |
 | `goalflow_ltr_head0_compact_broad` | 1497 | 0.9356 | 0.031803 | 0.033991 | 0.699961 | Same LTR ranking as current candidate; higher Distinct-2, more mechanical response. |
-| `goalflow_ltr_head0_polished_v3` | 1497 | 0.9356 | 0.031803 | 0.033991 | 0.451235 | Current first-choice package: LTR ranking plus more judge-friendly natural response. |
+| `goalflow_ltr_head0_polished_v3` | 1497 | 0.9356 | 0.031803 | 0.033991 | 0.451235 | Previous LTR first choice: LTR ranking plus more judge-friendly natural response. |
+| `goalflow_ltr120_head0_judge_v2_clean` | 1500 | 0.9375 | 0.031867 | 0.033991 | 0.488329 | Current first-choice package: best OOF LTR ranking plus concise judge-focused response. |
+| `goalflow_ltr120_head0_compact_broad_clean` | 1500 | 0.9375 | 0.031867 | 0.033991 | 0.702228 | Same best LTR ranking; high-lexical backup if Distinct-2 matters more than naturalness. |
 
 ## Blind-Like Dev Panels
 
@@ -155,15 +161,21 @@ Key validation:
 - Candidate pool: top 300 fused candidates per dev turn.
 - Model: LightGBM LambdaRank, binary exact-track labels, group = session turn.
 - Training excludes dev rows whose gold track is not naturally present in the candidate pool.
-- Five-fold OOF official dev score: `nDCG@20=0.180947`, catalog diversity `0.520958`.
+- Original 260-tree five-fold OOF official dev score: `nDCG@20=0.180947`, catalog diversity `0.520958`.
+- Tuned 120-tree five-fold OOF official dev score: `nDCG@20=0.182098`, catalog diversity `0.526524`.
 - Blind-A-shaped 500-panel mean nDCG@20: `0.167368` versus `0.086485` for the legacy head20 baseline.
 - Blind A local summary for `goalflow_ltr_head0_polished_v3`: 1497 unique tracks out of 1600 recommendation slots, catalog diversity `0.031803`, Distinct-2 `0.451235`.
+- Blind A local summary for `goalflow_ltr120_head0_judge_v2_clean`: 1500 unique tracks out of 1600 recommendation slots, catalog diversity `0.031867`, Distinct-2 `0.488329`.
+- Max-500 candidate expansion was rejected: held-out head0 nDCG@20 `0.182574`, below the max-300 single-fold score `0.184317` for the 120-tree model.
+- Extra lexical/entity/year aggregate features were rejected: held-out nDCG@20 fell to `0.179408`.
+- A larger 63-leaf model was rejected after OOF: it won the first held-out fold (`0.184676` vs `0.184317`) but lost overall (`0.181239` vs `0.182098`).
 
 Current submission recommendation:
 
-1. `experiments/goalflow_ltr_head0_polished_v3/blindset_A/submission.zip`
-2. `experiments/goalflow_ltr_head0_compact_broad/blindset_A/submission.zip`
-3. `experiments/goalflow_head20_compact_broad/blindset_A/submission.zip`
+1. `experiments/goalflow_ltr120_head0_judge_v2_clean/blindset_A/submission.zip`
+2. `experiments/goalflow_ltr120_head0_compact_broad_clean/blindset_A/submission.zip`
+3. `experiments/goalflow_ltr_head0_polished_v3/blindset_A/submission.zip`
+4. `experiments/goalflow_head20_compact_broad/blindset_A/submission.zip`
 
 ## Progress Label Audit
 
@@ -191,8 +203,9 @@ Interpretation:
 - Recommended current package: `experiments/goalflow_head20_compactresp_v2/blindset_A/submission.zip`
 - Safer diversity backup: `experiments/goalflow_taildiv_head18_compactresp_v2/blindset_A/submission.zip`
 - Aggressive diversity backup: `experiments/goalflow_taildiv_head15_compactresp_v2/blindset_A/submission.zip`
-- Current first-choice package: `experiments/goalflow_ltr_head0_polished_v3/blindset_A/submission.zip`
-- Current high-lexical LTR backup: `experiments/goalflow_ltr_head0_compact_broad/blindset_A/submission.zip`
+- Current first-choice package: `experiments/goalflow_ltr120_head0_judge_v2_clean/blindset_A/submission.zip`
+- Current high-lexical LTR backup: `experiments/goalflow_ltr120_head0_compact_broad_clean/blindset_A/submission.zip`
+- Previous LTR first-choice package: `experiments/goalflow_ltr_head0_polished_v3/blindset_A/submission.zip`
 - Current conservative legacy-rank backup: `experiments/goalflow_head20_compact_broad/blindset_A/submission.zip`
 - Current legacy middle backup: `experiments/goalflow_taildiv_head19_compact_broad/blindset_A/submission.zip`
 - Current legacy diversity backup: `experiments/goalflow_taildiv_head18_compact_broad/blindset_A/submission.zip`
