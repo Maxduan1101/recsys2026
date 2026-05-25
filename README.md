@@ -105,7 +105,7 @@ Current recommended Blind A package:
 /Users/bytedance/generated_problems/recsys2026_music_crs/goalflow_musiccrs/experiments/goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_judge_clean_mix_clean/blindset_A/submission.zip
 ```
 
-This package RRF-ensembles the 120/140/200-tree `reg_lambda=2` LTR rankings plus the 120-tree `colsample_bytree=1.0` L2 variant with `rrf_k=60`, then generates a cleaner high-lexical mix of `judge_v2`, `judge_brief`, and cleaned `compact` responses. OOF dev ranking rises to official `nDCG@20=0.18348` versus `0.18302` for the single 120-tree L2 model and `0.18325` for the previous three-model ensemble. Blind-A-shaped 500-panel validation also favors it: mean delta `+0.00298` nDCG@20 versus the single model. After duplicate/list-valued title and artist display cleanup, official dev lexical diversity is `0.20061` and Blind A local Distinct-2 is `0.60724`.
+This package RRF-ensembles the 120/140/200-tree `reg_lambda=2` LTR rankings plus the 120-tree `colsample_bytree=1.0` L2 variant with `rrf_k=60`, then generates a cleaner high-lexical mix of `judge_v2`, `judge_brief`, and cleaned `compact` responses. OOF dev ranking rises to official `nDCG@20=0.18348` versus `0.18302` for the single 120-tree L2 model and `0.18325` for the previous three-model ensemble. Blind-A-shaped 500-panel validation also favors it: mean delta `+0.00298` nDCG@20 versus the single model. After duplicate/list-valued title, artist, and album display cleanup, official dev lexical diversity is `0.19966` and Blind A local Distinct-2 is `0.60519`.
 
 Its high-lexical backups with the same four-model ranking are:
 
@@ -177,7 +177,7 @@ Fuller-prose LLM-judge text backups:
 /Users/bytedance/generated_problems/recsys2026_music_crs/goalflow_musiccrs/experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v3_clean/blindset_A/submission.zip
 ```
 
-These keep the same rankings but use longer, more natural explanations. `judge_balanced_mix` is the safer natural-language backup (`dev lexical=0.17719`, Blind A Distinct-2 `0.55978`); `judge_planned` is more human-readable but much lower lexical (`0.11423` / `0.39854`). Use them only to test whether Gemini-style judging rewards fuller explanation more than Distinct-2.
+These keep the same rankings but use longer, more natural explanations. `judge_balanced_mix` is the safer natural-language backup (`dev lexical=0.17624`, Blind A Distinct-2 `0.55719` after album-display cleanup); `judge_planned` is more human-readable but much lower lexical (`0.11423` / `0.39854` before album-display cleanup). Use them only to test whether Gemini-style judging rewards fuller explanation more than Distinct-2.
 
 The previous LTR package is still available as a fallback:
 

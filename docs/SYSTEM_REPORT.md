@@ -1332,11 +1332,11 @@ L2 正则可以理解成“不要让树的判断太激进”。单折里 `lambda
 | 120/140/200 lambda2 RRF judge_compact_mix | 0.183253 | 0.194546 | ensemble ranking + compact/broad 混合 |
 | 120/140/200 lambda2 RRF judge_clean_mix | 0.183253 | 0.199012 | ensemble ranking + clean 混合 |
 | 120/140/200 lambda2 RRF compact_clean | 0.183253 | 0.209428 | ensemble ranking + clean compact |
-| 120/140/200/col1 lambda2 RRF judge_clean_mix | 0.183482 | 0.200611 | 当前最高 OOF 主包，已清洗歌名/歌手展示 |
-| 120/140/200/col1 lambda2 RRF judge_balanced_mix | 0.183482 | 0.177191 | 更自然的 LLM judge 备份 |
+| 120/140/200/col1 lambda2 RRF judge_clean_mix | 0.183482 | 0.199655 | 当前最高 OOF 主包，已清洗歌名/歌手/专辑展示 |
+| 120/140/200/col1 lambda2 RRF judge_balanced_mix | 0.183482 | 0.176244 | 更自然的 LLM judge 备份，已清洗专辑展示 |
 | 120/140/200/col1 lambda2 RRF judge_planned | 0.183482 | 0.114233 | 最自然但 lexical 低的解释备份 |
-| 120/140/200/col1 lambda2 RRF compact_clean | 0.183482 | 0.211385 | 当前最高 OOF 高 lexical 备份 |
-| 120/140/200/col1 lambda2 RRF compact_broad | 0.183482 | 0.222761 | 当前最高 OOF 最高 lexical 备份 |
+| 120/140/200/col1 lambda2 RRF compact_clean | 0.183482 | 0.211125 | 当前最高 OOF 高 lexical 备份，已清洗专辑展示 |
+| 120/140/200/col1 lambda2 RRF compact_broad | 0.183482 | 0.222801 | 当前最高 OOF 最高 lexical 备份，已清洗专辑展示 |
 | 120-tree lambda2 judge_v3 | 0.183021 | 0.125937 | 回复更像完整解释，但 lexical 下降 |
 
 Blind A gold-free 检查：
@@ -1357,11 +1357,11 @@ Blind A gold-free 检查：
 | `goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_compact_mix_clean` | 1494 | 0.031739 | 0.615890 |
 | `goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_clean` | 1494 | 0.031739 | 0.678379 |
 | `goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_broad_clean` | 1494 | 0.031739 | 0.700198 |
-| `goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_judge_clean_mix_clean` | 1495 | 0.031761 | 0.607239 |
-| `goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_judge_balanced_mix` | 1495 | 0.031761 | 0.559783 |
+| `goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_judge_clean_mix_clean` | 1495 | 0.031761 | 0.605192 |
+| `goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_judge_balanced_mix` | 1495 | 0.031761 | 0.557186 |
 | `goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_judge_planned` | 1495 | 0.031761 | 0.398543 |
-| `goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_compact_clean` | 1495 | 0.031761 | 0.677994 |
-| `goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_compact_broad_clean` | 1495 | 0.031761 | 0.699149 |
+| `goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_compact_clean` | 1495 | 0.031761 | 0.673512 |
+| `goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_compact_broad_clean` | 1495 | 0.031761 | 0.695210 |
 | `goalflow_ltr120_lambda2_head0_judge_v3_clean` | 1496 | 0.031782 | 0.434335 |
 | `goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v3_clean` | 1494 | 0.031739 | 0.437063 |
 
@@ -1430,7 +1430,7 @@ OOF 结果：
 | `judge_mix` | 0.159260 | 0.522089 | 低风险混合回复 |
 | `judge_brief` | 0.174312 | - | 短解释 probe |
 | `judge_compact_mix` | 0.194935 | 0.611604 | compact/broad 混合备份 |
-| `judge_clean_mix` | 0.200611 | 0.604534 | 当前主回复，已清洗列表/重复歌名展示 |
+| `judge_clean_mix` | 0.199655 | 0.605192 | 当前四模型主回复，已清洗列表/重复歌名、歌手、专辑展示 |
 | `compact_broad` | 0.220792 | 0.696674 | 最高 lexical，但更机械 |
 | `judge_v3` | 0.125937 | 0.434335 | 更完整，但 lexical 指标更低 |
 

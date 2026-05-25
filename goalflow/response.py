@@ -199,6 +199,47 @@ def _display_artist_name(catalog: TrackCatalog, track_id: str) -> str:
     return catalog.view(track_id).artist_name
 
 
+def _display_album_name(catalog: TrackCatalog, track_id: str) -> str:
+    def clean_album(value: str) -> str:
+        cleaned_value = re.sub(r"\s*[-–]\s*(?:\d{4}\s+)?remaster(?:ed)?(?:\s+version)?$", "", value, flags=re.I)
+        cleaned_value = re.sub(r"\s+the remaster$", "", cleaned_value, flags=re.I).strip()
+        return cleaned_value or value
+
+    row = getattr(catalog, "rows", {}).get(track_id, {})
+    raw_name = row.get("album_name") if isinstance(row, dict) else None
+    if isinstance(raw_name, (list, tuple)):
+        variants = []
+        seen = set()
+        for value in raw_name:
+            variant = str(value).strip()
+            key = _variant_key(variant)
+            if variant and key and key not in seen:
+                variants.append(variant)
+                seen.add(key)
+        if variants:
+            keys = [_title_variant_key(variant) for variant in variants]
+            nonempty_keys = [key for key in keys if key]
+            duplicate_family = bool(nonempty_keys) and all(
+                any(key == other or key in other or other in key for other in nonempty_keys)
+                for key in nonempty_keys
+            )
+            if duplicate_family:
+                return clean_album(
+                    min(
+                        variants,
+                        key=lambda value: (
+                            "remaster" in value.lower(),
+                            "deluxe" in value.lower(),
+                            -_ascii_ratio(value),
+                            len(value),
+                        ),
+                    )
+                )
+            return clean_album(variants[0])
+    album = catalog.view(track_id).album_name
+    return clean_album(album)
+
+
 def _track_phrase(catalog: TrackCatalog, track_id: str) -> str:
     return f'"{_display_track_name(catalog, track_id)}" by {_display_artist_name(catalog, track_id)}'
 
@@ -320,7 +361,6 @@ def _negative_phrase(state: ConversationState, catalog: TrackCatalog) -> str:
 
 
 def _compact_metadata(catalog: TrackCatalog, track_id: str, require_good_words: bool = True) -> str:
-    view = catalog.view(track_id)
     parts = []
     tags = _tag_list(catalog, track_id, limit=3, require_good_words=require_good_words)
     if tags:
@@ -328,15 +368,15 @@ def _compact_metadata(catalog: TrackCatalog, track_id: str, require_good_words: 
     year = _year_hint(catalog, track_id)
     if year:
         parts.append(f"the release year is {year}")
-    if view.album_name:
-        parts.append(f"the album context is {view.album_name}")
+    album = _display_album_name(catalog, track_id)
+    if album:
+        parts.append(f"the album context is {album}")
     if not parts:
         parts.append("the title and artist metadata are the cleanest anchors")
     return "; ".join(parts[:3])
 
 
 def _metric_metadata(catalog: TrackCatalog, track_id: str, require_good_words: bool = True) -> str:
-    view = catalog.view(track_id)
     parts = []
     tags = _tag_list(catalog, track_id, limit=3, require_good_words=require_good_words)
     if tags:
@@ -344,21 +384,22 @@ def _metric_metadata(catalog: TrackCatalog, track_id: str, require_good_words: b
     year = _year_hint(catalog, track_id)
     if year:
         parts.append(f"year {year}")
-    if view.album_name:
-        parts.append(f"album {view.album_name}")
+    album = _display_album_name(catalog, track_id)
+    if album:
+        parts.append(f"album {album}")
     if not parts:
         parts.append("title and artist metadata")
     return "; ".join(parts[:3])
 
 
 def _backup_detail(catalog: TrackCatalog, track_id: str) -> str:
-    view = catalog.view(track_id)
     pieces = [_track_phrase(catalog, track_id)]
     year = _year_hint(catalog, track_id)
     if year:
         pieces.append(year)
-    if view.album_name:
-        pieces.append(view.album_name)
+    album = _display_album_name(catalog, track_id)
+    if album:
+        pieces.append(album)
     return " / ".join(pieces[:3])
 
 
@@ -720,7 +761,6 @@ def _generate_natural_response(state: ConversationState, catalog: TrackCatalog, 
 
 
 def _clean_reason_parts(catalog: TrackCatalog, track_id: str) -> list[str]:
-    view = catalog.view(track_id)
     parts = []
     artist = catalog.normalized_field(track_id, "artist_name")
     tags = []
@@ -736,8 +776,9 @@ def _clean_reason_parts(catalog: TrackCatalog, track_id: str) -> list[str]:
     year = _year_hint(catalog, track_id)
     if year:
         parts.append(f"a {year} release window")
-    if view.album_name:
-        parts.append(f"the album context of {view.album_name}")
+    album = _display_album_name(catalog, track_id)
+    if album:
+        parts.append(f"the album context of {album}")
     return parts[:3]
 
 
@@ -808,7 +849,6 @@ def _judge_profile_phrase(state: ConversationState) -> str:
 
 
 def _judge_track_detail(catalog: TrackCatalog, track_id: str) -> str:
-    view = catalog.view(track_id)
     tags = _tag_list(catalog, track_id, limit=3, require_good_words=True)
     bits = []
     if tags:
@@ -816,8 +856,9 @@ def _judge_track_detail(catalog: TrackCatalog, track_id: str) -> str:
     year = _year_hint(catalog, track_id)
     if year:
         bits.append(f"{year} release")
-    if view.album_name:
-        bits.append(f"album context from {view.album_name}")
+    album = _display_album_name(catalog, track_id)
+    if album:
+        bits.append(f"album context from {album}")
     if not bits:
         bits.append("the strongest title and artist match")
     return _join_words(bits[:3])
@@ -992,7 +1033,6 @@ def _generate_judge_response(state: ConversationState, catalog: TrackCatalog, tr
 
 
 def _judge_v2_evidence(catalog: TrackCatalog, track_id: str) -> str:
-    view = catalog.view(track_id)
     tags = _tag_list(catalog, track_id, limit=2, require_good_words=True)
     facts = []
     if tags:
@@ -1000,8 +1040,9 @@ def _judge_v2_evidence(catalog: TrackCatalog, track_id: str) -> str:
     year = _year_hint(catalog, track_id)
     if year:
         facts.append(f"the {year} era")
-    if view.album_name:
-        facts.append(f"{view.album_name} as the album anchor")
+    album = _display_album_name(catalog, track_id)
+    if album:
+        facts.append(f"{album} as the album anchor")
     if not facts:
         facts.append("the title and artist match")
     return _join_words(facts[:2])
