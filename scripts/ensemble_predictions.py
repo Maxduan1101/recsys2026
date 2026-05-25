@@ -15,6 +15,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tid", required=True)
     parser.add_argument("--project-root", default=str(Path(__file__).resolve().parents[1]))
     parser.add_argument("--input", action="append", required=True, help="Prediction JSON path. Repeat per model.")
+    parser.add_argument(
+        "--weight",
+        action="append",
+        type=float,
+        help="Optional per-input RRF weight. Repeat once per --input; defaults to 1.0 for every input.",
+    )
     parser.add_argument("--rrf-k", type=int, default=60)
     parser.add_argument("--response-source", type=int, default=0, help="Input index whose responses are copied.")
     parser.add_argument("--no-zip", action="store_true")
@@ -30,13 +36,13 @@ def load_predictions(paths: list[Path]) -> list[list[dict]]:
     return predictions
 
 
-def rrf_track_ids(rows: list[dict], *, rrf_k: int) -> list[str]:
+def rrf_track_ids(rows: list[dict], *, rrf_k: int, weights: list[float]) -> list[str]:
     scores: dict[str, float] = {}
     first_seen: list[str] = []
     seen = set()
-    for row in rows:
+    for row, weight in zip(rows, weights, strict=True):
         for rank, track_id in enumerate(row["predicted_track_ids"], start=1):
-            scores[track_id] = scores.get(track_id, 0.0) + 1.0 / (rrf_k + rank)
+            scores[track_id] = scores.get(track_id, 0.0) + weight / (rrf_k + rank)
             if track_id not in seen:
                 seen.add(track_id)
                 first_seen.append(track_id)
@@ -65,12 +71,19 @@ def main() -> None:
     predictions = load_predictions(paths)
     if args.response_source < 0 or args.response_source >= len(predictions):
         raise ValueError("--response-source must point to one of the inputs")
+    weights = args.weight if args.weight is not None else [1.0] * len(predictions)
+    if len(weights) != len(predictions):
+        raise ValueError("--weight must be repeated once per --input when provided")
+    if any(weight < 0 for weight in weights):
+        raise ValueError("--weight values must be non-negative")
+    if not any(weight > 0 for weight in weights):
+        raise ValueError("At least one --weight value must be positive")
 
     ensembled = []
     for row_index, source_row in enumerate(predictions[args.response_source]):
         rows = [model_rows[row_index] for model_rows in predictions]
         output_row = dict(source_row)
-        output_row["predicted_track_ids"] = rrf_track_ids(rows, rrf_k=args.rrf_k)
+        output_row["predicted_track_ids"] = rrf_track_ids(rows, rrf_k=args.rrf_k, weights=weights)
         ensembled.append(output_row)
 
     validation = validate_predictions(ensembled, TrackCatalog(), expected_count=len(ensembled))
@@ -79,7 +92,7 @@ def main() -> None:
 
     prediction_path = output_path(project_root, args.tid, args.mode)
     prediction_path.write_text(json.dumps(ensembled, ensure_ascii=False), encoding="utf-8")
-    result = {"output": str(prediction_path), "validation": validation}
+    result = {"output": str(prediction_path), "validation": validation, "rrf_k": args.rrf_k, "weights": weights}
     if args.mode == "blind" and not args.no_zip:
         zip_path = prediction_path.parent / "submission.zip"
         with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:

@@ -37,6 +37,7 @@ Development-set scores from the official evaluator.
 | `goalflow_ltr120_lr006_lambda2_head0_oof_judge_v2` | 0.069250 | 0.161655 | 0.181458 | 0.523040 | 0.148666 | Rejected: higher learning rate overfit fold 0. |
 | `goalflow_ens_oof_ltr120_140_200_lambda2_rrf60` | 0.071000 | 0.163316 | 0.183253 | 0.525695 | 0.148741 | Micro-gain ensemble: only `+0.00023` over the single 120-tree model. |
 | `goalflow_ens_oof_ltr120_140_200_col1_lambda2_rrf60` | 0.071000 | 0.162823 | 0.183482 | 0.525547 | 0.148741 | New best validated ensemble: adds the all-column 120-tree L2 variant to the RRF pool. |
+| `goalflow_ens_oof_ltr120_140_200_col1_lambda2_w140half_rrf20` | 0.072000 | 0.163043 | 0.183727 | 0.525844 | 0.148741 | New weighted-RRF best: `rrf_k=20`, weights `[1.0, 0.5, 1.0, 1.0]`. |
 | `goalflow_ltr120_lambda2_head0_oof_judge_v3` | 0.070875 | 0.162514 | 0.183021 | 0.528011 | 0.125937 | Same ranking as `judge_v2`; more complete prose but lower lexical diversity. |
 | `goalflow_ltr120_lambda2_head0_oof_judge_mix` | 0.070875 | 0.162514 | 0.183021 | 0.528011 | 0.159260 | Same ranking as `judge_v2`; mixed response templates improve official lexical diversity. |
 | `goalflow_ltr120_lambda2_head0_oof_judge_brief_probe` | 0.070875 | 0.162514 | 0.183021 | 0.528011 | 0.174312 | Same ranking as `judge_v2`; shorter grounded response probe. |
@@ -53,6 +54,9 @@ Development-set scores from the official evaluator.
 | `goalflow_ens_oof_ltr120_140_200_col1_lambda2_rrf60_judge_planned` | 0.071000 | 0.162823 | 0.183482 | 0.525547 | 0.114233 | Same four-model ranking; strongest prose-style explanation backup, much lower lexical diversity. |
 | `goalflow_ens_oof_ltr120_140_200_col1_lambda2_rrf60_compact_clean` | 0.071000 | 0.162823 | 0.183482 | 0.525547 | 0.211125 | Four-model ensemble ranking with clean compact response after title/artist/album display cleanup. |
 | `goalflow_ens_oof_ltr120_140_200_col1_lambda2_rrf60_compact_broad_clean` | 0.071000 | 0.162823 | 0.183482 | 0.525547 | 0.222801 | Four-model ensemble ranking with highest-lexical compact-broad response after title/artist/album display cleanup. |
+| `goalflow_ens_oof_ltr120_140_200_col1_lambda2_w140half_rrf20_judge_clean_mix` | 0.072000 | 0.163043 | 0.183727 | 0.525844 | 0.199574 | Weighted four-model RRF with clean mixed response; current best OOF candidate. |
+| `goalflow_ens_oof_ltr120_140_200_col1_lambda2_w140half_rrf20_compact_clean` | 0.072000 | 0.163043 | 0.183727 | 0.525844 | 0.211007 | Same weighted ranking with clean compact high-lexical response. |
+| `goalflow_ens_oof_ltr120_140_200_col1_lambda2_w140half_rrf20_compact_broad_clean` | 0.072000 | 0.163043 | 0.183727 | 0.525844 | 0.222685 | Same weighted ranking with highest-lexical compact-broad response. |
 | `goalflow_segcat_ltr120_140_200_ens_judge_v2` | 0.072125 | 0.164281 | 0.184069 | 0.526481 | 0.148494 | High-risk segment-selection experiment: best non-nested OOF score, but nested segment validation regresses. |
 
 Immediate interpretation:
@@ -114,11 +118,14 @@ These are gold-free checks from `scripts/summarize_predictions.py`; they do not 
 | `goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_compact_mix_clean` | 1494 | 0.9338 | 0.031739 | 0.033991 | 0.615890 | Same ensemble ranking; compact/broad mixed responses. |
 | `goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_clean` | 1494 | 0.9338 | 0.031739 | 0.033991 | 0.678379 | Same ensemble ranking; clean high-lexical template backup. |
 | `goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_broad_clean` | 1494 | 0.9338 | 0.031739 | 0.033991 | 0.700198 | Same ensemble ranking; high-lexical backup. |
-| `goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_judge_clean_mix_clean` | 1495 | 0.9344 | 0.031761 | 0.033991 | 0.605192 | New four-model ensemble primary: best OOF nDCG, middle Blind A coverage, cleaned duplicate/list-valued display titles, artists, and albums. |
+| `goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_judge_clean_mix_clean` | 1495 | 0.9344 | 0.031761 | 0.033991 | 0.605192 | Equal-weight four-model ensemble fallback: strong OOF nDCG, middle Blind A coverage, cleaned duplicate/list-valued display titles, artists, and albums. |
 | `goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_judge_balanced_mix` | 1495 | 0.9344 | 0.031761 | 0.033991 | 0.557186 | Same ranking; natural explanation backup if LLM judge rewards prose more than Distinct-2. |
 | `goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_judge_planned` | 1495 | 0.9344 | 0.031761 | 0.033991 | 0.398543 | Same ranking; highest-prose, low-lexical LLM-judge experiment. |
 | `goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_compact_clean` | 1495 | 0.9344 | 0.031761 | 0.033991 | 0.673512 | Four-model ensemble with clean high-lexical template backup after title/artist/album display cleanup. |
 | `goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_compact_broad_clean` | 1495 | 0.9344 | 0.031761 | 0.033991 | 0.695210 | Four-model ensemble with highest-lexical compact-broad template backup after title/artist/album display cleanup. |
+| `goalflow_ens_ltr120_140_200_col1_lambda2_w140half_rrf20_judge_clean_mix_clean` | 1495 | 0.9344 | 0.031761 | 0.033991 | 0.606673 | Weighted four-model RRF primary candidate; 63/80 Blind A rows differ from equal-weight but only 2 top-1 changes. |
+| `goalflow_ens_ltr120_140_200_col1_lambda2_w140half_rrf20_compact_clean` | 1495 | 0.9344 | 0.031761 | 0.033991 | 0.673990 | Same weighted ranking; clean compact high-lexical backup. |
+| `goalflow_ens_ltr120_140_200_col1_lambda2_w140half_rrf20_compact_broad_clean` | 1495 | 0.9344 | 0.031761 | 0.033991 | 0.695922 | Same weighted ranking; highest-lexical backup. |
 | `goalflow_ltr120_lambda2_head0_judge_v3_clean` | 1496 | 0.9350 | 0.031782 | 0.033991 | 0.434335 | Same 120-tree L2 ranking; fuller prose for LLM-judge testing, lower Distinct-2 than v2. |
 | `goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v3_clean` | 1494 | 0.9338 | 0.031739 | 0.033991 | 0.437063 | Same ensemble ranking; fuller prose backup. |
 | `goalflow_segcat_ltr120_140_200_ens_judge_v2_clean` | 1496 | 0.9350 | 0.031782 | 0.033991 | 0.487628 | High-risk category-segmented LTR selection with judge-v2 responses. |
@@ -227,8 +234,8 @@ Key validation:
 - Extra tree counts `140`, `160`, and `200` were rejected as single models: all won or nearly won fold 0 but lost five-fold OOF.
 - `colsample_bytree=1.0` and `learning_rate=0.06` were rejected after OOF despite small fold 0 gains.
 - `lambdarank_truncation_level=100` was rejected after OOF: fold 0 improved slightly, but official five-fold `nDCG@20` dropped to `0.182444`.
-- RRF ensembling over the 120/140/200-tree L2 OOF predictions gives a small local gain, official `nDCG@20=0.183253`; adding the all-column 120-tree L2 variant improves the ensemble to `0.183482`.
-- Blind-A-shaped 500-panel validation favors the four-model ensemble over the single 120-tree L2 model: mean delta `+0.00298` nDCG@20 and median delta `+0.00261`.
+- RRF ensembling over the 120/140/200-tree L2 OOF predictions gives a small local gain, official `nDCG@20=0.183253`; adding the all-column 120-tree L2 variant improves the equal-weight ensemble to `0.183482`.
+- Weighted RRF (`rrf_k=20`, weights `[1.0, 0.5, 1.0, 1.0]`) improves the four-model ensemble to official OOF `nDCG@20=0.183727`; Blind-A-shaped validation versus equal-weight is positive across seeds, with the 2000-panel run showing mean delta `+0.00113` and median delta `+0.00012`.
 - `judge_mix` response style was added as a lower-risk text-upside package. It keeps the same ranking as `judge_v2`, raises official dev lexical diversity from `0.14874` to `0.15926`, and raises Blind A local Distinct-2 from `0.48531` to `0.52209`.
 - `judge_brief`, `judge_compact_mix`, and `judge_clean_mix` were added after the response probe. `judge_brief` reaches official dev lexical `0.17431`; `judge_compact_mix` reaches `0.19493`; after duplicate/list-valued title, artist, and album display cleanup, `judge_clean_mix` reaches `0.19966` on the four-model ensemble ranking. Blind A local Distinct-2 is `0.60519` for the clean mix.
 - `judge_v3` response style was added as a fuller explanation style. It may help LLM-as-a-Judge because it reads more naturally, but local lexical diversity is lower than `judge_v2`, so it is only a text backup.
@@ -236,13 +243,14 @@ Key validation:
 
 Current submission recommendation:
 
-1. `experiments/goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_judge_clean_mix_clean/blindset_A/submission.zip`
-2. `experiments/goalflow_ltr120_lambda2_head0_judge_clean_mix_clean/blindset_A/submission.zip`
-3. `experiments/goalflow_ltr120_lambda2_head0_judge_mix_clean/blindset_A/submission.zip`
-4. `experiments/goalflow_ltr120_lambda2_head0_judge_v2_clean/blindset_A/submission.zip`
-5. `experiments/goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_judge_balanced_mix/blindset_A/submission.zip`
-6. `experiments/goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_compact_clean/blindset_A/submission.zip`
-7. `experiments/goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_compact_broad_clean/blindset_A/submission.zip`
+1. `experiments/goalflow_ens_ltr120_140_200_col1_lambda2_w140half_rrf20_judge_clean_mix_clean/blindset_A/submission.zip`
+2. `experiments/goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_judge_clean_mix_clean/blindset_A/submission.zip`
+3. `experiments/goalflow_ltr120_lambda2_head0_judge_clean_mix_clean/blindset_A/submission.zip`
+4. `experiments/goalflow_ltr120_lambda2_head0_judge_mix_clean/blindset_A/submission.zip`
+5. `experiments/goalflow_ltr120_lambda2_head0_judge_v2_clean/blindset_A/submission.zip`
+6. `experiments/goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_judge_balanced_mix/blindset_A/submission.zip`
+7. `experiments/goalflow_ens_ltr120_140_200_col1_lambda2_w140half_rrf20_compact_clean/blindset_A/submission.zip`
+8. `experiments/goalflow_ens_ltr120_140_200_col1_lambda2_w140half_rrf20_compact_broad_clean/blindset_A/submission.zip`
 8. `experiments/goalflow_ltr120_lambda2_head0_judge_compact_mix_clean/blindset_A/submission.zip`
 9. `experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_clean_mix_clean/blindset_A/submission.zip`
 10. `experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_mix_clean/blindset_A/submission.zip`
@@ -284,7 +292,8 @@ Interpretation:
 - Historical response-only package: `experiments/goalflow_head20_compactresp_v2/blindset_A/submission.zip`
 - Safer diversity backup: `experiments/goalflow_taildiv_head18_compactresp_v2/blindset_A/submission.zip`
 - Aggressive diversity backup: `experiments/goalflow_taildiv_head15_compactresp_v2/blindset_A/submission.zip`
-- Current four-model ensemble text choice: `experiments/goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_judge_clean_mix_clean/blindset_A/submission.zip`
+- Current weighted four-model ensemble text choice: `experiments/goalflow_ens_ltr120_140_200_col1_lambda2_w140half_rrf20_judge_clean_mix_clean/blindset_A/submission.zip`
+- Equal-weight four-model ensemble text fallback: `experiments/goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_judge_clean_mix_clean/blindset_A/submission.zip`
 - Conservative single-model clean-mix fallback: `experiments/goalflow_ltr120_lambda2_head0_judge_clean_mix_clean/blindset_A/submission.zip`
 - Lower-risk mixed-response single-model backup: `experiments/goalflow_ltr120_lambda2_head0_judge_mix_clean/blindset_A/submission.zip`
 - Compact/broad mixed-response single-model backup: `experiments/goalflow_ltr120_lambda2_head0_judge_compact_mix_clean/blindset_A/submission.zip`
@@ -295,8 +304,10 @@ Interpretation:
 - Previous three-model fixed-style ensemble backup: `experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v2_clean/blindset_A/submission.zip`
 - Clean compact high-lexical LTR backup: `experiments/goalflow_ltr120_lambda2_head0_compact_clean/blindset_A/submission.zip`
 - Current high-lexical LTR backup: `experiments/goalflow_ltr120_lambda2_head0_compact_broad_clean/blindset_A/submission.zip`
-- OOF-max clean compact high-lexical backup: `experiments/goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_compact_clean/blindset_A/submission.zip`
-- OOF-max highest-lexical ensemble backup: `experiments/goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_compact_broad_clean/blindset_A/submission.zip`
+- Weighted clean compact high-lexical backup: `experiments/goalflow_ens_ltr120_140_200_col1_lambda2_w140half_rrf20_compact_clean/blindset_A/submission.zip`
+- Weighted highest-lexical ensemble backup: `experiments/goalflow_ens_ltr120_140_200_col1_lambda2_w140half_rrf20_compact_broad_clean/blindset_A/submission.zip`
+- Equal-weight clean compact high-lexical backup: `experiments/goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_compact_clean/blindset_A/submission.zip`
+- Equal-weight highest-lexical ensemble backup: `experiments/goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_compact_broad_clean/blindset_A/submission.zip`
 - Previous three-model clean compact high-lexical backup: `experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_clean/blindset_A/submission.zip`
 - Previous three-model high-lexical ensemble backup: `experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_broad_clean/blindset_A/submission.zip`
 - High-risk category-segmented package: `experiments/goalflow_segcat_ltr120_140_200_ens_judge_v2_clean/blindset_A/submission.zip`
@@ -316,7 +327,7 @@ The `head18` tail-diversity package uses `legacy_head_k=18`, `tail_diversity_sta
 
 The `compact_broad` response style is the high-lexical backup for submissions. It keeps compact v2's high lexical diversity, blocks offensive/private tag artifacts such as `albums i own`, `seen live`, `lastfm`, and profanity-like tag variants, and avoids the lower Distinct-2 of the more natural long-response experiments.
 
-The current RRF ensemble uses `scripts/ensemble_predictions.py` with the 120/140/200-tree L2 LTR packages plus the weaker 120-tree all-column L2 variant and `rrf_k=60`. It improves local OOF to `nDCG@20=0.183482` and is also favored by Blind-A-shaped panels, so it is now the first-choice package. The older three-model RRF remains a fallback.
+The current RRF ensemble uses `scripts/ensemble_predictions.py` with the 120/140/200-tree L2 LTR packages plus the weaker 120-tree all-column L2 variant. Equal weights with `rrf_k=60` improve local OOF to `nDCG@20=0.183482`; the new weighted setting (`rrf_k=20`, weights `[1.0, 0.5, 1.0, 1.0]`) improves it again to `0.183727` and is positive on Blind-A-shaped panels, so it is now the first-choice package. The equal-weight four-model and older three-model RRF packages remain fallbacks.
 
 The category-segmented package uses `scripts/select_segmented_predictions.py` to choose among the single LTR models and the RRF ensemble by `conversation_goal.category`. It has the best non-nested official dev OOF score, `nDCG@20=0.184069`, and Blind A local diversity matches the single 120-tree package. A stricter nested segment-selection check, where four folds choose the segment map and the held-out fold evaluates it, drops to about `0.18235`; keep it as a high-risk experiment rather than a primary package.
 
