@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import unicodedata
 
 from .data import TrackCatalog
 from .fusion import infer_intent
@@ -135,6 +136,12 @@ def _ascii_ratio(value: str) -> float:
     return sum(1 for char in value if ord(char) < 128) / len(value)
 
 
+def _variant_key(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value)
+    ascii_text = "".join(char for char in normalized if not unicodedata.combining(char))
+    return re.sub(r"[^a-z0-9]+", " ", ascii_text.lower()).strip()
+
+
 def _display_track_name(catalog: TrackCatalog, track_id: str) -> str:
     row = getattr(catalog, "rows", {}).get(track_id, {})
     raw_name = row.get("track_name") if isinstance(row, dict) else None
@@ -170,9 +177,30 @@ def _display_track_name(catalog: TrackCatalog, track_id: str) -> str:
     return catalog.view(track_id).track_name
 
 
+def _display_artist_name(catalog: TrackCatalog, track_id: str) -> str:
+    row = getattr(catalog, "rows", {}).get(track_id, {})
+    raw_name = row.get("artist_name") if isinstance(row, dict) else None
+    if isinstance(raw_name, (list, tuple)):
+        variants = []
+        seen = set()
+        for value in raw_name:
+            variant = str(value).strip()
+            key = _variant_key(variant)
+            if variant and key and key not in seen:
+                variants.append((variant, key))
+                seen.add(key)
+        filtered = []
+        for variant, key in variants:
+            if any(key != other and key in other.split() or key != other and key in other for _, other in variants):
+                continue
+            filtered.append(variant)
+        if filtered:
+            return ", ".join(filtered)
+    return catalog.view(track_id).artist_name
+
+
 def _track_phrase(catalog: TrackCatalog, track_id: str) -> str:
-    view = catalog.view(track_id)
-    return f'"{_display_track_name(catalog, track_id)}" by {view.artist_name}'
+    return f'"{_display_track_name(catalog, track_id)}" by {_display_artist_name(catalog, track_id)}'
 
 
 def _pick(state: ConversationState, options: list[str], salt: str = "") -> str:
