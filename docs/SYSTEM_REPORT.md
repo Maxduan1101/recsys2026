@@ -1114,7 +1114,34 @@ Blind A 本地无 gold 摘要：
 
 所以目前提交顺序更新为：先交 `head20_compact_broad`，再考虑 `head19_compact_broad`，最后才是更激进一点的 `head18_compact_broad`。
 
-### 16.6 新一批 Pro 问题
+### 16.6 Embedding Tail Rescue 小实验
+
+我把官方 `cf-bpr` embedding 真正接到了 inference 后处理里，但只让它做一件很保守的事：
+
+```text
+保护前 19 个推荐不动；
+如果历史里有明确正反馈 seed track；
+用 seed track 的 cf-bpr 最近邻；
+最多替换第 20 个位置。
+```
+
+结果：
+
+| Run | nDCG@20 | Catalog Diversity | 结论 |
+|---|---:|---:|---|
+| `goalflow_head20_cf_tail19` | 0.08593 | 0.39222 | 全量 dev 极小正收益 |
+| `goalflow_taildiv_head19_cf_tail19` | 0.08570 | 0.50498 | 比 head19 原版差 |
+| `goalflow_taildiv_head18_cf_tail18` | 0.08530 | 0.61108 | 比 head18 主分略好但多样性低 |
+
+Blind-like 抽样对 `head20_cf_tail19` 是中性；Blind A 只改了 1 行。因此它现在只是实验包：
+
+```text
+experiments/goalflow_head20_cf_tail19/blindset_A/submission.zip
+```
+
+它不进入当前优先提交顺序。真正有用的收获是：embedding store 的空向量处理被修好了，后续可以更安全地接 LTR 或更多 embedding features。
+
+### 16.7 新一批 Pro 问题
 
 前面一批 Pro 问题聚焦：
 

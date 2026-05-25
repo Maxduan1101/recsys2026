@@ -18,6 +18,22 @@ TRACK_EMBEDDING_CHANNELS = {
 }
 
 
+def vectors_to_matrix(vectors, dtype=np.float32) -> np.ndarray:
+    rows = list(vectors)
+    dim = 0
+    for vector in rows:
+        if vector:
+            dim = len(vector)
+            break
+    if dim == 0:
+        return np.zeros((len(rows), 0), dtype=dtype)
+    matrix = np.zeros((len(rows), dim), dtype=dtype)
+    for index, vector in enumerate(rows):
+        if len(vector) == dim:
+            matrix[index] = np.asarray(vector, dtype=dtype)
+    return matrix
+
+
 def l2_normalize_with_mask(matrix: np.ndarray, eps: float = 1e-12) -> tuple[np.ndarray, np.ndarray]:
     matrix = np.asarray(matrix, dtype=np.float32)
     norms = np.linalg.norm(matrix, axis=1)
@@ -49,7 +65,7 @@ class TrackEmbeddingStore:
         self.track_index = {track_id: index for index, track_id in enumerate(self.track_ids)}
         self.matrices: dict[str, ChannelMatrix] = {}
         for name, column in self.channels.items():
-            raw = np.asarray(dataset[column], dtype=np.float32)
+            raw = vectors_to_matrix(dataset[column], dtype=np.float32)
             normalized, valid = l2_normalize_with_mask(raw)
             self.matrices[name] = ChannelMatrix(raw=raw, normalized=normalized, valid=valid)
 
@@ -108,10 +124,17 @@ class UserEmbeddingStore:
     ):
         self.dataset_name = dataset_name
         self.user_vectors: dict[str, np.ndarray] = {}
+        self.dim = 0
         for split in splits:
             dataset = load_dataset(dataset_name, split=split)
             for row in dataset:
-                self.user_vectors[row["user_id"]] = np.asarray(row["cf-bpr"], dtype=np.float32)
+                vector = row["cf-bpr"]
+                if not vector:
+                    continue
+                if self.dim == 0:
+                    self.dim = len(vector)
+                if len(vector) == self.dim:
+                    self.user_vectors[row["user_id"]] = np.asarray(vector, dtype=np.float32)
 
     def has_user(self, user_id: str) -> bool:
         return user_id in self.user_vectors
@@ -121,6 +144,8 @@ class UserEmbeddingStore:
             return np.full(len(track_store.track_ids), -np.inf, dtype=np.float32)
         user = self.user_vectors[user_id]
         matrix = track_store.matrices["track_cf"]
+        if matrix.raw.shape[1] != user.shape[0]:
+            return np.full(len(track_store.track_ids), -np.inf, dtype=np.float32)
         scores = matrix.raw @ user
         scores[~matrix.valid] = -np.inf
         return scores.astype(np.float32)

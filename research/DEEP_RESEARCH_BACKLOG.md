@@ -56,9 +56,11 @@ This file tracks questions and optimization directions that deserve a dedicated 
    - Correct datasets are `talkpl-ai/TalkPlayData-Challenge-Track-Embeddings` and `talkpl-ai/TalkPlayData-Challenge-User-Embeddings`.
    - Warning: older `TalkPlayData-2-Track-Embeddings` has zero overlap with Challenge track UUIDs.
    - Implemented initial `goalflow/embeddings.py` store with per-channel raw/L2-normalized matrices and masks.
+   - Fixed empty-vector handling in both track and user embedding stores after first inference integration exposed ragged CF vectors.
    - Pro answer saved at `research/pro_answers/tab4_music_crs_implementation_plan.txt`.
    - Additional Pro answer saved at `research/pro_answers/round2/tab2_embedding-based_extension_design.txt`.
    - Recommended first implementation: official embedding store with per-channel masks + L2 normalization, then seed_metadata, seed_attributes, seed_cf, and user_cf channels before lyrics/audio/image direct-query work.
+   - Implemented `scripts/apply_embedding_tail_rescue.py`, a protected tail-only seed-CF experiment. Full dev improved from `0.085870` to `0.085927`, but Blind A changed only 1 row and blind-like panels were neutral, so this remains an experimental package rather than a recommended first submission.
 
 5. **Candidate recall diagnostics**
    - Implemented in `scripts/diagnose_retrieval_sources.py`.

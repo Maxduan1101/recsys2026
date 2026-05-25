@@ -167,6 +167,17 @@ python goalflow_musiccrs/scripts/evaluate_blind_like.py \
   --baseline-label head20
 ```
 
+Protected seed-CF tail rescue experiment:
+
+```bash
+python goalflow_musiccrs/scripts/apply_embedding_tail_rescue.py \
+  --mode dev \
+  --input goalflow_musiccrs/experiments/goalflow_head20_style_compact_broad/devset/goalflow_head20_style_compact_broad.json \
+  --tid goalflow_head20_cf_tail19 \
+  --preserve-head-k 19 \
+  --copy-to-official-evaluator
+```
+
 Important: use `talkpl-ai/TalkPlayData-Challenge-Track-Embeddings`, not the older `TalkPlayData-2-Track-Embeddings` from the baseline tips. The Challenge embedding `all_tracks` split has full overlap with the Challenge track catalog.
 
 ## Current Scope

@@ -20,6 +20,9 @@ Development-set scores from the official evaluator.
 | `goalflow_taildiv_head19_compact_broad` | 0.009875 | 0.067536 | 0.085758 | 0.508402 | 0.175699 | Current middle backup with compact broad responses. |
 | `goalflow_taildiv_head18_compact_broad` | 0.009875 | 0.067536 | 0.085271 | 0.614327 | 0.175699 | Current stronger diversity backup with compact broad responses. |
 | `goalflow_taildiv_head17_compact_clean` | 0.009875 | 0.067536 | 0.084303 | 0.688598 | 0.169888 | Too much nDCG loss; held back. |
+| `goalflow_head20_cf_tail19` | 0.009625 | 0.067601 | 0.085927 | 0.392216 | 0.175710 | Experimental seed-CF tail rescue; tiny full-dev gain, blind-like neutral. |
+| `goalflow_taildiv_head19_cf_tail19` | 0.009875 | 0.067536 | 0.085701 | 0.504982 | 0.175699 | CF rescue stacked on head19 was worse than head19 alone. |
+| `goalflow_taildiv_head18_cf_tail18` | 0.009875 | 0.067536 | 0.085299 | 0.611077 | 0.175699 | CF rescue stacked on head18 gives tiny nDCG gain but lower diversity. |
 
 Immediate interpretation:
 
@@ -61,6 +64,7 @@ These are gold-free checks from `scripts/summarize_predictions.py`; they do not 
 | `goalflow_head20_compact_broad` | 1216 | 0.7600 | 0.025833 | 0.033991 | 0.664176 | Current first-choice package: same safe ranking, cleaner broad-tag response. |
 | `goalflow_taildiv_head19_compact_broad` | 1244 | 0.7775 | 0.026428 | 0.033991 | 0.664176 | Middle backup: small tail diversity gain, lower full-dev nDCG risk than head18. |
 | `goalflow_taildiv_head18_compact_broad` | 1268 | 0.7925 | 0.026938 | 0.033991 | 0.664176 | Stronger diversity backup; blind-like panels favor it, full-dev nDCG is lower. |
+| `goalflow_head20_cf_tail19` | 1217 | 0.7606 | 0.025855 | 0.033991 | 0.664176 | Experimental only: seed-CF changes just 1 Blind A row. |
 
 ## Blind-Like Dev Panels
 
@@ -76,6 +80,12 @@ Latest 500-panel result, baseline `head20`:
 | `head18` | 0.087183 | 0.086981 | 0.066606 | +0.000698 | +0.000437 | Best blind-like tail-diversity signal. |
 | `head19` | 0.086794 | 0.086925 | 0.065330 | +0.000309 | +0.000182 | More conservative middle option. |
 | `head17` | 0.084748 | 0.085102 | 0.062943 | -0.001737 | -0.001721 | Rejected. |
+
+CF-tail blind-like follow-up:
+
+- `goalflow_head20_cf_tail19` improved full-dev nDCG@20 by `+0.000057`, but the 500-panel Blind-A-shaped sample was exactly neutral versus head20.
+- On Blind A, it changed only `1 / 80` row, raising unique tracks from `1216` to `1217`.
+- Stacking CF-tail on `head19` reduced dev nDCG; stacking it on `head18` raised nDCG slightly but lowered catalog diversity. Do not prioritize it over the three main packages.
 
 ## Retrieval Source Diagnostics
 
@@ -157,6 +167,7 @@ Interpretation:
 - Current first-choice package: `experiments/goalflow_head20_compact_broad/blindset_A/submission.zip`
 - Current middle backup: `experiments/goalflow_taildiv_head19_compact_broad/blindset_A/submission.zip`
 - Current diversity backup: `experiments/goalflow_taildiv_head18_compact_broad/blindset_A/submission.zip`
+- Experimental CF-tail package: `experiments/goalflow_head20_cf_tail19/blindset_A/submission.zip`
 
 The `head20_compactresp_v2` package keeps `legacy_head_k=20` and therefore preserves the safe ranking anchor while replacing the weak response text with compact metadata-grounded explanations.
 
