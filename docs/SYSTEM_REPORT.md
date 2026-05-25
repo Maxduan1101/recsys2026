@@ -1325,16 +1325,16 @@ L2 正则可以理解成“不要让树的判断太激进”。单折里 `lambda
 | 120-tree lambda2 judge_mix | 0.183021 | 0.159260 | 低风险混合回复，ranking 不变 |
 | 120-tree lambda2 judge_brief | 0.183021 | 0.174312 | 更短的 grounded 回复 |
 | 120-tree lambda2 judge_compact_mix | 0.183021 | 0.194935 | compact/broad 混合备份 |
-| 120-tree lambda2 judge_clean_mix | 0.183021 | 0.199303 | 当前主回复，clean tags + 高 lexical |
+| 120-tree lambda2 judge_clean_mix | 0.183021 | 0.200611 | 当前主回复，clean tags + 高 lexical + 清洗歌名展示 |
 | 120-tree lambda2 compact_clean | 0.183021 | 0.209822 | clean compact 高 lexical 备份 |
 | 120-tree lambda2 compact_broad | 0.183021 | 0.220792 | 最高 lexical，但更机械 |
 | 120/140/200 lambda2 RRF ensemble | 0.183253 | 0.148741 | 微小排序提升 |
 | 120/140/200 lambda2 RRF judge_compact_mix | 0.183253 | 0.194546 | ensemble ranking + compact/broad 混合 |
 | 120/140/200 lambda2 RRF judge_clean_mix | 0.183253 | 0.199012 | ensemble ranking + clean 混合 |
 | 120/140/200 lambda2 RRF compact_clean | 0.183253 | 0.209428 | ensemble ranking + clean compact |
-| 120/140/200/col1 lambda2 RRF judge_clean_mix | 0.183482 | 0.199255 | 当前最高 OOF 主包 |
-| 120/140/200/col1 lambda2 RRF compact_clean | 0.183482 | 0.209535 | 当前最高 OOF 高 lexical 备份 |
-| 120/140/200/col1 lambda2 RRF compact_broad | 0.183482 | 0.220545 | 当前最高 OOF 最高 lexical 备份 |
+| 120/140/200/col1 lambda2 RRF judge_clean_mix | 0.183482 | 0.200490 | 当前最高 OOF 主包，已清洗歌名展示 |
+| 120/140/200/col1 lambda2 RRF compact_clean | 0.183482 | 0.211234 | 当前最高 OOF 高 lexical 备份 |
+| 120/140/200/col1 lambda2 RRF compact_broad | 0.183482 | 0.222587 | 当前最高 OOF 最高 lexical 备份 |
 | 120-tree lambda2 judge_v3 | 0.183021 | 0.125937 | 回复更像完整解释，但 lexical 下降 |
 
 Blind A gold-free 检查：
@@ -1345,7 +1345,7 @@ Blind A gold-free 检查：
 | `goalflow_ltr120_head0_compact_broad_clean` | 1500 | 0.031867 | 0.702228 |
 | `goalflow_ltr120_lambda2_head0_judge_v2_clean` | 1496 | 0.031782 | 0.485312 |
 | `goalflow_ltr120_lambda2_head0_judge_mix_clean` | 1496 | 0.031782 | 0.522089 |
-| `goalflow_ltr120_lambda2_head0_judge_clean_mix_clean` | 1496 | 0.031782 | 0.606919 |
+| `goalflow_ltr120_lambda2_head0_judge_clean_mix_clean` | 1496 | 0.031782 | 0.604534 |
 | `goalflow_ltr120_lambda2_head0_judge_compact_mix_clean` | 1496 | 0.031782 | 0.611604 |
 | `goalflow_ltr120_lambda2_head0_compact_clean` | 1496 | 0.031782 | 0.675327 |
 | `goalflow_ltr120_lambda2_head0_compact_broad_clean` | 1496 | 0.031782 | 0.696674 |
@@ -1355,9 +1355,9 @@ Blind A gold-free 检查：
 | `goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_compact_mix_clean` | 1494 | 0.031739 | 0.615890 |
 | `goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_clean` | 1494 | 0.031739 | 0.678379 |
 | `goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_broad_clean` | 1494 | 0.031739 | 0.700198 |
-| `goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_judge_clean_mix_clean` | 1495 | 0.031761 | 0.610683 |
-| `goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_compact_clean` | 1495 | 0.031761 | 0.679705 |
-| `goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_compact_broad_clean` | 1495 | 0.031761 | 0.700514 |
+| `goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_judge_clean_mix_clean` | 1495 | 0.031761 | 0.608158 |
+| `goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_compact_clean` | 1495 | 0.031761 | 0.678513 |
+| `goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_compact_broad_clean` | 1495 | 0.031761 | 0.699616 |
 | `goalflow_ltr120_lambda2_head0_judge_v3_clean` | 1496 | 0.031782 | 0.434335 |
 | `goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v3_clean` | 1494 | 0.031739 | 0.437063 |
 
@@ -1426,7 +1426,7 @@ OOF 结果：
 | `judge_mix` | 0.159260 | 0.522089 | 低风险混合回复 |
 | `judge_brief` | 0.174312 | - | 短解释 probe |
 | `judge_compact_mix` | 0.194935 | 0.611604 | compact/broad 混合备份 |
-| `judge_clean_mix` | 0.199303 | 0.606919 | 当前主回复 |
+| `judge_clean_mix` | 0.200611 | 0.604534 | 当前主回复，已清洗列表/重复歌名展示 |
 | `compact_broad` | 0.220792 | 0.696674 | 最高 lexical，但更机械 |
 | `judge_v3` | 0.125937 | 0.434335 | 更完整，但 lexical 指标更低 |
 
@@ -1439,6 +1439,8 @@ OOF 结果：
 - 第二、第三首歌为什么作为备选。
 
 所以 `judge_v3` 不是主版本，只作为 LLM judge 备选。如果 Gemini 更喜欢解释完整度，`judge_v3` 可能有机会；如果 Gemini 同时惩罚重复表达，`judge_clean_mix` 更稳。`compact_broad` 的数字最高，但文本最像工程化报告，因此只作为“如果只想冲 Distinct-2”的备份。
+
+这一轮还加了一个很小但有观感收益的标题清洗：如果官方 metadata 里 `track_name` 是多个变体组成的列表，例如 `["Big Poppa - 2005 Remaster", "Big Poppa"]`，回复里会优先展示更自然的 `Big Poppa`；如果英文和非英文标题重复出现，也会优先保留更容易让 judge/用户读懂的版本。这样不会改变任何推荐排序，只影响解释文本。
 
 ### 17.6 当前提交顺序
 
@@ -1470,7 +1472,7 @@ OOF 结果：
 experiments/goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_judge_clean_mix_clean/blindset_A/submission.zip
 ```
 
-理由：目前最高的稳健 OOF ranking，Blind-A-shaped 抽样也支持；Blind A 覆盖度接近理论上限，回复比 judge_v2 / judge_mix 更不重复，同时仍然是 metadata-grounded 解释，并过滤了明显噪声 tag。
+理由：目前最高的稳健 OOF ranking，Blind-A-shaped 抽样也支持；Blind A 覆盖度接近理论上限，回复比 judge_v2 / judge_mix 更不重复，同时仍然是 metadata-grounded 解释，并过滤了明显噪声 tag 和列表式歌名。
 
 第二备选：
 

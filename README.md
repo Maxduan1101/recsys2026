@@ -22,7 +22,7 @@ The first runnable system implements:
 - LightGBM LambdaRank reranking for a learned source-fusion path;
 - cached LTR candidate frames for faster hyperparameter sweeps;
 - RRF ensembling over compatible prediction files;
-- configurable response styles, with `judge_v2` as the current LTR submission default and `compact_broad` as the high-lexical backup;
+- configurable response styles, with `judge_clean_mix` as the current LTR submission default and compact styles as high-lexical backups;
 - devset prediction, official evaluator compatibility, Blind A `submission.zip` generation.
 
 ## Run
@@ -105,7 +105,7 @@ Current recommended Blind A package:
 /Users/bytedance/generated_problems/recsys2026_music_crs/goalflow_musiccrs/experiments/goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_judge_clean_mix_clean/blindset_A/submission.zip
 ```
 
-This package RRF-ensembles the 120/140/200-tree `reg_lambda=2` LTR rankings plus the 120-tree `colsample_bytree=1.0` L2 variant with `rrf_k=60`, then generates a cleaner high-lexical mix of `judge_v2`, `judge_brief`, and cleaned `compact` responses. OOF dev ranking rises to official `nDCG@20=0.18348` versus `0.18302` for the single 120-tree L2 model and `0.18325` for the previous three-model ensemble. Blind-A-shaped 500-panel validation also favors it: mean delta `+0.00298` nDCG@20 versus the single model. Blind A local Distinct-2 is `0.61068`.
+This package RRF-ensembles the 120/140/200-tree `reg_lambda=2` LTR rankings plus the 120-tree `colsample_bytree=1.0` L2 variant with `rrf_k=60`, then generates a cleaner high-lexical mix of `judge_v2`, `judge_brief`, and cleaned `compact` responses. OOF dev ranking rises to official `nDCG@20=0.18348` versus `0.18302` for the single 120-tree L2 model and `0.18325` for the previous three-model ensemble. Blind-A-shaped 500-panel validation also favors it: mean delta `+0.00298` nDCG@20 versus the single model. After duplicate/list-valued title display cleanup, official dev lexical diversity is `0.20049` and Blind A local Distinct-2 is `0.60816`.
 
 Its high-lexical backups with the same four-model ranking are:
 
@@ -120,7 +120,7 @@ Conservative single-model clean-mix package:
 /Users/bytedance/generated_problems/recsys2026_music_crs/goalflow_musiccrs/experiments/goalflow_ltr120_lambda2_head0_judge_clean_mix_clean/blindset_A/submission.zip
 ```
 
-This package keeps the same full-dev LightGBM LambdaRank ranking as the conservative L2 package. OOF dev ranking is official `nDCG@20=0.18302`; lexical diversity improves from `0.14874` for fixed `judge_v2` and `0.15926` for `judge_mix` to `0.19930`, while Blind A local Distinct-2 rises from `0.48531` to `0.60692`.
+This package keeps the same full-dev LightGBM LambdaRank ranking as the conservative L2 package. OOF dev ranking is official `nDCG@20=0.18302`; lexical diversity improves from `0.14874` for fixed `judge_v2` and `0.15926` for `judge_mix` to `0.20061`, while Blind A local Distinct-2 rises from `0.48531` to `0.60453` after title display cleanup.
 
 Lower-risk mixed response package:
 

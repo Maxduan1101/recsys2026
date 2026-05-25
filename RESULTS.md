@@ -41,16 +41,16 @@ Development-set scores from the official evaluator.
 | `goalflow_ltr120_lambda2_head0_oof_judge_mix` | 0.070875 | 0.162514 | 0.183021 | 0.528011 | 0.159260 | Same ranking as `judge_v2`; mixed response templates improve official lexical diversity. |
 | `goalflow_ltr120_lambda2_head0_oof_judge_brief_probe` | 0.070875 | 0.162514 | 0.183021 | 0.528011 | 0.174312 | Same ranking as `judge_v2`; shorter grounded response probe. |
 | `goalflow_ltr120_lambda2_head0_oof_judge_compact_mix_probe` | 0.070875 | 0.162514 | 0.183021 | 0.528011 | 0.194935 | Compact/broad mixed response probe. |
-| `goalflow_ltr120_lambda2_head0_oof_judge_clean_mix` | 0.070875 | 0.162514 | 0.183021 | 0.528011 | 0.199303 | Current single-model text choice: cleaner high-lexical mix of judge/brief/compact responses. |
+| `goalflow_ltr120_lambda2_head0_oof_judge_clean_mix` | 0.070875 | 0.162514 | 0.183021 | 0.528011 | 0.200611 | Current single-model text choice: cleaner high-lexical mix of judge/brief/compact responses after title display cleanup. |
 | `goalflow_ltr120_lambda2_head0_oof_compact_probe` | 0.070875 | 0.162514 | 0.183021 | 0.528011 | 0.209822 | Clean compact response: higher lexical, more template-like. |
 | `goalflow_ltr120_lambda2_head0_oof_compact_broad_probe` | 0.070875 | 0.162514 | 0.183021 | 0.528011 | 0.220792 | Same ranking; highest lexical among grounded templates but more mechanical. |
 | `goalflow_ens_oof_ltr120_140_200_lambda2_rrf60_judge_mix` | 0.071000 | 0.163316 | 0.183253 | 0.525695 | 0.159014 | Same ensemble ranking; mixed response templates improve lexical diversity. |
 | `goalflow_ens_oof_ltr120_140_200_lambda2_rrf60_judge_compact_mix` | 0.071000 | 0.163316 | 0.183253 | 0.525695 | 0.194546 | Same ensemble ranking with the compact mixed response style. |
 | `goalflow_ens_oof_ltr120_140_200_lambda2_rrf60_judge_clean_mix` | 0.071000 | 0.163316 | 0.183253 | 0.525695 | 0.199012 | Same ensemble ranking with the clean mixed response style. |
 | `goalflow_ens_oof_ltr120_140_200_lambda2_rrf60_compact_clean` | 0.071000 | 0.163316 | 0.183253 | 0.525695 | 0.209428 | Ensemble ranking with clean compact response. |
-| `goalflow_ens_oof_ltr120_140_200_col1_lambda2_rrf60_judge_clean_mix` | 0.071000 | 0.162823 | 0.183482 | 0.525547 | 0.199255 | Four-model ensemble ranking with clean mixed response style. |
-| `goalflow_ens_oof_ltr120_140_200_col1_lambda2_rrf60_compact_clean` | 0.071000 | 0.162823 | 0.183482 | 0.525547 | 0.209535 | Four-model ensemble ranking with clean compact response. |
-| `goalflow_ens_oof_ltr120_140_200_col1_lambda2_rrf60_compact_broad_clean` | 0.071000 | 0.162823 | 0.183482 | 0.525547 | 0.220545 | Four-model ensemble ranking with highest-lexical compact-broad response. |
+| `goalflow_ens_oof_ltr120_140_200_col1_lambda2_rrf60_judge_clean_mix` | 0.071000 | 0.162823 | 0.183482 | 0.525547 | 0.200490 | Four-model ensemble ranking with clean mixed response style after title display cleanup. |
+| `goalflow_ens_oof_ltr120_140_200_col1_lambda2_rrf60_compact_clean` | 0.071000 | 0.162823 | 0.183482 | 0.525547 | 0.211234 | Four-model ensemble ranking with clean compact response after title display cleanup. |
+| `goalflow_ens_oof_ltr120_140_200_col1_lambda2_rrf60_compact_broad_clean` | 0.071000 | 0.162823 | 0.183482 | 0.525547 | 0.222587 | Four-model ensemble ranking with highest-lexical compact-broad response after title display cleanup. |
 | `goalflow_segcat_ltr120_140_200_ens_judge_v2` | 0.072125 | 0.164281 | 0.184069 | 0.526481 | 0.148494 | High-risk segment-selection experiment: best non-nested OOF score, but nested segment validation regresses. |
 
 Immediate interpretation:
@@ -102,7 +102,7 @@ These are gold-free checks from `scripts/summarize_predictions.py`; they do not 
 | `goalflow_ltr120_head0_compact_broad_clean` | 1500 | 0.9375 | 0.031867 | 0.033991 | 0.702228 | Previous high-lexical backup before L2 regularization. |
 | `goalflow_ltr120_lambda2_head0_judge_v2_clean` | 1496 | 0.9350 | 0.031782 | 0.033991 | 0.485312 | Conservative single-model package: best fixed LTR ranking plus concise judge-focused response. |
 | `goalflow_ltr120_lambda2_head0_judge_mix_clean` | 1496 | 0.9350 | 0.031782 | 0.033991 | 0.522089 | Lower-risk mixed text backup: same ranking as judge-v2, more varied judge-focused responses. |
-| `goalflow_ltr120_lambda2_head0_judge_clean_mix_clean` | 1496 | 0.9350 | 0.031782 | 0.033991 | 0.606919 | Conservative single-model text fallback: same ranking, cleaner high-lexical mixing. |
+| `goalflow_ltr120_lambda2_head0_judge_clean_mix_clean` | 1496 | 0.9350 | 0.031782 | 0.033991 | 0.604534 | Conservative single-model text fallback: same ranking, cleaner high-lexical mixing after title display cleanup. |
 | `goalflow_ltr120_lambda2_head0_judge_compact_mix_clean` | 1496 | 0.9350 | 0.031782 | 0.033991 | 0.611604 | Compact/broad mixed backup: slightly higher Blind A Distinct-2 but lower official dev lexical. |
 | `goalflow_ltr120_lambda2_head0_compact_clean` | 1496 | 0.9350 | 0.031782 | 0.033991 | 0.675327 | Same L2 ranking; clean high-lexical template backup. |
 | `goalflow_ltr120_lambda2_head0_compact_broad_clean` | 1496 | 0.9350 | 0.031782 | 0.033991 | 0.696674 | Same L2 ranking; high-lexical backup if Distinct-2 matters more than naturalness. |
@@ -112,9 +112,9 @@ These are gold-free checks from `scripts/summarize_predictions.py`; they do not 
 | `goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_compact_mix_clean` | 1494 | 0.9338 | 0.031739 | 0.033991 | 0.615890 | Same ensemble ranking; compact/broad mixed responses. |
 | `goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_clean` | 1494 | 0.9338 | 0.031739 | 0.033991 | 0.678379 | Same ensemble ranking; clean high-lexical template backup. |
 | `goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_broad_clean` | 1494 | 0.9338 | 0.031739 | 0.033991 | 0.700198 | Same ensemble ranking; high-lexical backup. |
-| `goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_judge_clean_mix_clean` | 1495 | 0.9344 | 0.031761 | 0.033991 | 0.610683 | New four-model ensemble primary: best OOF nDCG, middle Blind A coverage. |
-| `goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_compact_clean` | 1495 | 0.9344 | 0.031761 | 0.033991 | 0.679705 | Four-model ensemble with clean high-lexical template backup. |
-| `goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_compact_broad_clean` | 1495 | 0.9344 | 0.031761 | 0.033991 | 0.700514 | Four-model ensemble with highest-lexical compact-broad template backup. |
+| `goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_judge_clean_mix_clean` | 1495 | 0.9344 | 0.031761 | 0.033991 | 0.608158 | New four-model ensemble primary: best OOF nDCG, middle Blind A coverage, cleaned duplicate/list-valued display titles. |
+| `goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_compact_clean` | 1495 | 0.9344 | 0.031761 | 0.033991 | 0.678513 | Four-model ensemble with clean high-lexical template backup after title display cleanup. |
+| `goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_compact_broad_clean` | 1495 | 0.9344 | 0.031761 | 0.033991 | 0.699616 | Four-model ensemble with highest-lexical compact-broad template backup after title display cleanup. |
 | `goalflow_ltr120_lambda2_head0_judge_v3_clean` | 1496 | 0.9350 | 0.031782 | 0.033991 | 0.434335 | Same 120-tree L2 ranking; fuller prose for LLM-judge testing, lower Distinct-2 than v2. |
 | `goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v3_clean` | 1494 | 0.9338 | 0.031739 | 0.033991 | 0.437063 | Same ensemble ranking; fuller prose backup. |
 | `goalflow_segcat_ltr120_140_200_ens_judge_v2_clean` | 1496 | 0.9350 | 0.031782 | 0.033991 | 0.487628 | High-risk category-segmented LTR selection with judge-v2 responses. |
@@ -225,7 +225,7 @@ Key validation:
 - RRF ensembling over the 120/140/200-tree L2 OOF predictions gives a small local gain, official `nDCG@20=0.183253`; adding the all-column 120-tree L2 variant improves the ensemble to `0.183482`.
 - Blind-A-shaped 500-panel validation favors the four-model ensemble over the single 120-tree L2 model: mean delta `+0.00298` nDCG@20 and median delta `+0.00261`.
 - `judge_mix` response style was added as a lower-risk text-upside package. It keeps the same ranking as `judge_v2`, raises official dev lexical diversity from `0.14874` to `0.15926`, and raises Blind A local Distinct-2 from `0.48531` to `0.52209`.
-- `judge_brief`, `judge_compact_mix`, and `judge_clean_mix` were added after the response probe. `judge_brief` reaches official dev lexical `0.17431`; `judge_compact_mix` reaches `0.19493`; `judge_clean_mix` reaches `0.19930` on the single LTR ranking and `0.19901` on the ensemble ranking. Blind A local Distinct-2 rises to `0.60692` / `0.61034` for the clean mix.
+- `judge_brief`, `judge_compact_mix`, and `judge_clean_mix` were added after the response probe. `judge_brief` reaches official dev lexical `0.17431`; `judge_compact_mix` reaches `0.19493`; after duplicate/list-valued title display cleanup, `judge_clean_mix` reaches `0.20061` on the single LTR ranking and `0.20049` on the four-model ensemble ranking. Blind A local Distinct-2 is `0.60453` / `0.60816` for the clean mix.
 - `judge_v3` response style was added as a fuller explanation style. It may help LLM-as-a-Judge because it reads more naturally, but local lexical diversity is lower than `judge_v2`, so it is only a text backup.
 
 Current submission recommendation:

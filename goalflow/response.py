@@ -119,9 +119,60 @@ BAD_TAG_EXACT = {
 }
 
 
+def _title_variant_key(value: str) -> str:
+    value = re.sub(r"\([^)]*\)|\[[^]]*\]", " ", value.lower())
+    value = re.sub(
+        r"\b(remaster(?:ed)?|explicit|album|version|edit|radio|mix|original|feat(?:uring)?|live)\b",
+        " ",
+        value,
+    )
+    return re.sub(r"[^a-z0-9]+", " ", value).strip()
+
+
+def _ascii_ratio(value: str) -> float:
+    if not value:
+        return 0.0
+    return sum(1 for char in value if ord(char) < 128) / len(value)
+
+
+def _display_track_name(catalog: TrackCatalog, track_id: str) -> str:
+    row = getattr(catalog, "rows", {}).get(track_id, {})
+    raw_name = row.get("track_name") if isinstance(row, dict) else None
+    if isinstance(raw_name, (list, tuple)):
+        variants = []
+        seen = set()
+        for value in raw_name:
+            variant = str(value).strip()
+            key = variant.casefold()
+            if variant and key not in seen:
+                variants.append(variant)
+                seen.add(key)
+        if variants:
+            keys = [_title_variant_key(variant) for variant in variants]
+            nonempty_keys = [key for key in keys if key]
+            duplicate_family = bool(nonempty_keys) and all(
+                any(key == other or key in other or other in key for other in nonempty_keys)
+                for key in nonempty_keys
+            )
+            if duplicate_family:
+                return min(
+                    variants,
+                    key=lambda value: (
+                        any(
+                            marker in value.lower()
+                            for marker in ("remaster", "explicit", "radio edit", "album version")
+                        ),
+                        -_ascii_ratio(value),
+                        len(value),
+                    ),
+                )
+            return variants[0]
+    return catalog.view(track_id).track_name
+
+
 def _track_phrase(catalog: TrackCatalog, track_id: str) -> str:
     view = catalog.view(track_id)
-    return f'"{view.track_name}" by {view.artist_name}'
+    return f'"{_display_track_name(catalog, track_id)}" by {view.artist_name}'
 
 
 def _pick(state: ConversationState, options: list[str], salt: str = "") -> str:
