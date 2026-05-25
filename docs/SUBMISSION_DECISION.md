@@ -3,17 +3,17 @@
 Recommended first retry after LTR tuning, response cleanup, and ensemble probing:
 
 ```text
-experiments/goalflow_ens_ltr120_140_200_col1_lambda2_w140half_rrf20_judge_clean_mix_clean/blindset_A/submission.zip
+experiments/goalflow_ens_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_judge_clean_mix_clean/blindset_A/submission.zip
 ```
 
 Why this one:
 
-- Weighted four-model RRF OOF dev validation reaches official `nDCG@20=0.18373`, versus `0.18348` for the equal-weight four-model ensemble, `0.18325` for the previous 120/140/200-tree ensemble, `0.18302` for the single 120-tree L2 model, and `0.08587` for the conservative legacy head20 dev baseline.
-- It ensembles the 120/140/200-tree `reg_lambda=2` LTR rankings plus the 120-tree `colsample_bytree=1.0` L2 variant with `rrf_k=20` and weights `[1.0, 0.5, 1.0, 1.0]`.
-- Blind-A-shaped validation also favors it over the equal-weight four-model package: the 2000-panel run has mean delta `+0.00113` nDCG@20 and median delta `+0.00012`; seeds 7 and 99 are also positive on mean delta.
+- Weighted four-model RRF OOF dev validation reaches official `nDCG@20=0.18392`, versus `0.18348` for the equal-weight four-model ensemble, `0.18325` for the previous 120/140/200-tree ensemble, `0.18302` for the single 120-tree L2 model, and `0.08587` for the conservative legacy head20 dev baseline.
+- It ensembles the 120/140/200-tree `reg_lambda=2` LTR rankings plus the 120-tree `colsample_bytree=1.0` L2 variant with `rrf_k=26` and weights `[1.0, 0.5, 1.3, 1.0]`.
+- Blind-A-shaped validation also favors it over the equal-weight four-model package: the 2000-panel run has mean delta `+0.00162` nDCG@20 and median delta `+0.00062`.
 - Local Blind A catalog diversity is `0.03176`, close to the 80-row ceiling `0.03399`.
-- Local Blind A Distinct-2 is `0.60667`, versus `0.48531` for the fixed `judge_v2` style.
-- Official dev lexical diversity is `0.19957`, versus `0.14874` for fixed `judge_v2`.
+- Local Blind A Distinct-2 is `0.60604`, versus `0.48531` for the fixed `judge_v2` style.
+- Official dev lexical diversity is `0.19958`, versus `0.14874` for fixed `judge_v2`.
 - The response cleanup removes private/noisy tag artifacts, title-cases profile fields, and collapses duplicate/list-valued track titles, artist names, and album names before writing them into the explanation.
 - It directly attacks the previous public weak points: `lexical_diversity=0.0125` and `llm_judge_score=1.0`, while also improving local ranking validation.
 
@@ -110,18 +110,18 @@ experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_mix_clean/blindset_A
 OOF-max high-lexical ensemble backup:
 
 ```text
-experiments/goalflow_ens_ltr120_140_200_col1_lambda2_w140half_rrf20_compact_clean/blindset_A/submission.zip
+experiments/goalflow_ens_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_compact_clean/blindset_A/submission.zip
 ```
 
-Same weighted four-model ensemble ranking, with official dev lexical `0.21101` and local Blind A Distinct-2 `0.67399` after album-display cleanup.
+Same weighted four-model ensemble ranking, with official dev lexical `0.21109` and local Blind A Distinct-2 `0.67379` after album-display cleanup.
 
 OOF-max highest-lexical ensemble backup:
 
 ```text
-experiments/goalflow_ens_ltr120_140_200_col1_lambda2_w140half_rrf20_compact_broad_clean/blindset_A/submission.zip
+experiments/goalflow_ens_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_compact_broad_clean/blindset_A/submission.zip
 ```
 
-Same weighted four-model ensemble ranking, with official dev lexical `0.22269` and local Blind A Distinct-2 `0.69592` after album-display cleanup. Use only if the leaderboard strongly rewards Distinct-2 and the LLM judge tolerates compact metadata-heavy wording.
+Same weighted four-model ensemble ranking, with official dev lexical `0.22279` and local Blind A Distinct-2 `0.69548` after album-display cleanup. Use only if the leaderboard strongly rewards Distinct-2 and the LLM judge tolerates compact metadata-heavy wording.
 
 Previous three-model high-lexical ensemble backup:
 

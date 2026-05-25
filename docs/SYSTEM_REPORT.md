@@ -11,7 +11,7 @@
 当前优先提交包：
 
 ```text
-experiments/goalflow_ens_ltr120_140_200_col1_lambda2_w140half_rrf20_judge_clean_mix_clean/blindset_A/submission.zip
+experiments/goalflow_ens_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_judge_clean_mix_clean/blindset_A/submission.zip
 ```
 
 ## 1. 比赛任务一句话
@@ -1332,14 +1332,17 @@ L2 正则可以理解成“不要让树的判断太激进”。单折里 `lambda
 | 120/140/200 lambda2 RRF judge_compact_mix | 0.183253 | 0.194546 | ensemble ranking + compact/broad 混合 |
 | 120/140/200 lambda2 RRF judge_clean_mix | 0.183253 | 0.199012 | ensemble ranking + clean 混合 |
 | 120/140/200 lambda2 RRF compact_clean | 0.183253 | 0.209428 | ensemble ranking + clean compact |
-| 120/140/200/col1 lambda2 RRF judge_clean_mix | 0.183482 | 0.199655 | 当前最高 OOF 主包，已清洗歌名/歌手/专辑展示 |
+| 120/140/200/col1 lambda2 RRF judge_clean_mix | 0.183482 | 0.199655 | equal-weight 四模型强备份，已清洗歌名/歌手/专辑展示 |
 | 120/140/200/col1 lambda2 RRF judge_balanced_mix | 0.183482 | 0.176244 | 更自然的 LLM judge 备份，已清洗专辑展示 |
 | 120/140/200/col1 lambda2 RRF judge_planned | 0.183482 | 0.114233 | 最自然但 lexical 低的解释备份 |
-| 120/140/200/col1 lambda2 RRF compact_clean | 0.183482 | 0.211125 | 当前最高 OOF 高 lexical 备份，已清洗专辑展示 |
-| 120/140/200/col1 lambda2 RRF compact_broad | 0.183482 | 0.222801 | 当前最高 OOF 最高 lexical 备份，已清洗专辑展示 |
-| 120/140/200/col1 weighted RRF judge_clean_mix | 0.183727 | 0.199574 | 新的当前最高 OOF 主包，`rrf_k=20` 且 140-tree 权重 0.5 |
+| 120/140/200/col1 lambda2 RRF compact_clean | 0.183482 | 0.211125 | equal-weight 高 lexical 备份，已清洗专辑展示 |
+| 120/140/200/col1 lambda2 RRF compact_broad | 0.183482 | 0.222801 | equal-weight 最高 lexical 备份，已清洗专辑展示 |
+| 120/140/200/col1 weighted RRF judge_clean_mix | 0.183727 | 0.199574 | 第一版 weighted 强备份，`rrf_k=20` 且 140-tree 权重 0.5 |
 | 120/140/200/col1 weighted RRF compact_clean | 0.183727 | 0.211007 | weighted ranking + clean compact 高 lexical 备份 |
 | 120/140/200/col1 weighted RRF compact_broad | 0.183727 | 0.222685 | weighted ranking + 最高 lexical 备份 |
+| 120/140/200/col1 weighted RRF v2 judge_clean_mix | 0.183924 | 0.199581 | 当前最高 OOF 主包，`rrf_k=26`、140-tree 权重 0.5、200-tree 权重 1.3 |
+| 120/140/200/col1 weighted RRF v2 compact_clean | 0.183924 | 0.211093 | weighted v2 ranking + clean compact 高 lexical 备份 |
+| 120/140/200/col1 weighted RRF v2 compact_broad | 0.183924 | 0.222793 | weighted v2 ranking + 最高 lexical 备份 |
 | 120-tree lambda2 judge_v3 | 0.183021 | 0.125937 | 回复更像完整解释，但 lexical 下降 |
 
 Blind A gold-free 检查：
@@ -1368,6 +1371,9 @@ Blind A gold-free 检查：
 | `goalflow_ens_ltr120_140_200_col1_lambda2_w140half_rrf20_judge_clean_mix_clean` | 1495 | 0.031761 | 0.606673 |
 | `goalflow_ens_ltr120_140_200_col1_lambda2_w140half_rrf20_compact_clean` | 1495 | 0.031761 | 0.673990 |
 | `goalflow_ens_ltr120_140_200_col1_lambda2_w140half_rrf20_compact_broad_clean` | 1495 | 0.031761 | 0.695922 |
+| `goalflow_ens_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_judge_clean_mix_clean` | 1494 | 0.031739 | 0.606040 |
+| `goalflow_ens_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_compact_clean` | 1494 | 0.031739 | 0.673790 |
+| `goalflow_ens_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_compact_broad_clean` | 1494 | 0.031739 | 0.695481 |
 | `goalflow_ltr120_lambda2_head0_judge_v3_clean` | 1496 | 0.031782 | 0.434335 |
 | `goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v3_clean` | 1494 | 0.031739 | 0.437063 |
 
@@ -1410,9 +1416,10 @@ OOF 结果：
 | single 120-tree lambda2 | 0.183021 | 最稳的单模型 |
 | RRF ensemble 120/140/200 | 0.183253 | 小幅提升 `+0.000232` |
 | RRF ensemble 120/140/200/col1 | 0.183482 | equal-weight 四模型强备份 |
-| weighted RRF 120/140/200/col1 | 0.183727 | 当前最高 OOF，且 Blind-A-shaped 抽样支持 |
+| weighted RRF 120/140/200/col1 | 0.183727 | 第一版 weighted，强备份 |
+| weighted RRF v2 120/140/200/col1 | 0.183924 | 当前最高 OOF，且 Blind-A-shaped 抽样支持 |
 
-四模型 ensemble 的额外模型单独看并不好，但和其他 LTR 互补。equal-weight 版本相对单模型在 Blind-A-shaped 500-panel 里 mean delta 是 `+0.00298` nDCG@20，median delta 是 `+0.00261`；weighted RRF 又在 equal-weight 之上拿到 full-dev `+0.00025`，并且 2000-panel Blind-A-shaped mean delta 仍是正的 `+0.00113`。Blind A unique tracks 都是 `1495`，介于单模型 `1496` 和三模型 ensemble `1494` 之间，所以现在把 weighted RRF 升为第一优先，equal-weight 四模型保留为最近备份。
+四模型 ensemble 的额外模型单独看并不好，但和其他 LTR 互补。equal-weight 版本相对单模型在 Blind-A-shaped 500-panel 里 mean delta 是 `+0.00298` nDCG@20，median delta 是 `+0.00261`；weighted RRF v2 又在 equal-weight 之上拿到 full-dev `+0.00044`，并且 2000-panel Blind-A-shaped mean delta 仍是正的 `+0.00162`。Blind A unique tracks 是 `1494`，和三模型 ensemble 相同，略低于单模型/第一版 weighted 的 `1495`，所以现在把 weighted RRF v2 升为第一优先，第一版 weighted 和 equal-weight 四模型保留为最近备份。
 
 ### 17.5 judge_mix、judge_clean_mix 和 judge-v3 回复实验
 
@@ -1480,10 +1487,10 @@ OOF 结果：
 第一优先：
 
 ```text
-experiments/goalflow_ens_ltr120_140_200_col1_lambda2_w140half_rrf20_judge_clean_mix_clean/blindset_A/submission.zip
+experiments/goalflow_ens_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_judge_clean_mix_clean/blindset_A/submission.zip
 ```
 
-理由：目前最高的稳健 OOF ranking，官方 dev `nDCG@20=0.183727`，比 equal-weight 四模型的 `0.183482` 又高一小截；Blind-A-shaped 抽样相对 equal-weight 也为正。Blind A 覆盖度接近理论上限，回复比 judge_v2 / judge_mix 更不重复，同时仍然是 metadata-grounded 解释，并过滤了明显噪声 tag 和列表式歌名/歌手/专辑。
+理由：目前最高的稳健 OOF ranking，官方 dev `nDCG@20=0.183924`，比 equal-weight 四模型的 `0.183482` 又高一小截；Blind-A-shaped 抽样相对 equal-weight 也为正。Blind A 覆盖度接近理论上限，回复比 judge_v2 / judge_mix 更不重复，同时仍然是 metadata-grounded 解释，并过滤了明显噪声 tag 和列表式歌名/歌手/专辑。
 
 第二备选：
 
