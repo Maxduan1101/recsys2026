@@ -34,7 +34,8 @@ This file tracks questions and optimization directions that deserve a dedicated 
    - Current diversity backup: `experiments/goalflow_taildiv_head18_compact_broad/blindset_A/submission.zip`; Blind-A-shaped dev panels favor head18, while full dev favors head19.
    - Previous first-choice package after 120-tree LTR tuning: `experiments/goalflow_ltr120_head0_judge_v2_clean/blindset_A/submission.zip`.
    - Conservative single-model package after L2 LTR tuning: `experiments/goalflow_ltr120_lambda2_head0_judge_v2_clean/blindset_A/submission.zip`.
-   - Current primary after response-mix tuning: `experiments/goalflow_ltr120_lambda2_head0_judge_clean_mix_clean/blindset_A/submission.zip`.
+   - Current primary after four-model RRF and response-mix tuning: `experiments/goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_judge_clean_mix_clean/blindset_A/submission.zip`.
+   - Conservative single-model clean-mix fallback: `experiments/goalflow_ltr120_lambda2_head0_judge_clean_mix_clean/blindset_A/submission.zip`.
    - High-risk non-nested local-score leader after category-segmented LTR selection: `experiments/goalflow_segcat_ltr120_140_200_ens_judge_v2_clean/blindset_A/submission.zip`.
    - Current high-lexical backup after L2 LTR tuning: `experiments/goalflow_ltr120_lambda2_head0_compact_broad_clean/blindset_A/submission.zip`.
 
@@ -95,15 +96,18 @@ This file tracks questions and optimization directions that deserve a dedicated 
    - Rejected larger single models after OOF: 140/160/200 trees looked good on fold 0 but lost to 120-tree lambda2 on five-fold OOF.
    - Rejected `colsample_bytree=1.0` and `learning_rate=0.06`: both had fold 0 gains and worse OOF.
    - Implemented `build_candidate_frames` caching in `scripts/run_ltr_rerank.py`, using `cache/ltr_candidate_frames/*.pkl` plus metadata JSON. Smoke tests confirmed write/load parity.
-   - Implemented `scripts/ensemble_predictions.py` for RRF ensembling. Best local OOF so far is the 120/140/200-tree L2 ensemble at `nDCG@20=0.183253`, but the gain over the single 120-tree model is only `+0.000232`.
+   - Implemented `scripts/ensemble_predictions.py` for RRF ensembling. The 120/140/200-tree L2 ensemble reaches `nDCG@20=0.183253`; adding the weaker all-column 120-tree L2 variant improves the RRF ensemble to `0.183482`.
    - Added `judge_v3` response style as a fuller explanation backup. It reads more naturally but lowers local lexical diversity, so it needs real LLM-judge feedback before becoming a primary package.
    - Implemented `scripts/select_segmented_predictions.py` for broad segment-level model selection. Category-based selection over the 120/140/200-tree L2 LTR models plus their RRF ensemble reaches the best non-nested local OOF score at `nDCG@20=0.184069`, but a stricter nested segment-selection check drops to about `0.18235`.
    - Tested direct train-split mixing for LTR with the optional `--extra-train-sessions` path. It hurt the same held-out fold: 50 sampled train sessions scored `0.18274`, 500 sampled train sessions scored `0.17101`, versus about `0.18489` for dev-only 120-tree L2.
    - Implemented `judge_mix` response style. It keeps the 120-tree L2 ranking unchanged, raises official dev lexical diversity from `0.14874` to `0.15926`, and raises Blind A local Distinct-2 from `0.48531` to `0.52209`.
-   - Implemented `judge_brief`, `judge_compact_mix`, and `judge_clean_mix` response styles. `judge_clean_mix` keeps the same ranking, raises official dev lexical diversity to `0.19930`, and raises Blind A local Distinct-2 to `0.60692`; the ensemble variant reaches official dev lexical `0.19901` and Blind A local Distinct-2 `0.61034`.
+   - Implemented `judge_brief`, `judge_compact_mix`, and `judge_clean_mix` response styles. `judge_clean_mix` keeps the same ranking, raises official dev lexical diversity to `0.19930`, and raises Blind A local Distinct-2 to `0.60692`; the four-model ensemble variant reaches official dev lexical `0.19926` and Blind A local Distinct-2 `0.61068`.
+   - Four-model ensemble high-lexical backups: clean compact reaches official dev lexical `0.20953` / Blind A Distinct-2 `0.67970`; compact-broad reaches `0.22055` / `0.70051` but is more mechanical.
+   - Blind-A-shaped 500-panel validation favors the four-model ensemble over the single 120-tree L2 model with mean delta `+0.00298` nDCG@20 and median delta `+0.00261`.
    - Browser/Pro note: Chrome DevTools could not attach to the existing Chrome window in this run (`DevToolsActivePort` was missing), so the LLM-judge-vs-Distinct tradeoff question still needs either manual Pro prompting or a Chrome launch with remote debugging enabled.
    - Rejected `max_candidates_per_group=200`: held-out nDCG@20 fell to `0.18156` and valid groups with positive candidates dropped from `787` to `737`; the accepted candidate pool remains 300.
    - Rejected `lambdarank_truncation_level=100`: fold 0 rose very slightly, but five-fold official OOF fell to `nDCG@20=0.18244`; default 30 remains the accepted setting.
+   - Deep research question: why does adding an individually weaker `colsample_bytree=1.0` 120-tree L2 model improve the RRF ensemble, and can we characterize complementary ranking errors to design better weighted ensembles?
    - Deep research question: why do LTR hyperparameters show fold-specific wins that fail OOF, and can we design a more reliable early-stopping/model-selection protocol for only 80-row Blind A?
    - Deep research question: why does wholesale LTR replacement work so well offline despite Pro's earlier caution, and does that hold on Blind B/private splits?
    - Deep research question: is tiny OOF gain from same-family rank ensembling likely to transfer to Blind A/B, or is it mostly dev-fold noise?

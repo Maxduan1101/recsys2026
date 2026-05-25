@@ -1,20 +1,29 @@
 # Blind A Submission Decision
 
-Recommended first retry after LTR tuning and response cleanup:
+Recommended first retry after LTR tuning, response cleanup, and ensemble probing:
+
+```text
+experiments/goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_judge_clean_mix_clean/blindset_A/submission.zip
+```
+
+Why this one:
+
+- Four-model RRF OOF dev validation reaches official `nDCG@20=0.18348`, versus `0.18325` for the previous 120/140/200-tree ensemble, `0.18302` for the single 120-tree L2 model, and `0.08587` for the conservative legacy head20 dev baseline.
+- It ensembles the 120/140/200-tree `reg_lambda=2` LTR rankings plus the 120-tree `colsample_bytree=1.0` L2 variant with `rrf_k=60`.
+- Blind-A-shaped 500-panel validation favors it over the single 120-tree L2 model: mean nDCG@20 `0.17040`, mean delta `+0.00298`, median delta `+0.00261`.
+- Local Blind A catalog diversity is `0.03176`, close to the 80-row ceiling `0.03399`.
+- Local Blind A Distinct-2 is `0.61068`, versus `0.60692` for the single clean-mix model and `0.48531` for the fixed `judge_v2` style.
+- Official dev lexical diversity is `0.19926`, versus `0.14874` for fixed `judge_v2`.
+- The response cleanup removes private/noisy tag artifacts and title-cases profile fields before writing them into the explanation.
+- It directly attacks the previous public weak points: `lexical_diversity=0.0125` and `llm_judge_score=1.0`, while also improving local ranking validation.
+
+Conservative single-model clean-mix fallback:
 
 ```text
 experiments/goalflow_ltr120_lambda2_head0_judge_clean_mix_clean/blindset_A/submission.zip
 ```
 
-Why this one:
-
-- Five-fold out-of-fold dev validation reaches official `nDCG@20=0.18302`, versus `0.18210` for the unregularized 120-tree LTR, `0.18095` for the previous 260-tree LTR, and `0.08587` for the conservative legacy head20 dev baseline.
-- Blind-A-shaped 500-panel validation gives mean nDCG@20 `0.16737`, with mean delta `+0.08088` over head20.
-- Local Blind A catalog diversity is `0.03178`, close to the 80-row ceiling `0.03399`.
-- Local Blind A Distinct-2 is `0.60692`, versus `0.52209` for `judge_mix` and `0.48531` for the fixed `judge_v2` style, while the ranking is identical.
-- Official dev lexical diversity improves to `0.19930`, versus `0.15926` for `judge_mix` and `0.14874` for fixed `judge_v2`.
-- The response cleanup removes private/noisy tag artifacts and title-cases profile fields before writing them into the explanation.
-- It directly attacks the previous public weak points: `lexical_diversity=0.0125` and `llm_judge_score=1.0`, while also improving local ranking validation.
+Use this if the submission budget favors the simplest validated LTR path. Five-fold out-of-fold dev validation reaches official `nDCG@20=0.18302`, with local Blind A catalog diversity `0.03178` and Distinct-2 `0.60692`.
 
 Lower-risk mixed text fallback:
 
@@ -22,7 +31,7 @@ Lower-risk mixed text fallback:
 experiments/goalflow_ltr120_lambda2_head0_judge_mix_clean/blindset_A/submission.zip
 ```
 
-Same ranking as the first package. It uses only judge-focused/natural/concise/setwise templates, so its Distinct-2 is lower (`0.52209`) but it is less compact-template-heavy than the clean mixed version.
+Same single-model ranking as the conservative clean-mix fallback. It uses only judge-focused/natural/concise/setwise templates, so its Distinct-2 is lower (`0.52209`) but it is less compact-template-heavy than the clean mixed version.
 
 Conservative fixed-style text fallback:
 
@@ -30,7 +39,7 @@ Conservative fixed-style text fallback:
 experiments/goalflow_ltr120_lambda2_head0_judge_v2_clean/blindset_A/submission.zip
 ```
 
-Same ranking as the first package, but it uses only the fixed `judge_v2` response template.
+Same single-model ranking as the conservative clean-mix fallback, but it uses only the fixed `judge_v2` response template.
 
 High-risk category-segmented LTR package:
 
@@ -60,13 +69,13 @@ experiments/goalflow_ltr120_lambda2_head0_compact_broad_clean/blindset_A/submiss
 
 Use this if maximizing Distinct-2 becomes the only goal. It has the same best L2-regularized LTR ranking and local Blind A catalog diversity, but Distinct-2 is higher at `0.69667` and the response is more mechanical.
 
-OOF-max ensemble backup:
+Previous three-model ensemble backup:
 
 ```text
 experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_clean_mix_clean/blindset_A/submission.zip
 ```
 
-This RRF-ensembles the 120/140/200-tree L2 LTR packages with `rrf_k=60` and uses `judge_clean_mix` responses. It gives a small local OOF gain over the single 120-tree model (`nDCG@20=0.18325` versus `0.18302`) and official dev lexical diversity is `0.19901`, but Blind A unique-track coverage is slightly lower (`1494` vs `1496`). Treat it as a micro-gain experiment, not a risk-free replacement.
+This RRF-ensembles the 120/140/200-tree L2 LTR packages with `rrf_k=60` and uses `judge_clean_mix` responses. It gives a small local OOF gain over the single 120-tree model (`nDCG@20=0.18325` versus `0.18302`) and official dev lexical diversity is `0.19901`, but it is now behind the four-model ensemble.
 
 Fixed-style ensemble fallback:
 
@@ -83,12 +92,28 @@ experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_mix_clean/blindset_A
 OOF-max high-lexical ensemble backup:
 
 ```text
+experiments/goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_compact_clean/blindset_A/submission.zip
+```
+
+Same four-model ensemble ranking, with official dev lexical `0.20953` and local Blind A Distinct-2 `0.67970`.
+
+OOF-max highest-lexical ensemble backup:
+
+```text
+experiments/goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_compact_broad_clean/blindset_A/submission.zip
+```
+
+Same four-model ensemble ranking, with official dev lexical `0.22055` and local Blind A Distinct-2 `0.70051`. Use only if the leaderboard strongly rewards Distinct-2 and the LLM judge tolerates compact metadata-heavy wording.
+
+Previous three-model high-lexical ensemble backup:
+
+```text
 experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_clean/blindset_A/submission.zip
 ```
 
-Same ensemble ranking, with official dev lexical `0.20943` and local Blind A Distinct-2 `0.67838`.
+Same previous three-model ensemble ranking, with official dev lexical `0.20943` and local Blind A Distinct-2 `0.67838`.
 
-OOF-max highest-lexical ensemble backup:
+Previous three-model highest-lexical ensemble backup:
 
 ```text
 experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_broad_clean/blindset_A/submission.zip
