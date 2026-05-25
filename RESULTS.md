@@ -37,6 +37,7 @@ Development-set scores from the official evaluator.
 | `goalflow_ltr120_lr006_lambda2_head0_oof_judge_v2` | 0.069250 | 0.161655 | 0.181458 | 0.523040 | 0.148666 | Rejected: higher learning rate overfit fold 0. |
 | `goalflow_ens_oof_ltr120_140_200_lambda2_rrf60` | 0.071000 | 0.163316 | 0.183253 | 0.525695 | 0.148741 | Best local OOF score, but only `+0.00023` over the single 120-tree model. |
 | `goalflow_ltr120_lambda2_head0_oof_judge_v3` | 0.070875 | 0.162514 | 0.183021 | 0.528011 | 0.125937 | Same ranking as `judge_v2`; more complete prose but lower lexical diversity. |
+| `goalflow_segcat_ltr120_140_200_ens_judge_v2` | 0.072125 | 0.164281 | 0.184069 | 0.526481 | 0.148494 | Current best local OOF score: choose 120/140/200/ensemble by `conversation_goal.category`. |
 
 Immediate interpretation:
 
@@ -44,7 +45,8 @@ Immediate interpretation:
 - They do improve response diversity and candidate diversity.
 - Real Blind A feedback suggests the conservative ranking anchor is strong, while response quality/diversity is the biggest immediate score bottleneck.
 - Blind A has only 80 rows, so catalog diversity is capped at `1600 / 47071 = 0.0340`; improving catalog by a few hundred unique tail tracks has a small composite effect compared with preserving nDCG and improving response text.
-- LightGBM LambdaRank is now the strongest local ranking path. The current best single model is 120 estimators / 31 leaves / learning rate 0.04 / L2 `reg_lambda=2`; the best local OOF score is a tiny-gain RRF ensemble of the 120/140/200-tree L2 models.
+- LightGBM LambdaRank is now the strongest local ranking path. The current best single model is 120 estimators / 31 leaves / learning rate 0.04 / L2 `reg_lambda=2`; same-family RRF ensembling gives a tiny gain, and category-segmented selection is the current local OOF leader.
+- Category-segmented model selection is the new local-score leader. It chooses `ens` for category A, `ltr140` for C/H/I/J, `ltr200` for G/K, and `ltr120` otherwise. This is a broad segment rule rather than per-row oracle selection, but it is still less conservative than the single 120-tree model.
 - The remaining high-impact work is response judge calibration, better candidate recall without head-rank dilution, and richer dense/embedding features.
 
 ## Public Blind A Feedback
@@ -84,12 +86,14 @@ These are gold-free checks from `scripts/summarize_predictions.py`; they do not 
 | `goalflow_ltr_head0_polished_v3` | 1497 | 0.9356 | 0.031803 | 0.033991 | 0.451235 | Previous LTR first choice: LTR ranking plus more judge-friendly natural response. |
 | `goalflow_ltr120_head0_judge_v2_clean` | 1500 | 0.9375 | 0.031867 | 0.033991 | 0.488329 | Previous 120-tree first choice before L2 regularization. |
 | `goalflow_ltr120_head0_compact_broad_clean` | 1500 | 0.9375 | 0.031867 | 0.033991 | 0.702228 | Previous high-lexical backup before L2 regularization. |
-| `goalflow_ltr120_lambda2_head0_judge_v2_clean` | 1496 | 0.9350 | 0.031782 | 0.033991 | 0.485312 | Current first-choice package: best OOF LTR ranking plus concise judge-focused response. |
+| `goalflow_ltr120_lambda2_head0_judge_v2_clean` | 1496 | 0.9350 | 0.031782 | 0.033991 | 0.485312 | Conservative single-model package: best fixed LTR ranking plus concise judge-focused response. |
 | `goalflow_ltr120_lambda2_head0_compact_broad_clean` | 1496 | 0.9350 | 0.031782 | 0.033991 | 0.696674 | Same L2 ranking; high-lexical backup if Distinct-2 matters more than naturalness. |
 | `goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v2_clean` | 1494 | 0.9338 | 0.031739 | 0.033991 | 0.485312 | OOF-max ensemble backup: slightly better dev OOF, slightly lower Blind A coverage. |
 | `goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_broad_clean` | 1494 | 0.9338 | 0.031739 | 0.033991 | 0.700198 | Same ensemble ranking; high-lexical backup. |
 | `goalflow_ltr120_lambda2_head0_judge_v3_clean` | 1496 | 0.9350 | 0.031782 | 0.033991 | 0.434335 | Same 120-tree L2 ranking; fuller prose for LLM-judge testing, lower Distinct-2 than v2. |
 | `goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v3_clean` | 1494 | 0.9338 | 0.031739 | 0.033991 | 0.437063 | Same ensemble ranking; fuller prose backup. |
+| `goalflow_segcat_ltr120_140_200_ens_judge_v2_clean` | 1496 | 0.9350 | 0.031782 | 0.033991 | 0.487628 | Current local-score leader; category-segmented LTR selection with judge-v2 responses. |
+| `goalflow_segcat_ltr120_140_200_ens_compact_broad_clean` | 1496 | 0.9350 | 0.031782 | 0.033991 | 0.698188 | Same category-segmented ranking; high-lexical backup. |
 
 ## Blind-Like Dev Panels
 
@@ -191,7 +195,7 @@ Key validation:
 - L1 regularization was rejected: all tested `reg_alpha` values underperformed `reg_alpha=0` on fold 0.
 - Extra tree counts `140`, `160`, and `200` were rejected as single models: all won or nearly won fold 0 but lost five-fold OOF.
 - `colsample_bytree=1.0` and `learning_rate=0.06` were rejected after OOF despite small fold 0 gains.
-- RRF ensembling over the 120/140/200-tree L2 OOF predictions gives the best local score so far, official `nDCG@20=0.183253`, but the improvement over the single 120-tree model is only `+0.000232`.
+- RRF ensembling over the 120/140/200-tree L2 OOF predictions gives a small local gain, official `nDCG@20=0.183253`, but the improvement over the single 120-tree model is only `+0.000232`.
 - `judge_v3` response style was added as a fuller explanation style. It may help LLM-as-a-Judge because it reads more naturally, but local lexical diversity is lower than `judge_v2`, so it is only a text backup.
 
 Current submission recommendation:
@@ -232,10 +236,12 @@ Interpretation:
 - Historical response-only package: `experiments/goalflow_head20_compactresp_v2/blindset_A/submission.zip`
 - Safer diversity backup: `experiments/goalflow_taildiv_head18_compactresp_v2/blindset_A/submission.zip`
 - Aggressive diversity backup: `experiments/goalflow_taildiv_head15_compactresp_v2/blindset_A/submission.zip`
-- Current first-choice package: `experiments/goalflow_ltr120_lambda2_head0_judge_v2_clean/blindset_A/submission.zip`
+- Conservative single-model package: `experiments/goalflow_ltr120_lambda2_head0_judge_v2_clean/blindset_A/submission.zip`
 - OOF-max ensemble backup: `experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v2_clean/blindset_A/submission.zip`
 - Current high-lexical LTR backup: `experiments/goalflow_ltr120_lambda2_head0_compact_broad_clean/blindset_A/submission.zip`
 - OOF-max high-lexical ensemble backup: `experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_broad_clean/blindset_A/submission.zip`
+- Category-segmented local-score leader: `experiments/goalflow_segcat_ltr120_140_200_ens_judge_v2_clean/blindset_A/submission.zip`
+- Category-segmented high-lexical backup: `experiments/goalflow_segcat_ltr120_140_200_ens_compact_broad_clean/blindset_A/submission.zip`
 - Fuller-prose single-model backup: `experiments/goalflow_ltr120_lambda2_head0_judge_v3_clean/blindset_A/submission.zip`
 - Fuller-prose ensemble backup: `experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v3_clean/blindset_A/submission.zip`
 - Previous 120-tree LTR first-choice package: `experiments/goalflow_ltr120_head0_judge_v2_clean/blindset_A/submission.zip`
@@ -251,7 +257,9 @@ The `head18` tail-diversity package uses `legacy_head_k=18`, `tail_diversity_sta
 
 The `compact_broad` response style is the high-lexical backup for submissions. It keeps compact v2's high lexical diversity, blocks offensive/private tag artifacts such as `albums i own`, `seen live`, `lastfm`, and profanity-like tag variants, and avoids the lower Distinct-2 of the more natural long-response experiments.
 
-The RRF ensemble backup uses `scripts/ensemble_predictions.py` with the 120/140/200-tree L2 LTR packages and `rrf_k=60`. It has the best local OOF nDCG so far, but because the gain is very small and Blind A unique-track coverage is slightly lower than the single 120-tree package, it should be treated as a submission-budget-dependent experiment rather than a risk-free replacement.
+The RRF ensemble backup uses `scripts/ensemble_predictions.py` with the 120/140/200-tree L2 LTR packages and `rrf_k=60`. It gives a small local OOF gain over the single 120-tree package, but because the gain is very small and Blind A unique-track coverage is slightly lower, it should be treated as a submission-budget-dependent experiment rather than a risk-free replacement.
+
+The category-segmented package uses `scripts/select_segmented_predictions.py` to choose among the single LTR models and the RRF ensemble by `conversation_goal.category`. It has the best official dev OOF score so far, `nDCG@20=0.184069`, and Blind A local diversity matches the single 120-tree package. Because the segment map was selected from dev OOF diagnostics, it should be treated as a higher-upside but slightly less conservative package than the single 120-tree L2 model.
 
 ## Embedding Schema
 

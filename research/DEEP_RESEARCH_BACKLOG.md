@@ -33,7 +33,8 @@ This file tracks questions and optimization directions that deserve a dedicated 
    - Current middle backup: `experiments/goalflow_taildiv_head19_compact_broad/blindset_A/submission.zip`; dev nDCG@20 `0.08576`, Blind A unique tracks `1244`.
    - Current diversity backup: `experiments/goalflow_taildiv_head18_compact_broad/blindset_A/submission.zip`; Blind-A-shaped dev panels favor head18, while full dev favors head19.
    - Previous first-choice package after 120-tree LTR tuning: `experiments/goalflow_ltr120_head0_judge_v2_clean/blindset_A/submission.zip`.
-   - Current first-choice package after L2 LTR tuning: `experiments/goalflow_ltr120_lambda2_head0_judge_v2_clean/blindset_A/submission.zip`.
+   - Conservative single-model package after L2 LTR tuning: `experiments/goalflow_ltr120_lambda2_head0_judge_v2_clean/blindset_A/submission.zip`.
+   - Current local-score leader after category-segmented LTR selection: `experiments/goalflow_segcat_ltr120_140_200_ens_judge_v2_clean/blindset_A/submission.zip`.
    - Current high-lexical backup after L2 LTR tuning: `experiments/goalflow_ltr120_lambda2_head0_compact_broad_clean/blindset_A/submission.zip`.
 
 1. **Progress-label semantics**
@@ -95,9 +96,13 @@ This file tracks questions and optimization directions that deserve a dedicated 
    - Implemented `build_candidate_frames` caching in `scripts/run_ltr_rerank.py`, using `cache/ltr_candidate_frames/*.pkl` plus metadata JSON. Smoke tests confirmed write/load parity.
    - Implemented `scripts/ensemble_predictions.py` for RRF ensembling. Best local OOF so far is the 120/140/200-tree L2 ensemble at `nDCG@20=0.183253`, but the gain over the single 120-tree model is only `+0.000232`.
    - Added `judge_v3` response style as a fuller explanation backup. It reads more naturally but lowers local lexical diversity, so it needs real LLM-judge feedback before becoming a primary package.
+   - Implemented `scripts/select_segmented_predictions.py` for broad segment-level model selection. Category-based selection over the 120/140/200-tree L2 LTR models plus their RRF ensemble is now the best local OOF score at `nDCG@20=0.184069`.
+   - Tested direct train-split mixing for LTR with the optional `--extra-train-sessions` path. It hurt the same held-out fold: 50 sampled train sessions scored `0.18274`, 500 sampled train sessions scored `0.17101`, versus about `0.18489` for dev-only 120-tree L2.
    - Deep research question: why do LTR hyperparameters show fold-specific wins that fail OOF, and can we design a more reliable early-stopping/model-selection protocol for only 80-row Blind A?
    - Deep research question: why does wholesale LTR replacement work so well offline despite Pro's earlier caution, and does that hold on Blind B/private splits?
    - Deep research question: is tiny OOF gain from same-family rank ensembling likely to transfer to Blind A/B, or is it mostly dev-fold noise?
+   - Deep research question: does broad category-level model selection transfer to Blind A/B, or is even category-level selection overfitting dev OOF?
+   - Deep research question: how should labeled train-split conversations be used without hurting dev/Blind transfer: sample weighting, distillation into augmentation text, stratified sampling, or train-only pretraining followed by dev calibration?
    - Deep research question: should response generation optimize explicit Distinct-2, naturalness, or explanation completeness for Gemini judging, and how can we simulate that locally?
 
 7. **Cross-encoder reranking**

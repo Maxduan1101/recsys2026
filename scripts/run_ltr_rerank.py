@@ -59,6 +59,21 @@ def load_dev_states(config: GoalFlowConfig):
     return states
 
 
+def load_extra_train_states(config: GoalFlowConfig, session_limit: int, seed: int):
+    dataset = load_dataset(config.conversation_dataset_name, split="train")
+    if session_limit and session_limit < len(dataset):
+        rng = np.random.default_rng(seed)
+        indices = sorted(int(index) for index in rng.choice(len(dataset), size=session_limit, replace=False))
+        dataset = dataset.select(indices)
+    states = []
+    for item in tqdm(dataset, desc="Build extra train states"):
+        for turn_number in range(1, 9):
+            state = build_state_for_dev_turn(item, turn_number)
+            if state.gold_track_id:
+                states.append(state)
+    return states
+
+
 def load_blind_states(config: GoalFlowConfig):
     dataset = load_dataset(config.blind_dataset_name, split="test")
     return [build_state_for_blind_item(item) for item in tqdm(dataset, desc="Build blind states")]
@@ -530,6 +545,19 @@ def parse_args() -> argparse.Namespace:
         default="compact_broad",
     )
     parser.add_argument("--dev-limit", type=int, default=None)
+    parser.add_argument(
+        "--extra-train-sessions",
+        type=int,
+        default=0,
+        help="Deterministically sample this many labeled train-split sessions as extra LTR training data.",
+    )
+    parser.add_argument("--extra-train-seed", type=int, default=2026)
+    parser.add_argument(
+        "--extra-train-max-candidates",
+        type=int,
+        default=160,
+        help="Candidates per extra train-split group. Lower than dev keeps memory bounded.",
+    )
     parser.add_argument("--rebuild-cache", action="store_true")
     parser.add_argument("--no-train-augmentation", action="store_true")
     parser.add_argument("--no-zip", action="store_true")
@@ -593,6 +621,48 @@ def main() -> None:
     all_groups = sorted(dev_df["group_id"].unique())
     valid_groups = {group_id for group_id in all_groups if group_id % args.valid_mod == 0}
     train_groups = [group_id for group_id in all_groups if group_id not in valid_groups]
+    extra_train_df = None
+    extra_train_groups: list[int] = []
+    extra_train_stats = {
+        "sessions": args.extra_train_sessions,
+        "states": 0,
+        "rows": 0,
+        "groups_with_positive_candidates": 0,
+        "max_candidates_per_group": args.extra_train_max_candidates,
+        "seed": args.extra_train_seed,
+    }
+    if args.extra_train_sessions > 0:
+        extra_states = load_extra_train_states(
+            config,
+            session_limit=args.extra_train_sessions,
+            seed=args.extra_train_seed,
+        )
+        raw_extra_df, _extra_legacy, _extra_state_by_group = build_or_load_candidate_frames(
+            split=f"trainExtra{args.extra_train_sessions}_seed{args.extra_train_seed}",
+            states=extra_states,
+            config=config,
+            catalog=catalog,
+            retriever=retriever,
+            max_candidates_per_group=args.extra_train_max_candidates,
+        )
+        group_offset = int(max(all_groups) + 1) if all_groups else 0
+        extra_train_df = raw_extra_df.copy()
+        extra_train_df["group_id"] = extra_train_df["group_id"] + group_offset
+        extra_train_groups = sorted(int(group_id) for group_id in extra_train_df["group_id"].unique())
+        extra_train_stats.update(
+            {
+                "states": len(extra_states),
+                "rows": len(extra_train_df),
+                "groups_with_positive_candidates": int(
+                    (extra_train_df.groupby("group_id")["label"].sum() > 0).sum()
+                ),
+            }
+        )
+    train_pool_df = (
+        pd.concat([dev_df, extra_train_df], ignore_index=True)
+        if extra_train_df is not None
+        else dev_df
+    )
 
     if args.mode == "validate":
         preserve_values = [int(value) for value in args.preserve_grid.split(",") if value.strip()]
@@ -628,8 +698,8 @@ def main() -> None:
             reg_lambda_values,
         ):
             ranker, feature_cols, _categorical, category_values, train_stats = train_ltr(
-                dev_df,
-                train_groups,
+                train_pool_df,
+                list(train_groups) + extra_train_groups,
                 n_estimators=n_estimators,
                 learning_rate=learning_rate,
                 num_leaves=num_leaves,
@@ -701,6 +771,7 @@ def main() -> None:
             "colsample_bytree": colsample_values[0],
             "reg_alpha": reg_alpha_values[0],
             "reg_lambda": reg_lambda_values[0],
+            "extra_train": extra_train_stats,
             "best_ltr_config_by_head0": best_params,
             "train": first_train_stats,
             "valid_groups": len(valid_groups),
@@ -725,8 +796,8 @@ def main() -> None:
             fold_valid_groups = {group_id for group_id in all_groups if group_id % args.valid_mod == fold}
             fold_train_groups = [group_id for group_id in all_groups if group_id not in fold_valid_groups]
             ranker, feature_cols, _categorical, category_values, train_stats = train_ltr(
-                dev_df,
-                fold_train_groups,
+                train_pool_df,
+                list(fold_train_groups) + extra_train_groups,
                 n_estimators=args.n_estimators,
                 learning_rate=args.learning_rate,
                 num_leaves=args.num_leaves,
@@ -789,6 +860,7 @@ def main() -> None:
             "reg_alpha": args.reg_alpha,
             "reg_lambda": args.reg_lambda,
             "preserve_head_k": args.preserve_head_k,
+            "extra_train": extra_train_stats,
             "output": str(output),
             "folds": fold_stats,
         }
@@ -802,8 +874,8 @@ def main() -> None:
 
     train_groups_for_output = all_groups if args.mode == "blind" else train_groups
     ranker, feature_cols, _categorical, category_values, train_stats = train_ltr(
-        dev_df,
-        train_groups_for_output,
+        train_pool_df,
+        list(train_groups_for_output) + extra_train_groups,
         n_estimators=args.n_estimators,
         learning_rate=args.learning_rate,
         num_leaves=args.num_leaves,
@@ -849,7 +921,12 @@ def main() -> None:
     if args.mode == "dev":
         copy_dev_prediction_to_official(config, output)
     summary = write_run_summary(config, output, args.mode)
-    print(json.dumps({"output": str(output), "summary": str(summary), "train": train_stats}, indent=2))
+    print(
+        json.dumps(
+            {"output": str(output), "summary": str(summary), "train": train_stats, "extra_train": extra_train_stats},
+            indent=2,
+        )
+    )
 
 
 if __name__ == "__main__":

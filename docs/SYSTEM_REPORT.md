@@ -1400,13 +1400,42 @@ OOF 结果：
 
 ### 17.6 当前提交顺序
 
+最新一轮又做了一个更细的排序实验：不是把 120/140/200 trees 和 ensemble 粗暴平均，而是按 `conversation_goal.category` 选择哪个排序器。
+
+结果：
+
+| 方案 | 官方 dev OOF nDCG@20 | 说明 |
+|---|---:|---|
+| 120-tree lambda2 单模型 | 0.183021 | 最稳的单模型 |
+| 120/140/200 RRF ensemble | 0.183253 | 微小提升 |
+| category 分段选择 | 0.184069 | 当前本地最高 |
+
+分段规则很简单：
+
+| category | 使用的排序 |
+|---|---|
+| A | RRF ensemble |
+| C/H/I/J | 140-tree LTR |
+| G/K | 200-tree LTR |
+| 其他 | 120-tree LTR |
+
+这不是逐条样本偷看答案，而是按官方 goal category 做宽分组；但它确实是根据 dev OOF 诊断选出来的，所以风险比单模型略高。
+
 第一优先：
+
+```text
+experiments/goalflow_segcat_ltr120_140_200_ens_judge_v2_clean/blindset_A/submission.zip
+```
+
+理由：当前最高本地 OOF nDCG，Blind A unique tracks 仍是 `1496 / 1600`，没有牺牲覆盖度。
+
+第一保守备选：
 
 ```text
 experiments/goalflow_ltr120_lambda2_head0_judge_v2_clean/blindset_A/submission.zip
 ```
 
-理由：当前最强 OOF ranking，Blind A 覆盖度接近理论上限，回复比 compact_broad 更像给人看的解释。
+理由：最稳的单一 LTR ranking，Blind A 覆盖度接近理论上限，回复比 compact_broad 更像给人看的解释。
 
 第二备选：
 
@@ -1414,9 +1443,17 @@ experiments/goalflow_ltr120_lambda2_head0_judge_v2_clean/blindset_A/submission.z
 experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v2_clean/blindset_A/submission.zip
 ```
 
-理由：当前最高 OOF nDCG，但收益很小，Blind A 覆盖度略低。适合在有提交预算时试。
+理由：比单 120-tree 有微小 OOF 增益，但已经低于 category 分段选择，Blind A 覆盖度也略低。适合在有提交预算时试。
 
 第三备选：
+
+```text
+experiments/goalflow_segcat_ltr120_140_200_ens_compact_broad_clean/blindset_A/submission.zip
+```
+
+理由：同一套 category 分段 ranking，换成高 Distinct-2 回复。
+
+第四备选：
 
 ```text
 experiments/goalflow_ltr120_lambda2_head0_compact_broad_clean/blindset_A/submission.zip
@@ -1424,7 +1461,7 @@ experiments/goalflow_ltr120_lambda2_head0_compact_broad_clean/blindset_A/submiss
 
 理由：同一套 ranking，Distinct-2 更高。如果 judge 对自然度不敏感、主要奖励词汇多样性，这个包可能更好。
 
-第四备选：
+第五备选：
 
 ```text
 experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_broad_clean/blindset_A/submission.zip
@@ -1432,7 +1469,7 @@ experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_broad_clean/blinds
 
 理由：同一套 ensemble ranking，换成高 Distinct-2 回复。
 
-第五备选：
+第六备选：
 
 ```text
 experiments/goalflow_ltr120_lambda2_head0_judge_v3_clean/blindset_A/submission.zip
@@ -1440,7 +1477,7 @@ experiments/goalflow_ltr120_lambda2_head0_judge_v3_clean/blindset_A/submission.z
 
 理由：同一套 120-tree lambda2 ranking，换成更完整的自然解释。Distinct-2 低于 judge_v2，所以仅作为 LLM judge 试验。
 
-第六备选：
+第七备选：
 
 ```text
 experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v3_clean/blindset_A/submission.zip
@@ -1448,7 +1485,7 @@ experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v3_clean/blindset_A/
 
 理由：ensemble ranking + judge_v3 回复，同时承担 ranking 微增益和文本风格风险。
 
-第七备选：
+第八备选：
 
 ```text
 experiments/goalflow_ltr120_head0_judge_v2_clean/blindset_A/submission.zip
@@ -1456,7 +1493,7 @@ experiments/goalflow_ltr120_head0_judge_v2_clean/blindset_A/submission.zip
 
 理由：上一轮 120-tree 无 L2 主包，Blind A 唯一曲目略高，但 OOF nDCG 低于 lambda2。
 
-第八备选：
+第九备选：
 
 ```text
 experiments/goalflow_ltr_head0_polished_v3/blindset_A/submission.zip
@@ -1471,3 +1508,25 @@ experiments/goalflow_head20_compact_broad/blindset_A/submission.zip
 ```
 
 理由：保持此前公共提交已经证明过的 BM25 ranking anchor，只改回复。
+
+### 17.7 负结果：直接混入 train split 训练 LTR
+
+我也测试了一个看起来很自然的想法：把官方 train split 里的标注对话抽一部分，作为额外 LTR 训练数据。
+
+实现上给 `scripts/run_ltr_rerank.py` 加了这些参数：
+
+```text
+--extra-train-sessions
+--extra-train-seed
+--extra-train-max-candidates
+```
+
+结果不理想：
+
+| 额外 train sessions | 同一 held-out fold nDCG@20 |
+|---:|---:|
+| 0 | 约 0.18489 |
+| 50 | 0.18274 |
+| 500 | 0.17101 |
+
+推测原因：train split 通过 train-context augmentation 已经参与了 item 文档增强，直接再把它混入 LambdaRank 训练会改变候选分布，而且 train/dev 的 synthetic agent 行为可能并不完全同分布。这个方向没有进入提交包，但值得后续研究如何给 train split 降权、分层采样或只提取稳健特征。

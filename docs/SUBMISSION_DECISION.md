@@ -1,6 +1,19 @@
 # Blind A Submission Decision
 
-Recommended first retry after LTR tuning and response cleanup:
+Best local-score package after segmented LTR selection:
+
+```text
+experiments/goalflow_segcat_ltr120_140_200_ens_judge_v2_clean/blindset_A/submission.zip
+```
+
+Why this one:
+
+- Category-segmented selection over the 120/140/200-tree L2 LTR models and their RRF ensemble reaches official OOF dev `nDCG@20=0.18407`, the best local score so far.
+- It keeps Blind A local catalog diversity at `0.03178`, matching the conservative 120-tree package, and local Distinct-2 is `0.48763`.
+- The segment rule is broad and interpretable: category A uses the RRF ensemble, C/H/I/J use 140 trees, G/K use 200 trees, and the other categories use the 120-tree model.
+- Risk: the segment map was selected from dev OOF diagnostics, so it is a little less conservative than a single fixed LTR model.
+
+Conservative first retry after LTR tuning and response cleanup:
 
 ```text
 experiments/goalflow_ltr120_lambda2_head0_judge_v2_clean/blindset_A/submission.zip
@@ -14,6 +27,14 @@ Why this one:
 - Local Blind A Distinct-2 is `0.48531`, with shorter metadata-grounded responses designed for personalization/explanation judging.
 - The response cleanup removes private/noisy tag artifacts and title-cases profile fields before writing them into the explanation.
 - It directly attacks the previous public weak points: `lexical_diversity=0.0125` and `llm_judge_score=1.0`, while also improving local ranking validation.
+
+Category-segmented high-lexical backup:
+
+```text
+experiments/goalflow_segcat_ltr120_140_200_ens_compact_broad_clean/blindset_A/submission.zip
+```
+
+Same segmented ranking as the best local-score package, but with compact-broad responses. Local Blind A Distinct-2 is `0.69819`.
 
 High-lexical LTR backup:
 
@@ -29,7 +50,7 @@ OOF-max ensemble backup:
 experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v2_clean/blindset_A/submission.zip
 ```
 
-This RRF-ensembles the 120/140/200-tree L2 LTR packages with `rrf_k=60`. It has the best local OOF score so far (`nDCG@20=0.18325`), but the gain over the single 120-tree model is only `+0.00023` and Blind A unique-track coverage is slightly lower (`1494` vs `1496`). Treat it as a micro-gain experiment, not a risk-free replacement.
+This RRF-ensembles the 120/140/200-tree L2 LTR packages with `rrf_k=60`. It gives a small local OOF gain over the single 120-tree model (`nDCG@20=0.18325` versus `0.18302`), but Blind A unique-track coverage is slightly lower (`1494` vs `1496`). Treat it as a micro-gain experiment, not a risk-free replacement.
 
 OOF-max high-lexical ensemble backup:
 
@@ -76,6 +97,7 @@ Rejected near-misses:
 - L1 regularization: every tested `reg_alpha` value underperformed `reg_alpha=0` on the held-out split.
 - More trees as a single model: 140/160/200 trees looked good on fold 0, but five-fold OOF was worse than 120 trees.
 - `colsample_bytree=1.0` and `learning_rate=0.06`: both had small fold 0 gains and worse five-fold OOF.
+- Directly mixing labeled train-split sessions into the LTR training pool hurt held-out dev: 50 sampled sessions scored `0.18274` and 500 sampled sessions scored `0.17101` on the same fold where the 120-tree L2 dev-only model scored about `0.18489`. The optional code path remains for research, but it is not a submission setting.
 
 Key correction:
 
