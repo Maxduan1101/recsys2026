@@ -1141,6 +1141,32 @@ def _generate_judge_v3_response(state: ConversationState, catalog: TrackCatalog,
     return " ".join(part for part in [lead, reason, *context_parts[:2], backup] if part)
 
 
+def _generate_judge_mix_response(state: ConversationState, catalog: TrackCatalog, track_ids: list[str]) -> str:
+    bucket = int(
+        hashlib.md5(f"{state.session_id}:{state.turn_number}:judge_mix".encode("utf-8")).hexdigest()[:8],
+        16,
+    ) % 10
+    style = [
+        "judge_v2",
+        "judge_v2",
+        "judge_v2",
+        "judge_v2",
+        "concise",
+        "concise",
+        "natural",
+        "natural",
+        "setwise",
+        "setwise",
+    ][bucket]
+    if style == "judge_v2":
+        return _generate_judge_v2_response(state, catalog, track_ids)
+    if style == "concise":
+        return _generate_concise_response(state, catalog, track_ids)
+    if style == "natural":
+        return _generate_natural_response(state, catalog, track_ids)
+    return _generate_setwise_response(state, catalog, track_ids)
+
+
 def _generate_polished_response(state: ConversationState, catalog: TrackCatalog, track_ids: list[str]) -> str:
     if not track_ids:
         return "I found a few tracks that should fit the direction you described."
@@ -1264,4 +1290,6 @@ def generate_response(
         return _generate_judge_v2_response(state, catalog, track_ids)
     if style == "judge_v3":
         return _generate_judge_v3_response(state, catalog, track_ids)
+    if style == "judge_mix":
+        return _generate_judge_mix_response(state, catalog, track_ids)
     raise ValueError(f"Unsupported response style: {style!r}")

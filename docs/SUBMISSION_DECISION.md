@@ -1,9 +1,9 @@
 # Blind A Submission Decision
 
-Conservative first retry after LTR tuning and response cleanup:
+Recommended first retry after LTR tuning and response cleanup:
 
 ```text
-experiments/goalflow_ltr120_lambda2_head0_judge_v2_clean/blindset_A/submission.zip
+experiments/goalflow_ltr120_lambda2_head0_judge_mix_clean/blindset_A/submission.zip
 ```
 
 Why this one:
@@ -11,9 +11,18 @@ Why this one:
 - Five-fold out-of-fold dev validation reaches official `nDCG@20=0.18302`, versus `0.18210` for the unregularized 120-tree LTR, `0.18095` for the previous 260-tree LTR, and `0.08587` for the conservative legacy head20 dev baseline.
 - Blind-A-shaped 500-panel validation gives mean nDCG@20 `0.16737`, with mean delta `+0.08088` over head20.
 - Local Blind A catalog diversity is `0.03178`, close to the 80-row ceiling `0.03399`.
-- Local Blind A Distinct-2 is `0.48531`, with shorter metadata-grounded responses designed for personalization/explanation judging.
+- Local Blind A Distinct-2 is `0.52209`, versus `0.48531` for the fixed `judge_v2` style, while the ranking is identical.
+- Official dev lexical diversity improves to `0.15926`, versus `0.14874` for fixed `judge_v2`.
 - The response cleanup removes private/noisy tag artifacts and title-cases profile fields before writing them into the explanation.
 - It directly attacks the previous public weak points: `lexical_diversity=0.0125` and `llm_judge_score=1.0`, while also improving local ranking validation.
+
+Conservative fixed-style text fallback:
+
+```text
+experiments/goalflow_ltr120_lambda2_head0_judge_v2_clean/blindset_A/submission.zip
+```
+
+Same ranking as the first package, but it uses only the fixed `judge_v2` response template.
 
 High-risk category-segmented LTR package:
 
@@ -38,10 +47,16 @@ Use this if the first LTR judge-v2 package unexpectedly loses on lexical diversi
 OOF-max ensemble backup:
 
 ```text
-experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v2_clean/blindset_A/submission.zip
+experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_mix_clean/blindset_A/submission.zip
 ```
 
-This RRF-ensembles the 120/140/200-tree L2 LTR packages with `rrf_k=60`. It gives a small local OOF gain over the single 120-tree model (`nDCG@20=0.18325` versus `0.18302`), but Blind A unique-track coverage is slightly lower (`1494` vs `1496`). Treat it as a micro-gain experiment, not a risk-free replacement.
+This RRF-ensembles the 120/140/200-tree L2 LTR packages with `rrf_k=60` and uses `judge_mix` responses. It gives a small local OOF gain over the single 120-tree model (`nDCG@20=0.18325` versus `0.18302`), but Blind A unique-track coverage is slightly lower (`1494` vs `1496`). Treat it as a micro-gain experiment, not a risk-free replacement.
+
+Fixed-style ensemble fallback:
+
+```text
+experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v2_clean/blindset_A/submission.zip
+```
 
 OOF-max high-lexical ensemble backup:
 

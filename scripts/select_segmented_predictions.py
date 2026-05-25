@@ -95,7 +95,7 @@ def parse_args() -> argparse.Namespace:
             "polished",
             "judge_v1",
             "judge_v2",
-            "judge_v3",
+            "judge_v3", "judge_mix",
         ],
         default="judge_v2",
     )

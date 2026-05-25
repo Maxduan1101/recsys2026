@@ -98,12 +98,13 @@ This file tracks questions and optimization directions that deserve a dedicated 
    - Added `judge_v3` response style as a fuller explanation backup. It reads more naturally but lowers local lexical diversity, so it needs real LLM-judge feedback before becoming a primary package.
    - Implemented `scripts/select_segmented_predictions.py` for broad segment-level model selection. Category-based selection over the 120/140/200-tree L2 LTR models plus their RRF ensemble reaches the best non-nested local OOF score at `nDCG@20=0.184069`, but a stricter nested segment-selection check drops to about `0.18235`.
    - Tested direct train-split mixing for LTR with the optional `--extra-train-sessions` path. It hurt the same held-out fold: 50 sampled train sessions scored `0.18274`, 500 sampled train sessions scored `0.17101`, versus about `0.18489` for dev-only 120-tree L2.
+   - Implemented `judge_mix` response style. It keeps the 120-tree L2 ranking unchanged, raises official dev lexical diversity from `0.14874` to `0.15926`, and raises Blind A local Distinct-2 from `0.48531` to `0.52209`.
    - Deep research question: why do LTR hyperparameters show fold-specific wins that fail OOF, and can we design a more reliable early-stopping/model-selection protocol for only 80-row Blind A?
    - Deep research question: why does wholesale LTR replacement work so well offline despite Pro's earlier caution, and does that hold on Blind B/private splits?
    - Deep research question: is tiny OOF gain from same-family rank ensembling likely to transfer to Blind A/B, or is it mostly dev-fold noise?
    - Deep research question: does broad category-level model selection transfer to Blind A/B, or is even category-level selection overfitting dev OOF?
    - Deep research question: how should labeled train-split conversations be used without hurting dev/Blind transfer: sample weighting, distillation into augmentation text, stratified sampling, or train-only pretraining followed by dev calibration?
-   - Deep research question: should response generation optimize explicit Distinct-2, naturalness, or explanation completeness for Gemini judging, and how can we simulate that locally?
+   - Deep research question: should response generation optimize explicit Distinct-2, naturalness, explanation completeness, or controlled style mixing for Gemini judging, and how can we simulate that locally?
 
 7. **Cross-encoder reranking**
    - Compare `bge-reranker-v2-m3`, DeBERTa, and Qwen reranker-style LoRA for top-100 reranking.
