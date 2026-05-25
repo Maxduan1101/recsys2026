@@ -145,6 +145,7 @@ CF-tail blind-like follow-up:
 - `goalflow_head20_cf_tail19` improved full-dev nDCG@20 by `+0.000057`, but the 500-panel Blind-A-shaped sample was exactly neutral versus head20.
 - On Blind A, it changed only `1 / 80` row, raising unique tracks from `1216` to `1217`.
 - Stacking CF-tail on `head19` reduced dev nDCG; stacking it on `head18` raised nDCG slightly but lowered catalog diversity. Do not prioritize it over the three main packages.
+- Applying the same rank-20 seed-CF rescue to the current four-model ensemble changed `397 / 8000` dev rows and only `1 / 80` Blind A row. Official full-dev nDCG@20 stayed exactly `0.183482` while catalog diversity rose to `0.527798`, but 500 Blind-A-shaped panels had mean delta `-0.00036`; keep this as a rejected shadow experiment.
 
 ## Retrieval Source Diagnostics
 
