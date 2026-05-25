@@ -104,6 +104,7 @@ Rejected near-misses:
 - L1 regularization: every tested `reg_alpha` value underperformed `reg_alpha=0` on the held-out split.
 - More trees as a single model: 140/160/200 trees looked good on fold 0, but five-fold OOF was worse than 120 trees.
 - `colsample_bytree=1.0` and `learning_rate=0.06`: both had small fold 0 gains and worse five-fold OOF.
+- `lambdarank_truncation_level=100`: won fold 0 very slightly, but five-fold OOF dropped to `nDCG@20=0.18244`; default 30 remains best.
 - Directly mixing labeled train-split sessions into the LTR training pool hurt held-out dev: 50 sampled sessions scored `0.18274` and 500 sampled sessions scored `0.17101` on the same fold where the 120-tree L2 dev-only model scored about `0.18489`. The optional code path remains for research, but it is not a submission setting.
 
 Key correction:

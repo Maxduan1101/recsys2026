@@ -298,6 +298,7 @@ def train_ltr(
     colsample_bytree: float,
     reg_alpha: float,
     reg_lambda: float,
+    lambdarank_truncation_level: int,
 ) -> tuple[lgb.LGBMRanker, list[str], list[str], dict[str, list[str]], dict[str, int]]:
     df, feature_cols, categorical, category_values = prepare_features(df)
     train_groups = set(train_groups)
@@ -318,6 +319,7 @@ def train_ltr(
         colsample_bytree=colsample_bytree,
         reg_alpha=reg_alpha,
         reg_lambda=reg_lambda,
+        lambdarank_truncation_level=lambdarank_truncation_level,
         random_state=2026,
         force_row_wise=True,
     )
@@ -493,6 +495,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--colsample-bytree", type=float, default=0.9)
     parser.add_argument("--reg-alpha", type=float, default=0.0)
     parser.add_argument("--reg-lambda", type=float, default=0.0)
+    parser.add_argument("--lambdarank-truncation-level", type=int, default=30)
     parser.add_argument(
         "--estimator-grid",
         default="",
@@ -708,6 +711,7 @@ def main() -> None:
                 colsample_bytree=colsample_bytree,
                 reg_alpha=reg_alpha,
                 reg_lambda=reg_lambda,
+                lambdarank_truncation_level=args.lambdarank_truncation_level,
             )
             valid_df, _, _, _ = prepare_features(
                 dev_df[dev_df["group_id"].isin(valid_groups)].copy(),
@@ -743,6 +747,7 @@ def main() -> None:
                     "colsample_bytree": colsample_bytree,
                     "reg_alpha": reg_alpha,
                     "reg_lambda": reg_lambda,
+                    "lambdarank_truncation_level": args.lambdarank_truncation_level,
                 },
                 "train": train_stats,
                 "grid": grid,
@@ -771,6 +776,7 @@ def main() -> None:
             "colsample_bytree": colsample_values[0],
             "reg_alpha": reg_alpha_values[0],
             "reg_lambda": reg_lambda_values[0],
+            "lambdarank_truncation_level": args.lambdarank_truncation_level,
             "extra_train": extra_train_stats,
             "best_ltr_config_by_head0": best_params,
             "train": first_train_stats,
@@ -806,6 +812,7 @@ def main() -> None:
                 colsample_bytree=args.colsample_bytree,
                 reg_alpha=args.reg_alpha,
                 reg_lambda=args.reg_lambda,
+                lambdarank_truncation_level=args.lambdarank_truncation_level,
             )
             fold_df, _, _, _ = prepare_features(
                 dev_df[dev_df["group_id"].isin(fold_valid_groups)].copy(),
@@ -859,6 +866,7 @@ def main() -> None:
             "colsample_bytree": args.colsample_bytree,
             "reg_alpha": args.reg_alpha,
             "reg_lambda": args.reg_lambda,
+            "lambdarank_truncation_level": args.lambdarank_truncation_level,
             "preserve_head_k": args.preserve_head_k,
             "extra_train": extra_train_stats,
             "output": str(output),
@@ -884,6 +892,7 @@ def main() -> None:
         colsample_bytree=args.colsample_bytree,
         reg_alpha=args.reg_alpha,
         reg_lambda=args.reg_lambda,
+        lambdarank_truncation_level=args.lambdarank_truncation_level,
     )
 
     if args.mode == "blind":

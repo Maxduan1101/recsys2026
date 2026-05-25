@@ -200,6 +200,7 @@ Key validation:
 - L1 regularization was rejected: all tested `reg_alpha` values underperformed `reg_alpha=0` on fold 0.
 - Extra tree counts `140`, `160`, and `200` were rejected as single models: all won or nearly won fold 0 but lost five-fold OOF.
 - `colsample_bytree=1.0` and `learning_rate=0.06` were rejected after OOF despite small fold 0 gains.
+- `lambdarank_truncation_level=100` was rejected after OOF: fold 0 improved slightly, but official five-fold `nDCG@20` dropped to `0.182444`.
 - RRF ensembling over the 120/140/200-tree L2 OOF predictions gives a small local gain, official `nDCG@20=0.183253`, but the improvement over the single 120-tree model is only `+0.000232`.
 - `judge_mix` response style was added as the current text-upside package. It keeps the same ranking as `judge_v2`, raises official dev lexical diversity from `0.14874` to `0.15926`, and raises Blind A local Distinct-2 from `0.48531` to `0.52209`.
 - `judge_v3` response style was added as a fuller explanation style. It may help LLM-as-a-Judge because it reads more naturally, but local lexical diversity is lower than `judge_v2`, so it is only a text backup.
