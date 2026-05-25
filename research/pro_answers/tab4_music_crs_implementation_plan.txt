@@ -1,0 +1,1245 @@
+You are helping with RecSys Challenge 2026 Music-CRS. Official data includes track embeddings such as metadata-qwen3, lyrics-qwen3, attributes-qwen3, audio-laion_clap, image-siglip2, cf-bpr, and user embeddings such as cf-bpr. Research question: what is the best practical design for using these official embeddings in a multi-channel retrieval/reranking system for conversational music recommendation, including normalization, candidate generation, seed similarity, user-CF scoring, and modality-specific failure modes? Give an implementation plan that can be added after a BM25 baseline.
+
+我会先对齐官方挑战设定和可用嵌入，再把它们整理成一个可接在 BM25 基线后的多通道召回与重排实现方案。
+
+我已确认几个实现约束：每轮输出最多 20 个排序 track ID，召回应覆盖完整 all_tracks，开发集主要看 nDCG@1/10/20，并辅以目录与词汇多样性指标。
+
+已思考 12m 1s
+Best practical design
+
+The strongest practical design is a late-fusion, multi-channel retriever/reranker, not a single concatenated embedding. Keep BM25 as the lexical anchor, then add independent candidate channels for Qwen text embeddings, seed-track similarity, user–track CF, and modality-specific expansion. This fits the official setup: Music-CRS is multi-turn conversational recommendation with pre-extracted multimodal track/user embeddings, and the evaluator ranks up to 20 track IDs per turn using nDCG@1/10/20 plus diversity metrics. 
+NLP4MUSA
++1
+
+The core rule is: retrieve broadly, calibrate each channel separately, then rerank with gated features. Do not average raw scores across modalities, and do not hard-filter the catalog. The official baseline warns that inference should retrieve from all_tracks, not a restricted subset. 
+GitHub
+
+1. Embedding normalization
+
+Load the official track embedding table and user embedding table, join by track_id / user_id, and build one matrix per channel:
+
+track:
+  metadata-qwen3_embedding_0.6b      ≈1024d
+  lyrics-qwen3_embedding_0.6b        ≈1024d
+  attributes-qwen3_embedding_0.6b    ≈1024d
+  audio-laion_clap                   512d
+  image-siglip2                      768d
+  cf-bpr                             128d
+
+user:
+  cf-bpr                             128d
+
+The Hugging Face viewer shows those exact track columns and dimensions, with possible empty vectors, and the user embedding table exposes 128-d cf-bpr vectors. 
+Hugging Face
++1
+
+Use two representations:
+
+Python
+运行
+# For cosine similarity / ANN retrieval
+E_norm[m] = l2_normalize(E_raw[m])
+
+# For BPR user-item scoring
+track_cf_raw = E_raw["cf-bpr"]
+user_cf_raw  = U_raw["cf-bpr"]
+
+Recommended normalization:
+
+Python
+运行
+def row_l2_normalize(X, eps=1e-12):
+    norms = np.linalg.norm(X, axis=1)
+    valid = norms > eps
+    Xn = np.zeros_like(X, dtype=np.float32)
+    Xn[valid] = X[valid] / norms[valid, None]
+    return Xn, valid
+
+Then, for every query/turn, convert each channel’s scores into a query-local calibrated score before fusion:
+
+Python
+运行
+z = (score - median(score_valid)) / (1.4826 * MAD(score_valid) + eps)
+z = clip(z, -3, 3)
+calibrated = sigmoid(z)
+
+For retrieval ranks, also keep an RRF-style rank feature:
+
+Python
+运行
+rrf = 1.0 / (60 + rank)
+
+This avoids the common failure where Qwen cosine, CLAP cosine, BM25, and BPR dot products are numerically incomparable.
+
+2. Candidate generation channels
+
+Start with BM25, but increase candidate depth from 20 to something like 500–2000. The official baseline currently builds a retrieval input from session memory and calls text_to_item_retrieval(..., topk=20), so the first implementation change is to make BM25 a candidate generator rather than the final ranker. 
+GitHub
+
+Use a union of these channels:
+
+Channel	Candidate source	When to use
+bm25	BM25 over track_name, artist_name, album_name, tag_list, release fields	Always
+metadata-qwen3	Query embedding → metadata ANN	Always, especially title/artist/album/genre queries
+attributes-qwen3	Query embedding → attributes ANN	Always for mood, vibe, instrument, era, activity
+lyrics-qwen3	Query embedding → lyrics ANN	Only when query mentions lyrics, words, story, theme, language, vocals
+audio-laion_clap	CLAP text query or seed-track ANN	For sonic descriptors: aggressive, lo-fi, acoustic, hazy, danceable
+image-siglip2	SigLIP text query or seed-track ANN	For cover-art / album-art clues
+cf-bpr item-item	Seed track → track CF nearest neighbors	When prior accepted tracks exist
+user cf-bpr	User vector dot track CF vectors	Warm personalization / broad discovery
+
+The catalog metadata includes track name, artist, album, tags, popularity, release date, duration, artist ID, and album ID, so those should become both BM25 fields and reranking features. 
+Hugging Face
+
+A practical candidate budget:
+
+BM25                  top 1000
+metadata-qwen3        top 1000
+attributes-qwen3      top 1000
+lyrics-qwen3          top 300–1000, gated
+audio-laion_clap      top 300–500, gated
+image-siglip2         top 300–500, gated
+seed similarity       top 300 per active modality
+user-cf               top 1000, gated
+
+For this catalog size, exact IndexFlatIP FAISS search is usually acceptable. If latency is tight, use HNSW but keep exact search for ablation and debugging.
+
+3. Seed similarity from conversation history
+
+This challenge is especially suited to seed expansion because the conversation history contains previous music role messages whose content is a track UUID, and the evaluator’s ground truth parser takes the current turn’s second conversation item as the target track ID. 
+Hugging Face
++1
+
+Maintain seed sets per session:
+
+positive_seeds:
+  previous recommended track IDs that the user liked, accepted, refined from, or asked for "more like this"
+
+neutral_seeds:
+  previous recommendations without clear feedback
+
+negative_seeds:
+  previous recommendations followed by "not that", "too heavy", "less pop", "wrong era", etc.
+
+Use recency-weighted seed centroids:
+
+Python
+运行
+w_t = feedback_weight * gamma ** (current_turn - seed_turn)
+gamma = 0.75  # start value
+
+pos_centroid_m = normalize(sum(w_t * E_norm[m][track_id] for positive/neutral seeds))
+neg_centroid_m = normalize(sum(w_t * E_norm[m][track_id] for negative seeds))
+
+For each candidate i and modality m:
+
+Python
+运行
+seed_sim_m(i) = max(
+    dot(E_norm[m][i], pos_centroid_m),
+    max_seed_dot(E_norm[m][i], E_norm[m][seed_ids])
+)
+
+neg_sim_m(i) = max_negative_seed_dot(...)
+
+Use both centroid and max-seed similarity. The centroid captures the general taste direction; max-seed similarity prevents mixed tastes from averaging into nonsense.
+
+Good initial seed channels:
+
+metadata-qwen3        general semantic similarity
+attributes-qwen3      mood/style/instrument similarity
+audio-laion_clap      sonic similarity
+cf-bpr track          co-listening similarity
+image-siglip2         cover-art / album visual similarity
+lyrics-qwen3          lyric-topic similarity
+
+Do not treat every previous recommendation as positive. If the next user message says “not quite,” “less heavy,” “I wanted something older,” or “that’s not it,” move that previous track to the negative set for the relevant modality.
+
+4. User-CF scoring
+
+For official cf-bpr, use raw dot product for user–item scoring:
+
+Python
+运行
+cf_raw(i) = dot(user_cf_raw[user_id], track_cf_raw[i])
+
+BPR is explicitly a pairwise ranking method for implicit-feedback personalization, so the learned user and item factors are most naturally used by their dot product ranking. 
+arXiv
+
+Then calibrate it:
+
+Python
+运行
+cf_percentile(i) = percentile_rank(cf_raw(i) among all all_tracks)
+cf_z(i) = robust_zscore(cf_raw over candidate pool)
+
+Use cf-bpr differently depending on intent:
+
+High weight:
+  "recommend me", "something I might like", broad discovery, vague mood requests
+
+Medium weight:
+  genre/mood exploration where user taste helps break ties
+
+Low weight:
+  specific known-item search, lyrics fragment, cover-art clue, exact artist/title query
+
+Start with:
+
+Python
+运行
+if user_vector_missing:
+    user_cf_weight = 0.0
+elif query_is_specific_known_item:
+    user_cf_weight = 0.03
+elif query_is_personalized_or_broad:
+    user_cf_weight = 0.20
+else:
+    user_cf_weight = 0.10
+
+For item–item seed expansion in the CF space, use either cosine over L2-normalized track CF vectors or raw dot; tune both. In practice, I would start with cosine for item–item CF and raw dot for user–item CF.
+
+5. Reranking features
+
+For every candidate in the union, build a feature row:
+
+Lexical:
+  bm25_score_z
+  bm25_rank_rrf
+  exact_title_match
+  exact_artist_match
+  exact_album_match
+  tag_overlap
+  year_or_decade_match
+
+Dense direct query:
+  q_metadata_cos_z
+  q_attributes_cos_z
+  q_lyrics_cos_z
+  q_audio_clap_cos_z
+  q_image_siglip_cos_z
+
+Seed similarity:
+  seed_metadata_z
+  seed_attributes_z
+  seed_lyrics_z
+  seed_audio_z
+  seed_image_z
+  seed_cf_z
+  neg_seed_metadata_z
+  neg_seed_audio_z
+  neg_seed_cf_z
+
+Personalization:
+  user_cf_raw_z
+  user_cf_percentile
+  user_vector_present
+
+Catalog priors:
+  popularity_z
+  release_year_distance
+  duration_match
+  same_artist_as_positive_seed
+  same_album_as_positive_seed
+
+Conversation/session:
+  already_recommended_penalty
+  same_artist_repetition_penalty
+  turn_number
+  specificity_score
+  visual_query_flag
+  lyric_query_flag
+  audio_query_flag
+  broad_discovery_flag
+
+Then use either:
+
+Option A: deterministic weighted fusion
+
+Good first scoring formula:
+
+Python
+运行
+score = (
+    0.18 * bm25_z
+  + 0.18 * q_metadata_z
+  + 0.18 * q_attributes_z
+  + 0.08 * q_lyrics_z
+  + 0.10 * seed_metadata_z
+  + 0.10 * seed_attributes_z
+  + 0.08 * seed_audio_z
+  + 0.05 * seed_cf_z
+  + 0.10 * user_cf_z
+  + 0.04 * popularity_z
+  + entity_boosts
+  - negative_seed_penalties
+  - repeat_penalties
+)
+
+Then apply intent gates:
+
+Python
+运行
+if lyric_query:
+    w_lyrics *= 2.5
+    w_audio *= 0.5
+
+if visual_or_cover_query:
+    w_image *= 3.0
+    w_user_cf *= 0.3
+
+if specific_artist_or_title_query:
+    w_bm25 *= 1.5
+    w_metadata *= 1.4
+    w_user_cf *= 0.3
+
+if broad_discovery:
+    w_attributes *= 1.3
+    w_audio *= 1.2
+    w_user_cf *= 1.5
+Option B: learning-to-rank
+
+This is better once the deterministic version works. Build training examples from the train split:
+
+group = session_id + turn_number
+positive = current turn music-role track ID
+negatives = candidates generated for that turn, excluding positive
+label = 1 for positive, 0 for negatives
+
+Train LightGBM Ranker, CatBoostRanker, or XGBoost ranker with the feature table above. Keep a deterministic fusion fallback because it is easier to debug and often competitive.
+
+The official dataset has train/test splits and conversations with 8 turns; official evaluation macro-averages over turns, so validate turn-wise, not only globally. 
+Hugging Face
++1
+
+6. Final top-20 selection
+
+After reranking, apply a light MMR pass:
+
+Python
+运行
+final = []
+while len(final) < 20:
+    pick item maximizing:
+        rank_score(item)
+      - lambda_artist * same_artist_count(item, final)
+      - lambda_album  * same_album_count(item, final)
+      - lambda_dense  * max_similarity_to_final(item)
+
+Use small penalties. The primary metric is still nDCG with a single ground-truth item per turn, so too much diversity can hurt. A reasonable start:
+
+Python
+运行
+lambda_artist = 0.03
+lambda_album  = 0.04
+lambda_dense  = 0.02
+
+For “find one specific song” intents, disable most diversity penalties. For “give me several different artists” intents, increase same-artist penalty.
+
+The output must contain unique predicted_track_ids, ordered by relevance, up to 20 IDs per turn. 
+GitHub
+
+7. Modality-specific failure modes
+Modality	Good for	Failure mode	Mitigation
+metadata-qwen3	title, artist, album, tags, release-era text	Overmatches surface metadata; can miss sonic mood	Use with BM25 and attributes; add exact entity features
+attributes-qwen3	mood, genre, instrumentation, activity	Generic moods create hubs: “chill,” “energetic,” “sad”	Calibrate by rank/z-score; add seed/audio features
+lyrics-qwen3	lyric themes, story, quoted words, language	Bad for instrumental/sonic queries; lyrics may be missing/noisy	Gate only for lyric/theme/vocal queries
+audio-laion_clap	sound, timbre, energy, production, “sounds like”	Weak for artist/title/year; audio embeddings can cluster by production artifacts	Use mostly for seed expansion and sonic queries; never dominate exact searches
+image-siglip2	cover art, visual clues, album identity	Cover art is not music; same album art can rank all album tracks	Gate only on visual/cover queries or album-art seed cases
+cf-bpr track	co-listening similarity, “more like this”	Popularity bias; opaque jumps across genres	Use as a feature, not a hard retriever; combine with content similarity
+user cf-bpr	warm-user personalization	Can override current intent; poor for known-item search	Gate by intent and downweight for exact/visual/lyric searches
+
+CLAP-style audio models align language and audio in a shared space, which is useful for zero-shot sonic retrieval, but that also means broad natural-language descriptors may retrieve acoustically plausible tracks rather than catalog-correct tracks. 
+arXiv
+ SigLIP2 is designed for image-text retrieval and visual representations, so it is useful for cover-art clues but should not be treated as a music-content embedding. 
+arXiv
+
+8. Drop-in implementation plan after BM25
+Step 1 — Extend the BM25 baseline
+
+Change BM25 retrieval depth:
+
+Python
+运行
+bm25_candidates = bm25_retriever.text_to_item_retrieval(
+    retrieval_input,
+    topk=1000
+)
+
+Keep using the full all_tracks split.
+
+Step 2 — Add an embedding store
+
+Create:
+
+mcrs/retrieval_modules/multichannel/
+  embedding_store.py
+  candidate_generator.py
+  query_analyzer.py
+  feature_builder.py
+  reranker.py
+  mmr.py
+
+EmbeddingStore should load:
+
+Python
+运行
+track_meta = load_dataset("talkpl-ai/TalkPlayData-Challenge-Track-Metadata", split="all_tracks")
+track_emb  = load_dataset("talkpl-ai/TalkPlayData-Challenge-Track-Embeddings", split="all_tracks")
+user_emb   = load_dataset("talkpl-ai/TalkPlayData-Challenge-User-Embeddings", split="train/test_warm/test_cold as available")
+
+Then cache:
+
+cache/embeddings/track_ids.npy
+cache/embeddings/{channel}.float32.npy
+cache/faiss/{channel}.index
+cache/user_cf/user_ids.npy
+cache/user_cf/user_cf.float32.npy
+Step 3 — Add query/intent analysis
+
+A lightweight rule-based analyzer is enough initially:
+
+Python
+运行
+visual_query = any(word in q for word in ["cover", "art", "album cover", "image", "looks"])
+lyric_query  = any(word in q for word in ["lyrics", "words", "line", "says", "verse", "chorus"])
+audio_query  = any(word in q for word in ["sounds", "vibe", "aggressive", "soft", "lo-fi", "acoustic", "beat"])
+specific_query = has_artist_or_title_entity(q) or contains_year_album_title(q)
+broad_query = any(word in q for word in ["recommend", "discover", "something", "more like", "similar"])
+
+Later replace this with a small LLM/json extractor.
+
+Step 4 — Add candidate union
+
+Pseudocode:
+
+Python
+运行
+def generate_candidates(state, user_id):
+    C = CandidateSet()
+
+    C.add("bm25", bm25.retrieve(state.retrieval_text, k=1000))
+
+    q_meta = embed_qwen(state.metadata_query)
+    C.add("q_metadata", ann["metadata"].search(q_meta, k=1000))
+
+    q_attr = embed_qwen(state.attribute_query)
+    C.add("q_attributes", ann["attributes"].search(q_attr, k=1000))
+
+    if state.lyric_query:
+        q_lyrics = embed_qwen(state.lyric_query_text)
+        C.add("q_lyrics", ann["lyrics"].search(q_lyrics, k=500))
+
+    if state.audio_query and clap_text_encoder_available:
+        q_audio = embed_clap_text(state.audio_query_text)
+        C.add("q_audio", ann["audio"].search(q_audio, k=500))
+
+    if state.visual_query and siglip_text_encoder_available:
+        q_image = embed_siglip_text(state.visual_query_text)
+        C.add("q_image", ann["image"].search(q_image, k=500))
+
+    for channel in active_seed_channels(state):
+        C.add(f"seed_{channel}", seed_knn(channel, state.positive_seeds, k=300))
+
+    if user_id in user_cf:
+        C.add("user_cf", topk_user_cf(user_id, k=1000))
+
+    return C.unique_track_ids()
+Step 5 — Add feature-based reranking
+Python
+运行
+features = feature_builder.build(
+    candidates=C,
+    state=state,
+    user_id=user_id,
+    source_ranks=C.source_ranks
+)
+
+if learned_ranker:
+    scores = ranker.predict(features)
+else:
+    scores = weighted_fusion(features, state.intent_gates)
+
+ranked = sort_by_score(candidates, scores)
+final20 = mmr_select(ranked, features, topk=20)
+Step 6 — Train and ablate
+
+Run ablations in this order:
+
+A0 BM25 baseline
+A1 BM25 + metadata-qwen3 direct
+A2 A1 + attributes-qwen3 direct
+A3 A2 + seed similarity: metadata/attributes/cf
+A4 A3 + user-cf
+A5 A4 + lyrics gated
+A6 A5 + audio gated
+A7 A6 + image gated
+A8 A7 + learned ranker
+A9 A8 + MMR
+
+Track:
+
+candidate recall@20/100/1000
+nDCG@1/10/20
+turn-wise nDCG
+specific-query nDCG
+broad-discovery nDCG
+visual-query nDCG
+lyrics-query nDCG
+coverage/diversity
+
+The official evaluator reports nDCG@1/10/20 and catalog/lexical diversity, and the published BM25 dev baseline is a useful sanity check. 
+GitHub
+
+Recommended starting recipe
+
+Implement this first:
+
+BM25 top1000
++ metadata-qwen3 direct top1000
++ attributes-qwen3 direct top1000
++ seed similarity over metadata, attributes, audio, cf-bpr
++ user cf-bpr top1000
++ gated lyrics-qwen3
++ gated image-siglip2
++ robust z-score fusion
++ light MMR
+
+Then add LightGBM/CatBoost reranking once candidate recall is high. In most Music-CRS turns, the biggest gains should come from BM25 + Qwen metadata/attributes + seed similarity + user-CF, with lyrics/audio/image adding important wins on the subset of turns that explicitly need them.
+
+来源
+请继续输出完整答案。上一条只显示了开头。直接给结论、实验计划和可执行建议，不要重新解释题目。
+
+我会直接给可落地版本：先给架构结论和默认权重，再给消融实验、上线顺序、代码级清单，并补充官方约束核对与常见坑。
+
+已进一步确认 BM25 需要先从 top20 终排改成面向全量目录的候选召回器，同时实现中要处理空向量，并把 diversity 作为辅助评估。
+
+已思考 7m 21s
+结论
+
+最佳实用方案是：BM25 继续做强 lexical anchor，但不要让 BM25 直接产出最终 top-20；改成“多通道候选生成 + 每通道归一化校准 + late-fusion / LTR rerank + 轻量去重多样性”的两阶段系统。
+
+不要把 metadata-qwen3、lyrics-qwen3、attributes-qwen3、audio-laion_clap、image-siglip2、cf-bpr 直接拼接成一个大向量。它们维度、训练目标、缺失情况、相似度尺度和失败模式都不同。官方 track embedding 表里这些通道维度分别包括：CLAP audio 512、SigLIP2 image 768、cf-bpr 128、三个 Qwen3 text embedding 约 1.02k，且 viewer 显示各列可能存在空 list，因此必须逐通道建 mask 和归一化。
+Hugging Face
+
+最推荐的第一版上线组合：
+
+BM25 top1000
++ metadata-qwen3 seed/direct semantic
++ attributes-qwen3 seed/direct semantic
++ cf-bpr user→track personalization
++ cf-bpr seed item-item
++ audio-laion_clap seed similarity
++ gated lyrics-qwen3
++ gated image-siglip2
++ robust-z / percentile calibration
++ weighted fusion
++ optional LightGBM/CatBoost ranker
++ final top-20 unique IDs
+
+官方 baseline 已经明确要求 inference 时必须从整个 track catalog 检索，不要用 track_split_types 或其他机制做子集限制，并要求配置使用 all_tracks；这是实现时最容易踩的硬性规则。
+GitHub
+
+1. 系统结构
+Conversation history
+        │
+        ├── Query / intent analyzer
+        │       ├── exact entity intent
+        │       ├── mood/style intent
+        │       ├── lyric intent
+        │       ├── audio/sonic intent
+        │       ├── visual/cover-art intent
+        │       └── broad discovery / personalization intent
+        │
+        ├── Candidate generation
+        │       ├── BM25 over metadata fields
+        │       ├── Qwen text channels
+        │       ├── seed-track similarity channels
+        │       ├── user cf-bpr channel
+        │       └── modality-gated audio / image / lyrics channels
+        │
+        ├── Feature builder
+        │       ├── source ranks
+        │       ├── calibrated scores
+        │       ├── seed similarities
+        │       ├── user-CF scores
+        │       ├── entity / year / artist / album features
+        │       └── repetition / negative-seed penalties
+        │
+        ├── Reranker
+        │       ├── weighted fusion first
+        │       └── LightGBM / CatBoost ranker later
+        │
+        └── Top-20 postprocess
+                ├── unique track IDs
+                ├── valid catalog IDs
+                └── light MMR / same-artist control
+
+官方 metadata 字段足够支撑 BM25 和 rerank features：track_id, ISRC, track_name, artist_name, album_name, tag_list, popularity, release_date, duration, artist_id, album_id。
+Hugging Face
+
+2. 归一化策略
+2.1 每个 embedding 通道单独处理
+
+对每个 track channel 建：
+
+Python
+运行
+raw[channel]       # 原始矩阵，float32
+norm[channel]      # L2-normalized 矩阵
+valid[channel]     # 非空、非零、无 NaN 的 bool mask
+index[channel]     # FAISS IndexFlatIP / HNSW
+
+建议代码：
+
+Python
+运行
+def l2_normalize_with_mask(X, eps=1e-12):
+    X = np.asarray(X, dtype=np.float32)
+    ok = np.isfinite(X).all(axis=1)
+    norm = np.linalg.norm(X, axis=1)
+    ok &= norm > eps
+
+    Xn = np.zeros_like(X, dtype=np.float32)
+    Xn[ok] = X[ok] / norm[ok, None]
+    return Xn, ok
+
+用于 cosine / ANN 的通道：
+
+metadata-qwen3_embedding_0.6b
+lyrics-qwen3_embedding_0.6b
+attributes-qwen3_embedding_0.6b
+audio-laion_clap
+image-siglip2
+track cf-bpr item-item
+
+用于 user-CF raw scoring 的通道：
+
+user_cf_raw dot track_cf_raw
+2.2 不同通道分数必须校准
+
+不要直接比较：
+
+BM25 score
+Qwen cosine
+CLAP cosine
+SigLIP cosine
+cf-bpr raw dot
+popularity
+
+统一转成 query-local robust z-score：
+
+Python
+运行
+def robust_z(scores, eps=1e-9):
+    scores = np.asarray(scores, dtype=np.float32)
+    med = np.median(scores)
+    mad = np.median(np.abs(scores - med))
+    z = (scores - med) / (1.4826 * mad + eps)
+    return np.clip(z, -4.0, 4.0)
+
+同时保留 rank-based feature：
+
+Python
+运行
+rrf = 1.0 / (60.0 + rank)
+
+最终每个候选至少有：
+
+score_z[channel]
+rank_rrf[channel]
+present[channel]
+valid_embedding[channel]
+
+present[channel] 很重要：没有被某个 channel 召回不等于该 channel 分数差。
+
+3. 候选生成设计
+3.1 BM25 baseline 改造
+
+官方 baseline 当前 retrieval 阶段是直接 topk=20，然后拿第一个 item 给 LLM 生成回复；第一步应把它改成候选生成器，例如 topk=1000 或 topk=2000。
+GitHub
+
+Python
+运行
+bm25_items = bm25.text_to_item_retrieval(retrieval_input, topk=1000)
+
+BM25 corpus 字段建议：
+
+track_name^4
+artist_name^4
+album_name^2
+tag_list^2
+release_date / year / decade^1
+ISRC^5, 若 query 像 code
+3.2 候选通道预算
+通道	topK	默认状态	用途
+BM25	1000–2000	always on	title / artist / album / tags / era
+metadata-qwen3 direct	500–1000	on, 若可生成 query embedding	语义化 title / artist / album / description
+attributes-qwen3 direct	500–1000	on, 若可生成 query embedding	mood, genre, activity, instrument
+lyrics-qwen3 direct	300–700	gated	lyric, theme, story, quoted phrase
+audio-laion_clap direct	300–500	gated	sonic descriptors
+image-siglip2 direct	200–500	gated	cover art / visual clue
+seed metadata	300–500	on when seeds exist	“more like previous”
+seed attributes	300–500	on when seeds exist	mood/style continuity
+seed audio	300–500	on when seeds exist	sonic continuity
+seed cf-bpr	500–1000	on when seeds exist	co-listening / collaborative similarity
+user cf-bpr	1000–3000	gated	personalization
+
+关键补充：官方给的是 track/user embeddings，不是 query embeddings。若规则和算力允许，可用相同 encoder 给当前 query 生成 Qwen3 / CLAP-text / SigLIP-text query embedding；若只想严格依赖官方预计算 embedding，则 dense direct query 通道先不做，把官方 embedding 用在 seed expansion、user-CF、reranking features 上。用户 embedding 表提供 user_id 和 128-d cf-bpr，并有 train/test_warm/test_cold splits。
+Hugging Face
+
+4. Seed similarity 设计
+
+官方 conversation 里有 conversations 列，包含 user/music role；music role 的 content 是 track UUID，适合作为历史 seed。数据还包含 8 个 turn 的 goal-progress assessments，可在训练/dev 分析时使用，但 blind inference 不应依赖未来或不可见标签。
+Hugging Face
+
+4.1 Seed 分类
+positive_seeds:
+  用户明确接受、继续要求 similar/more like this、或后续语气正向的历史 music track
+
+neutral_seeds:
+  没有明确反馈的历史推荐
+
+negative_seeds:
+  后续用户说 not that, too heavy, less pop, wrong era, different artist 等
+
+初版不要过度复杂：
+
+Python
+运行
+POS_WORDS = ["yes", "great", "more like", "similar", "i like", "that's good"]
+NEG_WORDS = ["not", "no", "too", "less", "different", "wrong", "don't like"]
+
+权重：
+
+Python
+运行
+feedback_weight = {
+    "positive": 1.0,
+    "neutral": 0.35,
+    "negative": 1.0,  # 用于 penalty，不加入正向 centroid
+}
+
+recency_weight = gamma ** age
+gamma = 0.75
+4.2 Seed score
+
+每个 modality 单独算：
+
+Python
+运行
+pos_centroid_m = normalize(sum(w_s * E_m[seed_s] for seed_s in positive_or_neutral))
+neg_centroid_m = normalize(sum(w_s * E_m[seed_s] for seed_s in negative))
+
+seed_score_m(i) = max(
+    dot(E_m[i], pos_centroid_m),
+    max(dot(E_m[i], E_m[s]) for s in positive_or_neutral_seeds)
+)
+
+neg_score_m(i) = max(
+    dot(E_m[i], neg_centroid_m),
+    max(dot(E_m[i], E_m[s]) for s in negative_seeds)
+)
+
+保留 centroid 和 max-seed 两种分数。只用 centroid 会把多个风格平均成一个不存在的“中间口味”；只用 max-seed 又容易被单个偶然 seed 带偏。
+
+4.3 推荐 seed 通道优先级
+第一优先级：
+  seed_metadata_qwen3
+  seed_attributes_qwen3
+  seed_cf_bpr
+
+第二优先级：
+  seed_audio_clap
+
+只在相关 intent 启用：
+  seed_lyrics_qwen3
+  seed_image_siglip2
+5. User-CF scoring
+
+cf-bpr 的最稳用法分两种：
+
+user → track:
+  raw dot product: dot(user_cf_raw, track_cf_raw)
+
+track → track:
+  cosine over L2-normalized track cf-bpr
+
+BPR 是面向 implicit feedback 的 personalized ranking 方法，常用于学习 user/item latent factors 并优化排序目标，因此 user-item CF 分数最自然的初始形式就是用户向量与物品向量的 compatibility score。
+arXiv
+
+实现：
+
+Python
+运行
+def user_cf_scores(user_id, candidate_track_idx):
+    if user_id not in user_cf:
+        return np.zeros(len(candidate_track_idx)), False
+
+    u = user_cf_raw[user_id]              # [128]
+    V = track_cf_raw[candidate_track_idx] # [n, 128]
+    s = V @ u
+    return robust_z(s), True
+
+全库 topK：
+
+Python
+运行
+scores = track_cf_raw @ user_cf_raw[user_id]
+top_idx = np.argpartition(scores, -K)[-K:]
+
+gating 建议：
+
+Intent	user-CF 权重
+broad discovery / “recommend me something”	高，0.15–0.25
+mood / style but not exact	中，0.08–0.15
+exact title / artist / album	低，0.00–0.05
+lyrics fragment	低，0.03–0.08
+cover-art / visual memory	很低，0.00–0.03
+cold/missing user vector	0
+6. Rerank feature set
+
+每个 candidate 构造一行：
+
+source features:
+  bm25_rank, bm25_rrf, bm25_z
+  q_metadata_rank, q_metadata_rrf, q_metadata_z
+  q_attributes_rank, q_attributes_rrf, q_attributes_z
+  q_lyrics_rank, q_lyrics_rrf, q_lyrics_z
+  q_audio_rank, q_audio_rrf, q_audio_z
+  q_image_rank, q_image_rrf, q_image_z
+  user_cf_rank, user_cf_rrf, user_cf_z
+
+seed features:
+  seed_metadata_z
+  seed_attributes_z
+  seed_audio_z
+  seed_lyrics_z
+  seed_image_z
+  seed_cf_z
+  neg_seed_metadata_z
+  neg_seed_attributes_z
+  neg_seed_audio_z
+  neg_seed_cf_z
+
+metadata features:
+  exact_title_match
+  exact_artist_match
+  exact_album_match
+  artist_alias_match
+  tag_overlap_count
+  tag_jaccard
+  year_match
+  decade_match
+  release_year_distance
+  popularity_z
+  duration_match
+  same_artist_as_seed
+  same_album_as_seed
+
+conversation features:
+  turn_number
+  already_recommended
+  repeated_artist_count
+  repeated_album_count
+  specificity_score
+  lyric_intent
+  audio_intent
+  visual_intent
+  exact_entity_intent
+  broad_discovery_intent
+  user_cf_available
+6.1 第一版 weighted fusion
+
+先不用复杂模型，直接上这个：
+
+Python
+运行
+score = (
+    0.20 * bm25_z
+  + 0.18 * q_metadata_z
+  + 0.16 * q_attributes_z
+  + 0.08 * q_lyrics_z
+  + 0.10 * seed_metadata_z
+  + 0.10 * seed_attributes_z
+  + 0.06 * seed_audio_z
+  + 0.06 * seed_cf_z
+  + 0.10 * user_cf_z
+  + 0.04 * popularity_z
+  + entity_boost
+  - neg_seed_penalty
+  - repeat_penalty
+)
+6.2 Intent gates
+Python
+运行
+if exact_entity_intent:
+    w["bm25"] *= 1.5
+    w["q_metadata"] *= 1.4
+    w["user_cf"] *= 0.3
+    w["audio"] *= 0.4
+    w["image"] *= 0.4
+
+if broad_discovery_intent:
+    w["attributes"] *= 1.3
+    w["seed_attributes"] *= 1.2
+    w["seed_audio"] *= 1.2
+    w["user_cf"] *= 1.5
+
+if lyric_intent:
+    w["lyrics"] *= 2.5
+    w["audio"] *= 0.5
+    w["image"] *= 0.2
+
+if audio_intent:
+    w["audio"] *= 2.0
+    w["attributes"] *= 1.3
+    w["metadata"] *= 0.9
+
+if visual_intent:
+    w["image"] *= 3.0
+    w["user_cf"] *= 0.2
+    w["audio"] *= 0.5
+6.3 第二版 learning-to-rank
+
+候选召回稳定后，训练 LightGBMRanker / CatBoostRanker：
+
+group_id = session_id + turn_number
+positive = 当前 turn 的 ground-truth music track
+negative = candidate union 中非 positive 的 tracks
+label = 1 / 0
+
+训练参数起点：
+
+Python
+运行
+objective = "lambdarank"
+metric = "ndcg"
+eval_at = [1, 10, 20]
+num_leaves = 31
+learning_rate = 0.03
+n_estimators = 1000
+min_data_in_leaf = 20
+feature_fraction = 0.8
+bagging_fraction = 0.8
+
+不要一开始就用 LTR；先做 weighted fusion，确保 candidate recall 上来，再训练 ranker。
+
+7. Top-20 后处理
+
+官方 inference JSON 要求 predicted_track_ids 是最多 20 个、按相关性排序、无重复、有效 track ID，并且每个 session × turn 都要有预测。
+GitHub
+
+后处理：
+
+Python
+运行
+def postprocess(ranked_items, topk=20):
+    seen = set()
+    out = []
+
+    for item in ranked_items:
+        if item.track_id in seen:
+            continue
+        if not item.valid_track_id:
+            continue
+        out.append(item.track_id)
+        seen.add(item.track_id)
+        if len(out) == topk:
+            break
+
+    return out
+
+轻量 MMR：
+
+Python
+运行
+mmr_score(i) = rank_score(i) \
+             - 0.03 * same_artist_count(i, selected) \
+             - 0.04 * same_album_count(i, selected) \
+             - 0.02 * max_dense_sim(i, selected)
+
+注意：nDCG 是主指标，过强多样性会伤 top-1/top-10。MMR 只做小惩罚。官方 evaluator 对 retrieval 计算 nDCG@1/10/20，并宏平均到 turns/sessions；同时还有 catalog coverage 和 response lexical diversity。
+GitHub
+
+8. 各 modality 的失败模式和防护
+Modality	适合	典型失败	防护
+BM25	exact title/artist/album/year/tag	同名歌、cover、拼写变体、语义 mood 弱	加 metadata-qwen、artist/album exact features
+metadata-qwen3	title/artist/album/genre 语义	对 “chill/intense/sad” 这类泛词产生 hub	rank+z 校准，和 attributes/audio 共同投票
+attributes-qwen3	mood/style/instrument/activity	泛 mood 过度召回热门标签歌	加 seed、CF、year/artist 约束
+lyrics-qwen3	歌词主题、故事、片段、语言	对纯声音需求无效；歌词缺失/噪声	只在 lyric intent 强启用
+audio-laion_clap	sonic texture、energy、lo-fi、acoustic、aggressive	不擅长 exact song/artist；可能按 production artifact 聚类	主要用于 seed 和 audio intent，不让它主导 exact query
+image-siglip2	cover art、视觉记忆、album identity	封面不是音乐；同 album 多 track 混淆	只在 visual intent 启用，加 album-level rerank
+track cf-bpr	co-listening、more-like-this	popularity bias、跨 genre 跳跃难解释	用 cosine 做 item-item，作为 feature 不硬过滤
+user cf-bpr	个性化兜底、broad discovery	覆盖当前明确意图	exact/lyrics/visual intent 下大幅降权
+9. 实验计划
+9.1 必跑 ablation
+
+按这个顺序做，每一步保存 dev score 和 candidate recall：
+
+A0  official BM25 baseline top20
+A1  BM25 top1000 + BM25-only rerank
+A2  A1 + metadata-qwen3 direct/seed
+A3  A2 + attributes-qwen3 direct/seed
+A4  A3 + cf-bpr seed item-item
+A5  A4 + user cf-bpr
+A6  A5 + gated lyrics-qwen3
+A7  A6 + gated audio-laion_clap
+A8  A7 + gated image-siglip2
+A9  A8 + weighted fusion tuned by intent
+A10 A9 + LightGBM/CatBoost ranker
+A11 A10 + light MMR
+
+预期收益排序通常是：
+
+BM25 depth ↑
+> metadata-qwen3
+> attributes-qwen3
+> seed similarity
+> user cf-bpr
+> lyrics/audio/image gated improvements
+> learned reranker
+> MMR
+9.2 内部诊断指标
+
+官方分数之外，必须记录：
+
+candidate_recall@20
+candidate_recall@100
+candidate_recall@1000
+oracle_ndcg@20
+positive_source_hit_rate
+source_contribution_by_intent
+turn_number_breakdown
+specificity_breakdown
+exact_entity_query_breakdown
+visual_query_breakdown
+lyric_query_breakdown
+cold/warm user breakdown
+
+最重要的是 candidate_recall@1000。如果 ground truth 没进候选集，reranker 没法救。
+
+9.3 调参网格
+
+候选 topK：
+
+BM25: 500 / 1000 / 2000 / 5000
+metadata: 300 / 500 / 1000
+attributes: 300 / 500 / 1000
+user_cf: 500 / 1000 / 3000
+seed_each_channel: 100 / 300 / 500
+
+归一化：
+
+raw cosine vs L2 cosine
+robust-z vs percentile
+RRF only vs z+RRF
+global calibration vs query-local calibration
+
+seed：
+
+gamma: 0.5 / 0.7 / 0.85 / 1.0
+neutral_seed_weight: 0.2 / 0.35 / 0.5
+negative_penalty: 0.05 / 0.10 / 0.20
+centroid only vs max-seed only vs centroid+max
+
+fusion：
+
+manual weights
+manual weights + intent gates
+LTR without gates
+LTR with gates/features
+
+MMR：
+
+off
+artist penalty only
+artist+album penalty
+artist+album+dense penalty
+10. 可执行实现建议
+10.1 目录结构
+mcrs/retrieval_modules/multichannel/
+  embedding_store.py
+  faiss_index.py
+  intent_analyzer.py
+  candidate_generator.py
+  seed_tracker.py
+  feature_builder.py
+  fusion_ranker.py
+  ltr_ranker.py
+  postprocess.py
+  evaluate_ablation.py
+10.2 EmbeddingStore
+Python
+运行
+CHANNELS = {
+    "metadata": "metadata-qwen3_embedding_0.6b",
+    "lyrics": "lyrics-qwen3_embedding_0.6b",
+    "attributes": "attributes-qwen3_embedding_0.6b",
+    "audio": "audio-laion_clap",
+    "image": "image-siglip2",
+    "track_cf": "cf-bpr",
+}
+
+class EmbeddingStore:
+    def __init__(self, track_emb_ds, user_emb_ds):
+        self.track_ids = np.array(track_emb_ds["track_id"])
+        self.track_id_to_idx = {tid: i for i, tid in enumerate(self.track_ids)}
+        self.raw = {}
+        self.norm = {}
+        self.valid = {}
+
+        for name, col in CHANNELS.items():
+            X = load_vector_column(track_emb_ds[col])
+            self.raw[name] = X.astype(np.float32)
+            self.norm[name], self.valid[name] = l2_normalize_with_mask(X)
+
+        self.user_cf = load_user_cf(user_emb_ds)
+10.3 Candidate generator
+Python
+运行
+def generate_candidates(state, user_id, K):
+    C = CandidateSet()
+
+    # 1. lexical anchor
+    C.add("bm25", bm25.search(state.retrieval_text, topk=K.bm25))
+
+    # 2. direct dense query, only when query encoders are available
+    if encoders.qwen_available:
+        q_meta = encoders.qwen_embed(state.metadata_query)
+        C.add("q_metadata", faiss["metadata"].search(q_meta, K.metadata))
+
+        q_attr = encoders.qwen_embed(state.attribute_query)
+        C.add("q_attributes", faiss["attributes"].search(q_attr, K.attributes))
+
+        if state.intent.lyric:
+            q_lyr = encoders.qwen_embed(state.lyric_query)
+            C.add("q_lyrics", faiss["lyrics"].search(q_lyr, K.lyrics))
+
+    if state.intent.audio and encoders.clap_text_available:
+        q_audio = encoders.clap_text_embed(state.audio_query)
+        C.add("q_audio", faiss["audio"].search(q_audio, K.audio))
+
+    if state.intent.visual and encoders.siglip_text_available:
+        q_img = encoders.siglip_text_embed(state.visual_query)
+        C.add("q_image", faiss["image"].search(q_img, K.image))
+
+    # 3. official-embedding seed expansion
+    for ch in ["metadata", "attributes", "track_cf", "audio"]:
+        if state.has_positive_seeds(ch):
+            C.add(f"seed_{ch}", seed_knn(ch, state, K.seed))
+
+    if state.intent.lyric and state.has_positive_seeds("lyrics"):
+        C.add("seed_lyrics", seed_knn("lyrics", state, K.seed))
+
+    if state.intent.visual and state.has_positive_seeds("image"):
+        C.add("seed_image", seed_knn("image", state, K.seed))
+
+    # 4. user CF
+    if user_id in store.user_cf and not state.intent.exact_strong:
+        C.add("user_cf", topk_user_cf(user_id, K.user_cf))
+
+    return C
+10.4 Fusion ranker
+Python
+运行
+def rank_candidates(C, state, user_id):
+    F = feature_builder.build(C, state, user_id)
+
+    weights = get_base_weights()
+    weights = apply_intent_gates(weights, state.intent)
+
+    score = np.zeros(len(F))
+
+    for name, w in weights.items():
+        score += w * F[f"{name}_z"]
+
+    score += 0.20 * F["exact_title_match"]
+    score += 0.15 * F["exact_artist_match"]
+    score += 0.08 * F["year_match"]
+    score += 0.04 * F["popularity_z"]
+
+    score -= 0.15 * F["already_recommended"]
+    score -= 0.10 * F["neg_seed_max_z"]
+    score -= 0.03 * F["same_artist_repeat_count"]
+
+    return sort_by_score(C.track_ids, score)
+11. 第一周落地顺序
+Day 1：把 BM25 从 final ranker 改成 candidate generator
+- topk 20 → 1000/2000
+- 输出 candidate source/rank/score
+- 保证 all_tracks
+- 保存 candidate_recall@1000
+Day 2：接入 EmbeddingStore + FAISS
+- 逐通道 load + mask + L2 normalize
+- IndexFlatIP 即可，47k 量级不需要复杂 ANN
+- 先实现 seed_metadata / seed_attributes / seed_cf
+Day 3：实现 user-CF
+- raw dot(user_cf, track_cf)
+- topK user_cf candidates
+- candidate pool 内 robust-z
+- exact intent 下降权
+Day 4：实现 feature fusion
+- BM25 z/RRF
+- source present flags
+- seed scores
+- user_cf scores
+- metadata exact features
+- repeat penalties
+Day 5：加 gated modalities
+- lyrics intent: lyrics-qwen3
+- audio intent: audio-laion_clap
+- visual intent: image-siglip2
+Day 6：ablation + error analysis
+- 按 turn_number 看
+- 按 exact / broad / lyric / visual / audio 看
+- 看 top failed examples
+- 看 ground truth 是否进 candidate pool
+Day 7：训练 LTR
+- LightGBMRanker
+- group = session_id + turn_number
+- labels = ground-truth track vs sampled negatives
+- compare weighted fusion
+12. 最小可提交版本
+
+最小但有竞争力的版本：
+
+BM25 top2000
++ seed_metadata top500
++ seed_attributes top500
++ seed_cf top1000
++ user_cf top2000
++ robust-z calibration
++ exact title/artist/year features
++ repeat penalty
++ weighted fusion
++ top20 unique valid IDs
+
+然后再加：
+
++ direct metadata/attributes Qwen query embedding
++ gated lyrics
++ gated audio
++ gated image
++ LTR reranker
+13. 提交前 checklist
+[ ] 每个 session × turn 都有预测
+[ ] predicted_track_ids 长度 ≤ 20
+[ ] 无重复 track_id
+[ ] 所有 track_id 都在官方 catalog
+[ ] inference 从 all_tracks 检索
+[ ] 没有用当前 turn ground truth 或未来 turn 信息
+[ ] 没有用 goal_progress_assessments 做 blind inference feature
+[ ] 空 embedding / NaN embedding 被 mask
+[ ] 每个 channel 的分数做了 query-local calibration
+[ ] exact query 下 user-CF/audio/image 没有压过 lexical/entity match
+[ ] broad discovery 下 user-CF/attributes/seed 起作用
+[ ] visual query 下 image-siglip2 只作为 gated feature，不全局污染
+[ ] final JSON 严格符合 evaluator 字段
+
+一句话执行建议：先把 BM25 top20 baseline 改造成 BM25 top1000 candidate pool，然后立刻加 seed_metadata + seed_attributes + seed_cf + user_cf；这四个通常比先折腾 lyrics/audio/image 更稳。
+
+来源
+
+进阶专业
+ChatGPT 也可能会犯错。请核查重要信息。

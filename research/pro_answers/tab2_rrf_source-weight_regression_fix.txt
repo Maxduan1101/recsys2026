@@ -1,0 +1,493 @@
+You are helping with RecSys Challenge 2026 Music-CRS. I have a single-source BM25 baseline over conversation history and track metadata that gets dev nDCG@20 around 0.0859. I built GoalFlow with multiple BM25 sources: metadata_all, title_artist, album_artist, tags, train-context-enriched item docs, conversation_goal queries, seed/history queries, and RRF fusion. It improves catalog/lexical diversity but hurts nDCG@20 to 0.0679-0.0745 unless I fully protect the legacy BM25 top-20. Research question: how should I diagnose and fix this RRF source-weight regression so the added sources improve candidate recall or tail diversity without diluting top-rank nDCG? Give a concrete experiment plan and likely fixes for this exact Music-CRS setup.
+展开
+
+我会把 legacy BM25 作为已知有效的对照，重点诊断 GoalFlow 的各个 BM25/RRF 源究竟是在提升候选覆盖，还是在前 20 位注入排序噪声。
+
+评测本身对前几位排序很敏感：nDCG@1/10/20 按 turn/session 宏平均，而多样性是另算的，所以新增源应先作为召回或受控重排信号，而不是无条件竞争 top-20。
+
+已思考 11m 17s
+Diagnosis
+
+Your regression is almost certainly source-vote flooding, not proof that the new sources are useless. Uniform RRF turns every source into an equal voter. With the standard RRF form,
+
+RRF(d)=
+s
+∑
+	​
+
+k+r
+s
+	​
+
+(d)
+1
+	​
+
+
+and the original paper’s fixed k=60, a legacy rank-1 item contributes only 1/61≈0.0164. Four auxiliary sources putting a mediocre item at rank 20 contribute 4/80=0.05, easily beating the legacy top item. The original RRF paper explicitly notes that k mitigates high rankings by outlier systems, but in your setup the issue is the opposite: many correlated low-precision sources jointly outvote the one strong source. 
+戈弗雷·维尔·科马克
+
+This is especially damaging in Music-CRS because the dev evaluator extracts one ground-truth track per session-turn and computes binary nDCG over the ordered top-k list. A track is relevant only if it matches that exact ground-truth ID, so broad semantic diversity does not help unless it retrieves the exact hidden target. 
+GitHub
++1
+ The official evaluator also macro-averages nDCG@1/10/20 across turns and separately reports catalog and lexical diversity, so retrieval diversity is a secondary objective unless it preserves the exact-track rank. 
+GitHub
+
+So the fix is: use the new sources for candidate expansion, selective promotion, and lower-rank diversity; do not let them freely reorder the legacy top ranks.
+
+Experiment plan
+1. Build a per-turn source audit table
+
+For every dev session-turn, store the top 200 from each source, not just top 20:
+
+legacy_bm25, metadata_all, title_artist, album_artist, tags, train_context_docs, conversation_goal, seed_history.
+
+For each source and each turn, compute:
+
+Metric	Why it matters
+source-alone nDCG@1/10/20	Shows whether a source deserves top-rank authority
+Hit@20, Hit@100, Hit@200	Shows candidate recall value
+unique_hit@K over legacy	Tracks found by source but not legacy
+lost_hit count	Legacy hit pushed below 20 by fusion
+demoted_hit discount loss	Legacy hit retained but moved lower
+oracle nDCG@20 of union	Upper bound if ranking were perfect
+source contribution share	Which sources caused false positives to rise
+
+The most important diagnostic is this decomposition:
+
+legacy_hit = ground_truth in legacy_top20
+fused_hit  = ground_truth in fused_top20
+
+gained = not legacy_hit and fused_hit
+lost   = legacy_hit and not fused_hit
+demoted = legacy_hit and fused_hit and rank_fused(gt) > rank_legacy(gt)
+
+Then compute:
+
+ΔDCG=
+log
+2
+	​
+
+(r
+fused
+	​
+
++1)
+1
+	​
+
+−
+log
+2
+	​
+
+(r
+legacy
+	​
+
++1)
+1
+	​
+
+
+for the ground-truth track whenever it appears in both lists. If most regression is “lost” or “demoted” rather than lack of recall, the source docs are not the main problem; the final fusion rule is.
+
+2. Separate “candidate recall” from “final rank quality”
+
+Run these four evaluations:
+
+Run	Candidate set	Final ranker	Purpose
+A	legacy top20	legacy	current strong baseline
+B	union of all sources top200	oracle	shows whether added sources can help
+C	union of all sources top200	uniform RRF	current failure mode
+D	union of all sources top200	legacy-score rerank + features	tests whether sources help as recall features
+
+Interpretation:
+
+If B is not higher than A, the added sources are not retrieving missing positives; they should only be used for diversity after rank 10 or 15.
+
+If B is much higher than A but C is lower, RRF is the problem. That is the likely case from your numbers.
+
+If D beats A, keep the sources but replace RRF as the final ranker.
+
+3. Run source ablations in add-one and leave-one-out form
+
+Do not start with all sources. Use this matrix:
+
+legacy only
+legacy + metadata_all
+legacy + title_artist
+legacy + album_artist
+legacy + tags
+legacy + train_context_docs
+legacy + conversation_goal
+legacy + seed_history
+
+all - metadata_all
+all - title_artist
+all - album_artist
+all - tags
+all - train_context_docs
+all - conversation_goal
+all - seed_history
+
+For each, log:
+
+nDCG@1, nDCG@10, nDCG@20
+Hit@20
+oracle_union_nDCG@20
+catalog_diversity
+lost_hits_vs_legacy
+gained_hits_vs_legacy
+
+A source should get top-rank weight only if it has positive gained_hits - lost_hits or improves nDCG in some segment. A source that has high unique recall but high lost-hit damage becomes a candidate-only source.
+
+4. Segment by turn number and goal specificity
+
+The TalkPlayData rows expose conversation_goal fields such as category, listener goal, and specificity, and the conversations include multiple turns. 
+Hugging Face
+ Segment results by:
+
+turn_number: 1..8
+specificity: LL, LH, HL, HH
+named_artist_present: yes/no
+named_track_or_album_present: yes/no
+history_music_count
+positive_feedback_detected
+negative_feedback_detected
+
+Likely patterns:
+
+High-specificity “find this song/album/artist” turns should favor title_artist, album_artist, and exact metadata.
+
+Low-specificity “discover something mellow/intense/dramatic” turns may benefit from tags and train-context docs, but those should mostly affect positions 11–20.
+
+Later turns should trust user feedback more than the original conversation goal.
+
+Seed/history queries should be weighted only when previous music IDs are actually positive evidence. A prior system recommendation followed by negative feedback is not a seed; it is a drift trap.
+
+5. Sweep RRF weights, but with group caps
+
+Do not tune eight independent equal voters. First group correlated sources:
+
+G0: legacy_bm25
+G1: metadata fields = metadata_all, title_artist, album_artist
+G2: tags
+G3: train_context_docs
+G4: query variants = conversation_goal, seed_history
+
+Within each group, use max, not sum:
+
+g
+m
+	​
+
+(d)=
+s∈G
+m
+	​
+
+max
+	​
+
+v
+s
+	​
+
+(d)
+
+where:
+
+v
+s
+	​
+
+(d)={
+k
+s
+	​
+
++r
+s
+	​
+
+(d)
+k
+s
+	​
+
++1
+	​
+
+0
+	​
+
+d∈s
+otherwise
+	​
+
+
+This normalization makes rank 1 equal to 1 regardless of k
+s
+	​
+
+.
+
+Start with this scoring rule:
+
+score =
+  1.00 * v_legacy
++ 0.25 * max(v_metadata_all, v_title_artist, v_album_artist)
++ 0.15 * v_tags
++ 0.15 * v_train_context
++ 0.20 * gate_goal * v_conversation_goal
++ 0.10 * gate_seed * v_seed_history
+
+Initial k_s values:
+
+legacy: 10 or 20
+metadata field group: 30 or 60
+tags: 100 or 200
+train_context_docs: 100 or 200
+goal/seed queries: 60 or 120
+
+Sweep:
+
+legacy weight: 1.0, 1.5, 2.0, 3.0
+metadata group weight: 0.1, 0.25, 0.5
+tags weight: 0, 0.05, 0.15, 0.3
+train-context weight: 0, 0.05, 0.15, 0.3
+goal weight: 0, 0.1, 0.2, 0.4
+seed weight: 0, 0.05, 0.1, 0.2
+protect prefix: 0, 3, 5, 8, 10
+aux-only cap in top20: 0, 2, 3, 5
+
+Select by cross-validation over sessions, not by one best dev run. The Hugging Face dataset currently exposes train and test/dev-style splits, so use train for fitting/tuning and reserve dev for final confirmation. 
+Hugging Face
+
+Likely fixes for your exact setup
+Fix 1: Replace uniform RRF with legacy-anchored, group-capped RRF
+
+Uniform RRF is treating metadata_all, title_artist, and album_artist as three independent confirmations, even though they are mostly correlated field views of the same evidence. Collapse them into one metadata group vote.
+
+A good first production candidate:
+
+1. Retrieve:
+   legacy top200
+   metadata/title/album top100 each
+   tags top200
+   train-context top200
+   goal top100
+   seed/history top100
+
+2. Score with group-capped weighted RRF.
+
+3. Hard rules:
+   - Keep legacy top5 fixed.
+   - Positions 6–10: allow an auxiliary item only if it is also in legacy top100
+     or appears in at least 2 source groups.
+   - Positions 11–20: allow at most 3 aux-only items.
+
+This gives the new sources room to recover missing positives without letting them erase the high-confidence legacy prefix.
+
+Fix 2: Use all sources for candidate generation, then rerank by calibrated features
+
+RRF should become a feature, not the final decision. Build a union candidate pool and train a simple reranker:
+
+candidate_pool = union(
+    legacy top300,
+    metadata_all top200,
+    title_artist top200,
+    album_artist top200,
+    tags top300,
+    train_context_docs top300,
+    goal top200,
+    seed_history top200
+)
+
+Features per candidate:
+
+legacy_rank
+legacy_bm25_score_z
+metadata_all_rank
+title_artist_rank
+album_artist_rank
+tags_rank
+train_context_rank
+goal_rank
+seed_history_rank
+num_source_groups_present
+max_group_rrf
+sum_group_rrf
+exact_artist_match
+exact_track_title_match
+exact_album_match
+tag_overlap_with_query
+same_artist_as_positive_seed
+same_album_as_positive_seed
+release_year_match
+popularity
+turn_number
+goal_specificity
+negative_feedback_penalty
+
+Start with logistic regression or LightGBM/LambdaMART. Because there is one positive per session-turn in the dev evaluator, pair each positive with sampled negatives from the candidate pool and optimize the positive to rank above negatives. The official baseline repo already frames the system as a retrieval stage plus response generation, and its extension suggestions include adding a reranker. 
+GitHub
+
+A strong non-ML fallback is:
+
+score =
+  1.00 * legacy_score_z
++ 0.10 * metadata_group_rrf
++ 0.06 * tags_rrf
++ 0.06 * train_context_rrf
++ 0.08 * goal_rrf
++ 0.04 * seed_rrf
++ 0.05 * exact_entity_bonus
++ 0.03 * popularity_z
+- 0.10 * negative_feedback_penalty
+
+Tune the coefficients by coordinate ascent on session-level folds.
+
+Fix 3: Make source authority conditional
+
+Use gates, not global weights.
+
+For conversation_goal:
+
+gate_goal = 1.0 for turns 1–2
+gate_goal = 0.5 for turns 3–5
+gate_goal = 0.2 for turns 6–8
+gate_goal *= 0.5 if latest user message contains correction/negation
+gate_goal *= 1.5 if latest query is very short or vague
+
+For seed_history:
+
+gate_seed = 1.0 only for positive-feedback history
+gate_seed = 0.3 for neutral prior recommendations
+gate_seed = 0.0 or negative penalty after rejection/negation
+
+For title_artist and album_artist:
+
+boost only when named entities are present:
+- artist name in query/history
+- track title-like quoted phrase
+- album mention
+- "from the album", "by", "song called", "that track"
+
+For tags and train-context docs:
+
+never promote above rank 10 unless:
+- legacy also retrieves the item in top100, or
+- at least two independent groups agree, or
+- exact artist/entity match exists
+Fix 4: Clean the tag source aggressively
+
+The track metadata has tag_list, popularity, release date, duration, title, artist, album, and IDs. 
+Hugging Face
+ In the sample rows, tags include useful descriptors like “ambient,” “downtempo,” “alternative rock,” and “funk metal,” but also noisy user-generated strings, names, duplicates, and idiosyncratic labels. 
+Hugging Face
+
+For tags:
+
+lowercase
+dedupe case variants
+remove tags with digits-only or personal-name-like patterns
+remove ultra-rare one-off tags
+remove ultra-common tags that add little discrimination
+map variants:
+  hip-hop, hip hop, Hip-Hop/Rap -> hip hop
+  alt rock, alternative, alternative rock -> alternative rock
+limit each item to top N canonical tags
+
+Then use tags mainly for broad mood/genre discovery, not exact-track search.
+
+Fix 5: Rebuild train-context-enriched item docs as low-noise descriptors
+
+Train-context item docs can help if they contain phrases that explain why a track was recommended. They hurt if they memorize synthetic assistant phrasing, include wrong-turn context, or overrepresent popular tracks.
+
+Build them like this:
+
+For each ground-truth track in train:
+  collect only user utterances before that track was recommended
+  collect positive assistant rationale only if the turn moved toward the goal
+  exclude turns marked or inferred as negative
+  strip UUIDs
+  strip generic phrases:
+    "here are", "you might like", "since you enjoyed"
+  keep artist, album, genre, mood, era, instrumentation, energy words
+  cap per-track context length
+
+Then treat this source as:
+
+candidate recall: yes
+top-10 authority: mostly no
+Fix 6: Do diversity after relevance ranking, not inside top-rank fusion
+
+Since catalog diversity and lexical diversity are computed separately from nDCG, do not buy diversity by damaging positions 1–10. 
+GitHub
+ Use a two-zone list:
+
+positions 1–10: relevance locked
+positions 11–20: mild diversity rerank
+
+For positions 11–20, apply MMR or a simple penalty:
+
+score_tail =
+  relevance_score
+- 0.02 * same_artist_already_in_list
+- 0.01 * same_album_already_in_list
++ 0.01 * catalog_novelty
+
+Only apply this when relevance scores are close, for example within 2–3% of each other. Lexical diversity should mostly be handled in predicted_response, not by changing tracks.
+
+The decision tree I would use
+
+After running the diagnostics, choose fixes based on this table:
+
+Observation	Meaning	Fix
+Union oracle barely beats legacy	New sources do not find extra positives	Use them only for tail diversity
+Union oracle beats legacy, RRF loses	Ranking/fusion failure	Use weighted group-capped RRF or reranker
+One source has high unique Hit@200 but poor nDCG@20	Good recall, bad precision	Candidate-only source
+Source helps only certain specificity/category segments	Conditional value	Add gates by goal/query type
+Full top20 protection recovers nDCG	Top-rank dilution	Protect top5/top10, cap aux-only items
+Tags improve diversity but lose hits	Noisy semantic expansion	Clean tags and restrict to positions 11–20
+Seed/history hurts later turns	False-positive seed drift	Sentiment/feedback gate previous music IDs
+Best next three runs
+
+Run these before doing more source engineering:
+
+Run 1: Legacy prefix + group-capped weighted RRF
+
+protect legacy top5
+aux-only cap: 3 items, ranks 11–20 only
+legacy weight: 1.5
+metadata group: 0.25
+tags: 0.10
+train-context: 0.10
+goal: 0.20 gated
+seed/history: 0.05 gated
+
+Run 2: Candidate union + legacy-dominant reranker
+
+candidate union top300/source
+final score mostly legacy BM25 z-score
+RRF/source features as small additive boosts
+no aux-only item above rank10 unless 2 source groups agree
+
+Run 3: Relevance list + tail diversity only
+
+take best relevance run
+lock top10
+rerank ranks 11–20 with mild artist/album diversity
+generate more varied natural-language responses separately
+
+My expectation is that Run 1 should recover most of the 0.0859 legacy score while preserving some diversity gain. Run 2 is the one most likely to beat the legacy baseline, because it lets the added sources improve recall without giving them uncontrolled top-rank voting power.
+
+来源
+请继续输出完整答案。上一条只显示了开头。直接给结论、实验计划和可执行建议，不要重新解释题目。
+Pro 思考中
+
+进阶专业
+ChatGPT 也可能会犯错。请核查重要信息。

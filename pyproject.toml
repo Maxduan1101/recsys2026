@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "goalflow-musiccrs"
+version = "0.1.0"
+description = "GoalFlow-MusicCRS: goal-aware conversational music recommendation experiments."
+requires-python = ">=3.10"
+dependencies = [
+  "bm25s>=0.3.9",
+  "datasets>=4.8.5",
+  "numpy>=2.0.0",
+  "pandas>=2.0.0",
+  "tqdm>=4.66.0",
+]
+
+[tool.setuptools]
+packages = ["goalflow"]

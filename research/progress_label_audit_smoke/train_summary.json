@@ -1,0 +1,45 @@
+{
+  "dataset_name": "talkpl-ai/TalkPlayData-Challenge-Dataset",
+  "split": "train",
+  "sessions_scanned": 15199,
+  "turn_records_scanned": 121592,
+  "missing_labels": 15199,
+  "label_counts": {
+    "<missing>": 15199,
+    "MOVES_TOWARD_GOAL": 53885,
+    "DOES_NOT_MOVE_TOWARD_GOAL": 52508
+  },
+  "label_counts_by_turn": {
+    "1": {
+      "<missing>": 15199
+    },
+    "2": {
+      "MOVES_TOWARD_GOAL": 8392,
+      "DOES_NOT_MOVE_TOWARD_GOAL": 6807
+    },
+    "3": {
+      "DOES_NOT_MOVE_TOWARD_GOAL": 7302,
+      "MOVES_TOWARD_GOAL": 7897
+    },
+    "4": {
+      "DOES_NOT_MOVE_TOWARD_GOAL": 7752,
+      "MOVES_TOWARD_GOAL": 7447
+    },
+    "5": {
+      "DOES_NOT_MOVE_TOWARD_GOAL": 7844,
+      "MOVES_TOWARD_GOAL": 7355
+    },
+    "6": {
+      "DOES_NOT_MOVE_TOWARD_GOAL": 7941,
+      "MOVES_TOWARD_GOAL": 7258
+    },
+    "7": {
+      "DOES_NOT_MOVE_TOWARD_GOAL": 7964,
+      "MOVES_TOWARD_GOAL": 7235
+    },
+    "8": {
+      "DOES_NOT_MOVE_TOWARD_GOAL": 6898,
+      "MOVES_TOWARD_GOAL": 8301
+    }
+  }
+}

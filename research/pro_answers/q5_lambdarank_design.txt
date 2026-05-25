@@ -1,0 +1,388 @@
+You are helping with RecSys Challenge 2026 Music-CRS. I have BM25/RRF candidate generation for each session-turn and want to train a LightGBM or CatBoost LambdaRank reranker. Research question: design the first strong learning-to-rank reranker for this dataset: training rows, grouping, positive labels, hard negative sampling, feature set, validation split, objective, metrics, and how to avoid train/dev leakage. Assume the candidate pool comes from BM25, enriched BM25, entity match, positive/negative seed similarity, and popularity/CF features.
+
+我会先基于 Music-CRS 当前任务设定梳理约束，再给出一个可直接实现的强基线 LambdaRank 重排方案，覆盖样本行、分组标签、负采样、特征、验证、指标与泄漏控制。
+
+一个关键结论是：官方评测以每个 session-turn 的单个真实曲目为目标，按 binary nDCG@1/10/20 评估；训练分组应是 (session_id, turn_number)，并且上下文只能包含目标轮之前的历史加当前用户请求。
+
+已思考 14m 18s
+Recommended design: one LambdaRank query = one session_id × turn_number
+
+Treat each session-turn as a ranking query/group. The official dev evaluator extracts exactly one ground-truth track per turn from the current turn’s music item, and evaluates ranked predicted_track_ids with nDCG@1/10/20. The baseline dev inference parser also excludes the target turn’s music/assistant output from history and uses only prior turns plus the current user message, so your training row builder should mirror that causality exactly. 
+GitHub
++1
+
+The core training row should be:
+
+qid = session_id + "::" + turn_number
+row = (qid, user_id, session_id, turn_number, candidate_track_id, label, features...)
+label = 1 if candidate_track_id == ground_truth_track_id_for_this_turn else 0
+group = all candidate rows for the same qid
+
+The public train/development dataset currently has 15.2k train session rows and 1k test/dev session rows, each with 8 turns, so the natural training set is roughly 121k ranking groups before filtering. 
+Hugging Face
+
+Candidate pool for training and inference
+
+Use the same multi-source retrieval pool at train, validation, dev, and blind inference time. The official baseline warns that inference must retrieve from the full all_tracks catalog rather than filtering by track split, so build every generator against all_tracks and never use track_split_types as a feature. 
+GitHub
+
+For each qid, form a union such as:
+
+top 500  BM25 current user query
+top 500  BM25 full causal context: prior turns + current user query
+top 500  enriched BM25: track, artist, album, tags, release year
+top 200  entity/exact-match candidates
+top 300  positive-seed similarity candidates
+top 300  negative-seed contrast candidates
+top 300  user-CF / popularity / profile candidates
+
+Then deduplicate by track_id and retain the top 1k–2k by RRF for inference. For training, do not train on all 2k candidates initially; sample 64–128 negatives per group for the first strong model, and scale to 256 only if memory allows.
+
+For training only, inject the positive target if it is missing from the candidate union, but log this as candidate_recall_miss=1. Groups without the positive produce no useful LambdaRank pairs, so either inject the positive or skip them. For validation and official dev scoring, report two numbers: “reranker oracle” with positive injected, and the honest end-to-end score without injection.
+
+Positive and negative labels
+
+Use binary labels first:
+
+label = 1  exact current-turn ground-truth track
+label = 0  every other sampled candidate
+
+This matches the official evaluator, where rel_i = 1 only if the predicted track matches the ground-truth track and 0 otherwise. With one relevant track per qid, nDCG@k is simply 1 / log2(rank + 1) if the target appears by k, otherwise zero. 
+GitHub
++1
+
+Do not label “same artist,” “same album,” “similar mood,” or previous liked tracks as positives in the main model. They are useful features and retrieval seeds, but the official retrieval metric rewards exact track recovery. A graded-label model can be an ablation later, but for the first strong reranker binary labels are cleaner.
+
+Hard negative sampling
+
+For each qid, include the positive plus a deterministic mix of negatives:
+
+A. all top-20 candidates from every generator
+B. top 100–200 by RRF after dedupe
+C. top lexical/entity near misses: same artist, same album, same title tokens, same year/decade
+D. high positive-seed-similarity tracks that are not the target
+E. high negative-seed-similarity tracks, because the model must learn when to avoid them
+F. high-popularity / high-CF tracks that are plausible but wrong
+G. 5–10 random or popularity-stratified negatives for calibration
+
+Be careful with same-artist and same-mood negatives: they are often plausible recommendations, especially for exploratory goals. Sample them, but do not let them dominate. For exploratory turns, keep more diverse hard negatives; for highly specific turns, prioritize exact-title/artist/album near misses.
+
+A good starting group size is:
+
+1 positive
+32 top-RRF negatives
+16 per-source top negatives
+16 entity/lexical near misses
+16 seed-similarity negatives
+8 popularity/CF negatives
+8 random/pop-stratified negatives
+≈ 97 rows per qid
+Feature set
+
+The strongest first reranker will mostly win by combining retrieval-rank, entity, seed, user-CF, and metadata signals. The challenge provides track metadata, user metadata, and pre-extracted user/track embeddings, including track audio/image/CF/text embeddings and user CF embeddings, so make these numeric pairwise features rather than feeding large raw embeddings into the GBDT. 
+NLP4MUSA
++2
+Hugging Face
++2
+
+Retrieval/source features
+
+For every candidate and every generator:
+
+present_in_source
+source_rank
+1 / (rank + c)
+raw_score
+score_z_within_qid
+score_minmax_within_qid
+source_top1 / top3 / top10 / top20 flags
+RRF contribution
+number_of_sources_that_retrieved_candidate
+best_rank_across_sources
+mean_rank_across_sources
+
+This feature family alone usually gives a large lift over plain RRF because the ranker learns which generator is reliable for which intent/turn.
+
+Lexical and entity-match features
+
+Compute against the current user query, full causal context, conversation goal, and last user utterance:
+
+BM25(track_name, query)
+BM25(artist_name, query)
+BM25(album_name, query)
+BM25(tag_list, query)
+BM25(full_metadata, query)
+exact artist mentioned
+exact album mentioned
+exact track/title token match
+fuzzy title similarity
+tag overlap
+requested decade/year match
+release_year distance to requested year/decade
+query token overlap with title / artist / album / tags
+
+The conversation_goal is visible in the public dataset and blind examples, so it is usable if challenge rules allow it. Avoid using any current-turn music/assistant fields as input.
+
+Seed features from previous turns
+
+Build seed sets only from already-observed conversation history. For turn t, previous recommended tracks are turns < t; the current target track is never a seed.
+
+If you use goal_progress_assessments, align them causally: the assessment available at user turn t can be used as feedback about the previous recommendation, but never use assessment from t+1 to train features for turn t. If rules or blind-format uncertainty make you nervous, derive positive/negative seeds from the user text instead.
+
+Useful seed features:
+
+num_positive_seeds
+num_negative_seeds
+candidate_seen_before
+same_artist_as_positive_seed
+same_artist_as_negative_seed
+same_album_as_seed
+max / mean cosine(candidate, positive_seeds) for:
+  cf-bpr
+  metadata-qwen
+  lyrics-qwen
+  attributes-qwen
+  audio-laion_clap
+  image-siglip2
+max / mean cosine(candidate, negative_seeds)
+positive_similarity - negative_similarity
+similarity_to_last_recommended_track
+
+Add intent gates:
+
+query_says_more_like_previous
+query_says_not_that / different / avoid
+query_says_same_artist
+query_says_specific_song
+query_says_discover / similar vibe
+
+This lets the model learn that high similarity to the last liked track is good for “more like that” but bad after negative feedback.
+
+User and CF features
+
+Use the provided user and track cf-bpr embeddings:
+
+dot(user_cf, track_cf)
+cosine(user_cf, track_cf)
+rank of candidate by user_cf dot product
+candidate popularity
+log1p(popularity)
+artist mean popularity
+album mean popularity
+country / age_group / preferred_musical_culture interactions
+
+For LightGBM, one-hot or frequency-encode categorical features with fold-safe encodings. For CatBoost, pass categorical columns directly.
+
+Item metadata features
+
+release_year
+release_decade
+duration
+log_duration
+num_artists
+num_albums
+num_tags
+is_multi_artist
+artist_catalog_size
+album_track_count
+popularity_percentile
+
+Do not use user_split, track_split_types, test_tracks, dataset split names, row order, or anything that identifies train/dev/blind membership.
+
+Turn/session features
+
+turn_number
+session_date year/month
+query_length
+history_length
+num_previous_recommendations
+goal_category
+goal_specificity
+listener_goal_length
+current_query_mentions_artist / album / year / genre / mood
+
+The official evaluator macro-averages over turns and sessions, so turn-aware features and per-turn diagnostics matter. 
+GitHub
+
+Validation split
+
+Do not tune directly on the public dev/test split. Use it as a final sanity check after local validation.
+
+I would use three local validations from the train split:
+
+Primary: GroupKFold by user_id
+  All sessions and turns for a user stay in either train or validation.
+  This avoids memorizing user taste across sessions.
+
+Secondary: GroupKFold by session_id
+  Faster and less strict.
+  Useful for rapid feature iteration.
+
+Stress test: temporal split by session_date
+  Train on earlier sessions, validate on later sessions.
+  Useful for checking popularity/release-year leakage.
+
+Within any fold, keep all 8 turns of a session in the same side of the split. A random row split by session_id × turn leaks future turns and user feedback from the same dialogue.
+
+For each validation qid, compute:
+
+candidate_recall@20 / @100 / @500 / @1000
+nDCG@1 / @10 / @20, official macro averaging
+MRR@20, diagnostic only
+Hit@20, diagnostic only
+per-turn nDCG
+per-goal-category nDCG
+per-specificity nDCG
+cold/warm-user diagnostics, analysis only
+
+The official baseline dev table reports LLaMA-1B + BM25 at nDCG@1 0.0098, nDCG@10 0.0627, and nDCG@20 0.0815, which is a reasonable first target to beat. 
+GitHub
+
+LightGBM objective and parameters
+
+Use LightGBM first if your feature matrix is mostly numeric. LightGBM’s ranking objective expects integer relevance labels and query/group information; in Python the group array is the number of rows in each consecutive query group, and data must be ordered by query. 
+LightGBM
++1
+
+Starting configuration:
+
+Python
+运行
+params = dict(
+    objective="lambdarank",
+    metric="ndcg",
+    eval_at=[1, 10, 20],
+    label_gain=[0, 1],
+    lambdarank_truncation_level=23,  # slightly above target @20
+    lambdarank_norm=True,
+
+    learning_rate=0.04,
+    n_estimators=3000,
+    num_leaves=63,
+    max_depth=-1,
+    min_data_in_leaf=80,
+    feature_fraction=0.85,
+    bagging_fraction=0.85,
+    bagging_freq=1,
+    lambda_l1=0.0,
+    lambda_l2=5.0,
+    random_state=42,
+)
+
+LightGBM’s docs note that lambdarank_truncation_level should be close to the desired NDCG cutoff and often slightly above it, so 23 or 30 are good choices for this challenge’s @20 target. 
+LightGBM
+
+Train with early stopping on local validation nDCG@20, but select final checkpoints by a composite aligned to the leaderboard, for example:
+
+0.25 * nDCG@1 + 0.35 * nDCG@10 + 0.40 * nDCG@20
+
+If top-1 is much more important on the leaderboard than the public docs imply, shift weight toward nDCG@1.
+
+Also test objective="rank_xendcg" as an ablation; LightGBM documents it as faster with similar performance to lambdarank. 
+LightGBM
+
+CatBoost alternative
+
+Use CatBoost if categorical features like country_code, age_group, gender, goal category, specificity, and parsed intent categories are strong. CatBoostRanker supports ranking, Pool accepts group_id, and all rows with the same group id must be contiguous. 
+CatBoost
++1
+
+Good starting point:
+
+Python
+运行
+from catboost import CatBoostRanker, Pool
+
+train_pool = Pool(
+    X_train,
+    label=y_train,
+    group_id=qid_train,
+    cat_features=cat_cols,
+)
+
+valid_pool = Pool(
+    X_valid,
+    label=y_valid,
+    group_id=qid_valid,
+    cat_features=cat_cols,
+)
+
+model = CatBoostRanker(
+    loss_function="YetiRank:mode=NDCG;top=20",
+    eval_metric="NDCG:top=20",
+    iterations=3000,
+    learning_rate=0.05,
+    depth=8,
+    l2_leaf_reg=10,
+    random_seed=42,
+    early_stopping_rounds=150,
+)
+model.fit(train_pool, eval_set=valid_pool, use_best_model=True)
+
+CatBoost’s ranking docs also include LambdaMart:metric=NDCG; try it if CPU time is acceptable. The docs note that non-classic YetiRank modes such as NDCG mode are CPU-only, so LightGBM may be faster for large-scale iterations. 
+CatBoost
+
+Inference and post-processing
+
+At inference:
+
+1. Build causal context exactly like official blind inference:
+   history = all provided previous conversation entries
+   current query = final user message / target turn user message
+
+2. Generate full candidate union from all sources over all_tracks.
+
+3. Compute the same features, with no training-only columns.
+
+4. Score every candidate with ranker.
+
+5. Sort by:
+   model_score desc,
+   RRF score desc,
+   best source rank asc
+   as tie-breakers.
+
+6. Remove duplicate track_ids.
+
+7. Optionally down-rank already-recommended tracks from previous turns.
+
+8. Output top 20 unique track IDs.
+
+The official submission format requires one ordered list of up to 20 valid, unique track IDs per prediction, and order matters. 
+GitHub
+
+I would not use an aggressive diversity post-ranker for the first model. It may improve catalog coverage but can easily push the single exact target below rank 20. If catalog diversity becomes a leaderboard issue, apply a tiny MMR only within ranks 11–20, leaving the top 10 untouched.
+
+Leakage checklist
+
+The main leakage traps for this challenge are unusually easy to fall into:
+
+Do not use current-turn music track ID except as the training label.
+Do not use current-turn assistant response or music-role thought text.
+Do not use future turns in the same session.
+Do not use goal_progress_assessment from after the predicted recommendation.
+Do not split train/validation randomly by turn.
+Do not tune repeatedly on public dev labels.
+Do not train CF/popularity statistics using dev/blind target tracks.
+Do not use user_split, track split, row order, or split membership as features.
+Do not filter inference catalog to a track subset.
+Do not normalize or target-encode using validation/dev labels.
+
+Safe inputs are prior conversation content, current user message, user profile, conversation goal if exposed at inference, full static track metadata, provided embeddings, and per-query retrieval scores computed over the allowed catalog.
+
+First experiment I would run
+
+Build this in four stages:
+
+Run 1: RRF-only baseline over your full candidate union.
+Run 2: LightGBM with only retrieval/source/rank features.
+Run 3: Add lexical/entity features.
+Run 4: Add seed similarity + user-CF + metadata features.
+Run 5: CatBoost with categorical features as a comparison.
+
+The most important diagnostic is not model nDCG at first; it is candidate recall. If the target is not in the candidate pool, no reranker can recover it. Aim for high honest candidate recall@1000, then use the reranker to move recovered targets into the top 20 and especially top 10.
+
+来源
+
+进阶专业
+ChatGPT 也可能会犯错。请核查重要信息。

@@ -1,0 +1,244 @@
+You are helping with RecSys Challenge 2026 Music-CRS. I augment each track document with training user queries, conversation goals, assistant explanations, and selection reasons from turns where that track is the gold recommended item. This can improve natural-language-to-track matching, but it may risk overfitting or leakage if dev labels are later folded in before blind submission. Research question: what is the cleanest train/dev/blind protocol for track document augmentation in this challenge, and how should I design ablations to prove the method is legitimate and useful?
+
+我会先以挑战的数据划分和评测规则为基础，区分可安全用于训练的增强与会污染开发/盲测评估的做法，再给出能证明非泄漏收益的消融方案。
+
+我已确认一个关键边界：推理仍必须在完整 all_tracks 目录上检索，不能缩小候选集；需要冻结的是增强文本的标签来源，并把它视为监督学习产物而非原始元数据。
+
+已思考 10m 24s
+Recommendation
+
+Use train-only label-conditioned augmentation as the main, clean protocol. Treat your augmented track documents as a supervised artifact derived from relevance labels: they are allowed to use public training labels, but they must not contain text derived from the evaluation split whose score you are reporting.
+
+For this challenge, that means: build the official dev-evaluation index from track metadata + train-derived augmentation only, evaluate on dev, choose hyperparameters, freeze the pipeline, and submit to blind. The public challenge setup supports this framing: train/development have ground truth, blind sets withhold ground truth, and blind scoring is server-side; the evaluator also notes that full blind evaluation includes server-side metrics kept hidden to prevent leakage. 
+NLP4MUSA
+ 
+GitHub
+
+The challenge also requires recommendation over the full catalog at inference; do not restrict retrieval to a subset of tracks when testing ablations or submitting. The baseline README explicitly warns that inference must retrieve from all_tracks, not filtered track_split_types. 
+GitHub
+
+The clean train/dev/blind protocol
+1. Define two kinds of track text
+
+Call the original catalog fields intrinsic text:
+
+track_name, artist_name, album_name, tag_list, release_date, popularity/audio/user/track embeddings if used
+
+Call your added text label-derived text:
+
+training user utterances, conversation goals, assistant explanations, thought/selection reasons, goal-progress labels, accepted/rejected trajectory evidence
+
+This distinction is important. Intrinsic text is safe everywhere. Label-derived text is safe only when it comes from a split that is allowed to train the model for the target evaluation.
+
+2. Main research protocol: train-derived augmentation only
+
+For every reported dev result:
+
+index/dev_eval = intrinsic catalog text + augmentation mined only from official train sessions
+
+Then evaluate on official development. Do not include any development user queries, dev conversation goals, dev assistant reasons, or dev gold-track mappings in the documents used for dev evaluation.
+
+This lets you make the strongest claim:
+
+“The improvement comes from supervised track-document enrichment learned from training conversations, not from copying the evaluation split into the retrieval corpus.”
+
+The official dataset page shows the train/development dataset has public train and test/dev splits, with fields such as conversation_goal, conversations, goal_progress_assessments, and user profiles; those are exactly the fields you are mining, so they need split discipline. 
+Hugging Face
+
+3. Final blind protocol: choose one of two honest variants
+
+The cleanest variant is:
+
+index/blind = intrinsic catalog text + augmentation mined only from official train sessions
+
+This is scientifically safest and easiest to defend.
+
+A second variant is acceptable only if disclosed clearly:
+
+index/blind_final_public = intrinsic catalog text + augmentation mined from train + dev labels after all choices are frozen
+
+Because dev labels are public, this may be contest-legitimate unless the organizers explicitly forbid it. But it changes the claim. You should not use this model’s dev score as evidence, because the dev labels are now inside the index. Report it as a final public-label retrain or train+dev final model, analogous to retraining on all labeled public data before a blind test. Keep the main ablation table train-only.
+
+A good paper/table structure is:
+
+Result type	Augmentation source	Used for
+Main dev ablation	Train only	Scientific evidence
+Final strict blind	Train only	Clean blind submission
+Optional final blind	Train + dev after freeze	Extra contest submission, disclosed
+
+Do not do this: tune on dev, fold dev labels into track docs, re-evaluate on dev, and present that as a normal dev result. That is target leakage.
+
+4. Use Blind A and Blind B conservatively
+
+The public docs indicate blind sets are label-withheld and scored through the official leaderboard; the final ranking is based on Blind B. 
+NLP4MUSA
+ Use blind conversations only as inference inputs. Never mine blind assistant/music turns, inferred labels, leaderboard feedback, or repeated submissions into the index.
+
+If Blind A leaderboard feedback is available, treat it as a public leaderboard: useful for sanity checks, but not a place to run dozens of augmentation variants. Choose variants on train/dev, then use Blind A sparingly. Reserve Blind B for the final frozen system.
+
+Internal validation design
+
+Before touching official dev, create a split inside official train:
+
+train_inner → build augmentation
+valid_inner → evaluate
+
+Use this for feature engineering and hyperparameter selection. The most defensible split is session-disjoint, and preferably user-disjoint if there are enough sessions per user. Also run a temporal split using session_date if you want a realistic “past conversations improve future retrieval” story.
+
+For each internal split, enforce:
+
+augmentation_source_sessions ∩ evaluation_sessions = ∅
+
+The same track can appear in both source and evaluation. That is not automatically leakage; the whole point is to improve reusable item representations. The forbidden part is using the held-out query/goal/reason attached to that held-out gold label.
+
+Leakage guards to implement
+
+Put these in code, not just in prose.
+
+Manifest every index build. Save source_split, source_session_ids, source_turn_ids, dataset revision, extractor version, random seed, number of augmented tracks, snippets per track, and per-track cap.
+
+Fail closed. The builder should refuse to build an evaluation index if eval_split appears in augmentation_source_splits.
+
+Hash held-out text. Normalize user utterances and goals from the eval split, hash them, and assert none appear in augmented fields. This catches accidental dev-text ingestion.
+
+Track ID is okay; eval text is not. All catalog track IDs are available, and predictions must use valid track IDs from the track metadata. 
+GitHub
+ The leak is not “the gold track exists in the catalog”; the leak is “the held-out query/goal/reason was written into that track’s document.”
+
+Use full-catalog inference. Every ablation should retrieve over all_tracks, since the official baseline instructions say filtered inference may be invalid. 
+GitHub
+
+Ablations that prove the method is legitimate
+A. Core usefulness ablation
+
+Run all with the same retriever/reranker and full catalog.
+
+Condition	Track document contents	Purpose
+Metadata only	name, artist, album, tags, release date	Baseline
++ train user queries	Add only user utterances from train turns where track is gold	Tests natural-language matching
++ train conversation goals	Add listener goals	Tests abstract intent matching
++ assistant explanations	Add assistant response/reason text	Tests explanation-as-item-description
++ selection reasons/thoughts	Add internal selection rationale if available	Tests whether latent rationale helps
+Full augmentation	All safe train-derived fields	Main method
+
+Report nDCG@1, nDCG@10, nDCG@20, and diversity. The official evaluator uses nDCG@1/10/20 macro-averaged over turns and sessions, plus catalog and lexical diversity. 
+GitHub
+
+B. Anti-leakage ablation
+
+Add a deliberately contaminated condition, but label it clearly:
+
+Condition	Meaning
+Train-only augmentation	Legitimate
+Train+dev augmentation, evaluated on dev	Contaminated upper bound; not a valid dev score
+Train+dev augmentation, evaluated on blind	Optional final-public-data model if frozen and disclosed
+
+This is useful because it shows reviewers exactly what leakage would look like. If train+dev-on-dev jumps far above train-only-on-dev, you can say: “We do not report this as a valid result; it demonstrates why dev-derived augmentation is excluded from all dev claims.”
+
+C. Negative controls
+
+These are especially persuasive.
+
+Control	Expected outcome
+Randomly assign augmentation snippets to tracks	Performance should collapse toward metadata-only
+Shuffle snippets within same artist or genre	Smaller but still harmful drop; tests whether gains are just genre/popularity
+Keep same number of added tokens but replace text with generic filler	Tests whether gains are just document length
+Remove artist/album/track-name mentions from augmentation	Tests semantic benefit beyond name copying
+Use only non-gold turns or bad goal-progress turns	Should underperform gold/positive turns
+
+If shuffled augmentation still helps, your method may be exploiting popularity, document length, or artist priors rather than semantic matching.
+
+D. Robustness by frequency
+
+For each eval gold track, compute how many train-derived snippets that track has:
+
+0, 1, 2–5, 6–20, >20
+
+Report nDCG by bucket. A legitimate method should help most in buckets with useful training evidence, but should not catastrophically fail for zero-snippet tracks because metadata and embeddings still exist.
+
+Also report macro metrics so popular tracks do not dominate. The challenge already macro-averages over turns and sessions, which helps, but bucketed analysis will make the overfitting story clearer. 
+GitHub
+
+E. Cap and summarization ablation
+
+Track-document augmentation can overfit head items. Run:
+
+Variant	Purpose
+No cap	Maximum signal, highest overfit risk
+Cap 1 / 3 / 5 / 10 snippets per track	Measures saturation
+Random snippet sample per track	Tests sensitivity
+Clustered diverse snippets	Avoids repeating near-duplicates
+Summarized augmentation per track	Tests whether abstraction beats memorization
+
+A strong result is: capped or summarized augmentation performs close to uncapped augmentation while improving diversity and reducing head-track bias.
+
+F. Field weighting ablation
+
+For BM25 or hybrid retrieval, put fields in separate indexed fields rather than concatenating everything:
+
+title_artist^w1, tags^w2, train_queries^w3, goals^w4, reasons^w5
+
+Then ablate weights. This helps show that the method is not simply drowning metadata in synthetic text.
+
+G. Turn-level ablation
+
+Because the task is multi-turn, evaluate by turn number:
+
+turn 1, turn 2, …, turn 8
+
+The evaluator expects predictions for each session × turn, and the task is evaluated across conversation turns. 
+GitHub
+ Your augmentation may help especially at early turns where natural-language intent is vague, or later turns where history narrows the target. Either outcome is informative.
+
+H. Goal-type and specificity ablation
+
+The dataset exposes conversation_goal with category and specificity fields. 
+Hugging Face
+ Break results down by:
+
+LL, LH, HL, HH specificity
+goal category
+single-specific-track vs broad discovery goals
+artist/album-known vs mood-only queries
+
+This is where your method should shine: natural-language augmentation should help most when metadata tags are insufficient, such as vague mood, cultural memory, cover-art descriptions, “sounds like,” and forgotten-song queries.
+
+What to claim
+
+A careful claim would be:
+
+“We enrich item documents using only training-set relevance evidence. Each augmentation sentence is attached to the gold track from a training turn, converting observed conversational relevance judgments into reusable item descriptions. Development and blind labels are excluded from document construction for all reported validation results. After model selection, we optionally rebuild a final index with all public labeled data and evaluate only on blind data.”
+
+Avoid saying:
+
+“We use conversation data to improve track metadata.”
+
+That is too vague. Say exactly which split each piece of text came from.
+
+Best final experimental table
+
+Your main table should look like this:
+
+Model	Aug source	Dev nDCG@1	Dev nDCG@10	Dev nDCG@20	Catalog diversity
+Metadata BM25/BERT	None				
++ user queries	Train only				
++ goals	Train only				
++ explanations	Train only				
++ reasons	Train only				
+Full	Train only				
+Full shuffled	Train only, track-shuffled				
+Full train+dev	Train+dev	Do not report as valid dev	Do not report	Do not report	Do not report
+
+Then a final submission table:
+
+Submission	Aug source	Blind A	Blind B
+Strict final	Train only	leaderboard	leaderboard
+Optional public-label final	Train+dev after freeze	leaderboard	leaderboard
+Bottom line
+
+The cleanest protocol is train-only augmentation for all development claims and preferably for the final blind submission. Folding in dev labels before blind can be legitimate only as a frozen, disclosed, train+dev final retrain; it cannot be used to report or tune dev performance. The ablations that will convince reviewers are not just “metadata vs augmented,” but also shuffled-label controls, per-field ablations, snippet caps, frequency buckets, turn/goal breakdowns, and a clearly marked contaminated upper bound showing why you avoided dev-label leakage.
+
+来源
+
+进阶专业
+ChatGPT 也可能会犯错。请核查重要信息。
