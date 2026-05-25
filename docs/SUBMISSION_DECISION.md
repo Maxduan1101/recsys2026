@@ -49,6 +49,8 @@ experiments/goalflow_segcat_ltr120_140_200_ens_judge_v2_clean/blindset_A/submiss
 
 This chooses among the 120/140/200-tree L2 LTR models and their RRF ensemble by `conversation_goal.category`. It reaches official dev `nDCG@20=0.18407` if the segment map is selected on all OOF diagnostics, but stricter nested segment validation drops to about `0.18235`; use only as a high-risk experiment. Its high-lexical version is:
 
+Blind-A-shaped 500-panel validation also keeps it below the four-model ensemble: mean delta `-0.00215` nDCG@20 versus `goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_judge_clean_mix_clean`.
+
 ```text
 experiments/goalflow_segcat_ltr120_140_200_ens_compact_broad_clean/blindset_A/submission.zip
 ```

@@ -1462,7 +1462,7 @@ OOF 结果：
 | G/K | 200-tree LTR |
 | 其他 | 120-tree LTR |
 
-这不是逐条样本偷看答案，而是按官方 goal category 做宽分组；但它确实是根据 dev OOF 诊断选出来的。更严格的嵌套检查里，用 4 折选分段规则、1 折评估，category 分段只有约 `0.18235`，低于单模型和 ensemble。因此它被降级为高风险实验。
+这不是逐条样本偷看答案，而是按官方 goal category 做宽分组；但它确实是根据 dev OOF 诊断选出来的。更严格的嵌套检查里，用 4 折选分段规则、1 折评估，category 分段只有约 `0.18235`，低于单模型和 ensemble。Blind-A-shaped 500-panel 对比也显示它比四模型 ensemble 低，mean delta 是 `-0.00215` nDCG@20。因此它被降级为高风险实验。
 
 第一优先：
 
