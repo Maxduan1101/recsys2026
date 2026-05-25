@@ -1325,13 +1325,13 @@ L2 正则可以理解成“不要让树的判断太激进”。单折里 `lambda
 | 120-tree lambda2 judge_mix | 0.183021 | 0.159260 | 低风险混合回复，ranking 不变 |
 | 120-tree lambda2 judge_brief | 0.183021 | 0.174312 | 更短的 grounded 回复 |
 | 120-tree lambda2 judge_compact_mix | 0.183021 | 0.194935 | compact/broad 混合备份 |
-| 120-tree lambda2 judge_clean_mix | 0.183021 | 0.200317 | 当前主回复，clean tags + 高 lexical |
-| 120-tree lambda2 compact_clean | 0.183021 | 0.209836 | clean compact 高 lexical 备份 |
+| 120-tree lambda2 judge_clean_mix | 0.183021 | 0.199303 | 当前主回复，clean tags + 高 lexical |
+| 120-tree lambda2 compact_clean | 0.183021 | 0.209822 | clean compact 高 lexical 备份 |
 | 120-tree lambda2 compact_broad | 0.183021 | 0.220792 | 最高 lexical，但更机械 |
 | 120/140/200 lambda2 RRF ensemble | 0.183253 | 0.148741 | 微小排序提升 |
 | 120/140/200 lambda2 RRF judge_compact_mix | 0.183253 | 0.194546 | ensemble ranking + compact/broad 混合 |
-| 120/140/200 lambda2 RRF judge_clean_mix | 0.183253 | 0.200015 | ensemble ranking + clean 混合 |
-| 120/140/200 lambda2 RRF compact_clean | 0.183253 | 0.209445 | ensemble ranking + clean compact |
+| 120/140/200 lambda2 RRF judge_clean_mix | 0.183253 | 0.199012 | ensemble ranking + clean 混合 |
+| 120/140/200 lambda2 RRF compact_clean | 0.183253 | 0.209428 | ensemble ranking + clean compact |
 | 120-tree lambda2 judge_v3 | 0.183021 | 0.125937 | 回复更像完整解释，但 lexical 下降 |
 
 Blind A gold-free 检查：
@@ -1342,15 +1342,15 @@ Blind A gold-free 检查：
 | `goalflow_ltr120_head0_compact_broad_clean` | 1500 | 0.031867 | 0.702228 |
 | `goalflow_ltr120_lambda2_head0_judge_v2_clean` | 1496 | 0.031782 | 0.485312 |
 | `goalflow_ltr120_lambda2_head0_judge_mix_clean` | 1496 | 0.031782 | 0.522089 |
-| `goalflow_ltr120_lambda2_head0_judge_clean_mix_clean` | 1496 | 0.031782 | 0.610102 |
+| `goalflow_ltr120_lambda2_head0_judge_clean_mix_clean` | 1496 | 0.031782 | 0.606919 |
 | `goalflow_ltr120_lambda2_head0_judge_compact_mix_clean` | 1496 | 0.031782 | 0.611604 |
-| `goalflow_ltr120_lambda2_head0_compact_clean` | 1496 | 0.031782 | 0.676518 |
+| `goalflow_ltr120_lambda2_head0_compact_clean` | 1496 | 0.031782 | 0.675327 |
 | `goalflow_ltr120_lambda2_head0_compact_broad_clean` | 1496 | 0.031782 | 0.696674 |
 | `goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v2_clean` | 1494 | 0.031739 | 0.485312 |
 | `goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_mix_clean` | 1494 | 0.031739 | 0.524761 |
-| `goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_clean_mix_clean` | 1494 | 0.031739 | 0.613349 |
+| `goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_clean_mix_clean` | 1494 | 0.031739 | 0.610336 |
 | `goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_compact_mix_clean` | 1494 | 0.031739 | 0.615890 |
-| `goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_clean` | 1494 | 0.031739 | 0.679554 |
+| `goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_clean` | 1494 | 0.031739 | 0.678379 |
 | `goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_broad_clean` | 1494 | 0.031739 | 0.700198 |
 | `goalflow_ltr120_lambda2_head0_judge_v3_clean` | 1496 | 0.031782 | 0.434335 |
 | `goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v3_clean` | 1494 | 0.031739 | 0.437063 |
@@ -1419,7 +1419,7 @@ OOF 结果：
 | `judge_mix` | 0.159260 | 0.522089 | 低风险混合回复 |
 | `judge_brief` | 0.174312 | - | 短解释 probe |
 | `judge_compact_mix` | 0.194935 | 0.611604 | compact/broad 混合备份 |
-| `judge_clean_mix` | 0.200317 | 0.610102 | 当前主回复 |
+| `judge_clean_mix` | 0.199303 | 0.606919 | 当前主回复 |
 | `compact_broad` | 0.220792 | 0.696674 | 最高 lexical，但更机械 |
 | `judge_v3` | 0.125937 | 0.434335 | 更完整，但 lexical 指标更低 |
 

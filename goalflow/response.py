@@ -89,14 +89,20 @@ BAD_TAG_PHRASES = (
     "albums i own",
     "cds i own",
     "check out",
+    "dirty electric guitar",
     "favourites",
     "favorites",
+    "funk lift off",
+    "funk tag",
     "ifs and buts",
     "i own",
+    "lap dance",
     "lastfm",
     "my ",
     "playlist",
+    "punk rocks",
     "rotation",
+    "rock stoner",
     "seen live",
     "si related",
     "songs i",
@@ -105,6 +111,12 @@ BAD_TAG_PHRASES = (
     "to live by",
     "zielonypaw",
 )
+
+BAD_TAG_EXACT = {
+    "genre",
+    "mood",
+    "new",
+}
 
 
 def _track_phrase(catalog: TrackCatalog, track_id: str) -> str:
@@ -145,7 +157,7 @@ def _tag_list(catalog: TrackCatalog, track_id: str, limit: int = 3, require_good
         tag = re.sub(r"\s*/\s*", "-", tag)
         tag = re.sub(r"\s+", " ", tag).strip(" -_/")
         key = tag.lower()
-        if not tag or key in seen:
+        if not tag or key in seen or key in BAD_TAG_EXACT:
             continue
         if any(phrase in key for phrase in BAD_TAG_PHRASES):
             continue
@@ -1036,7 +1048,7 @@ def _generate_judge_v2_response(state: ConversationState, catalog: TrackCatalog,
             state,
             [
                 f"The ordering {feedback_clause}; I used {profile} only as a tie-breaker.",
-                f"It also {feedback_clause}, while {profile} only nudged close calls.",
+                f"It also {feedback_clause}; I used {profile} only to settle close calls.",
             ],
             salt="judge-v2-context-both",
         )

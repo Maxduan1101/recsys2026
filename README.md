@@ -105,7 +105,7 @@ Current recommended Blind A package:
 /Users/bytedance/generated_problems/recsys2026_music_crs/goalflow_musiccrs/experiments/goalflow_ltr120_lambda2_head0_judge_clean_mix_clean/blindset_A/submission.zip
 ```
 
-This package uses the same full-dev LightGBM LambdaRank ranking as the conservative L2 package, then generates a cleaner high-lexical mix of `judge_v2`, `judge_brief`, and cleaned `compact` responses. OOF dev ranking stays at official `nDCG@20=0.18302`; lexical diversity improves from `0.14874` for fixed `judge_v2` and `0.15926` for `judge_mix` to `0.20032`, while Blind A local Distinct-2 rises from `0.48531` to `0.61010`.
+This package uses the same full-dev LightGBM LambdaRank ranking as the conservative L2 package, then generates a cleaner high-lexical mix of `judge_v2`, `judge_brief`, and cleaned `compact` responses. OOF dev ranking stays at official `nDCG@20=0.18302`; lexical diversity improves from `0.14874` for fixed `judge_v2` and `0.15926` for `judge_mix` to `0.19930`, while Blind A local Distinct-2 rises from `0.48531` to `0.60692`.
 
 Lower-risk mixed response package:
 
@@ -139,7 +139,7 @@ OOF-max micro-gain ensemble package:
 /Users/bytedance/generated_problems/recsys2026_music_crs/goalflow_musiccrs/experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_clean_mix_clean/blindset_A/submission.zip
 ```
 
-This package RRF-ensembles the 120/140/200-tree `reg_lambda=2` LTR rankings with `rrf_k=60` and uses the same clean mixed response style. The ranking gives a tiny OOF gain (`nDCG@20=0.18325` versus `0.18302`) and official dev lexical diversity is `0.20002`, so keep it as a micro-gain backup. Its high-lexical backup is:
+This package RRF-ensembles the 120/140/200-tree `reg_lambda=2` LTR rankings with `rrf_k=60` and uses the same clean mixed response style. The ranking gives a tiny OOF gain (`nDCG@20=0.18325` versus `0.18302`) and official dev lexical diversity is `0.19901`, so keep it as a micro-gain backup. Its high-lexical backup is:
 
 ```text
 /Users/bytedance/generated_problems/recsys2026_music_crs/goalflow_musiccrs/experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_broad_clean/blindset_A/submission.zip
