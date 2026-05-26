@@ -1626,6 +1626,54 @@ def _generate_judge_balanced_mix_response(
     return _generate_compact_response(state, catalog, track_ids)
 
 
+def _generate_judge_clean_mix_plus_response(
+    state: ConversationState,
+    catalog: TrackCatalog,
+    track_ids: list[str],
+) -> str:
+    bucket = int(
+        hashlib.md5(
+            f"{state.session_id}:{state.turn_number}:judge_clean_mix_plus".encode("utf-8")
+        ).hexdigest()[:8],
+        16,
+    ) % 20
+    style = [
+        "judge_v2",
+        "judge_v2",
+        "judge_v2",
+        "judge_v2",
+        "judge_v2",
+        "judge_brief",
+        "judge_brief",
+        "judge_brief",
+        "judge_brief",
+        "compact",
+        "compact",
+        "compact",
+        "compact",
+        "compact",
+        "compact",
+        "compact",
+        "compact_broad",
+        "compact_broad",
+        "judge_planned",
+        "setwise",
+    ][bucket]
+    if style == "judge_v2":
+        return _generate_judge_v2_response(state, catalog, track_ids)
+    if style == "judge_brief":
+        return _generate_judge_brief_response(state, catalog, track_ids)
+    if style == "judge_planned":
+        return _generate_judge_planned_response(state, catalog, track_ids)
+    if style == "natural":
+        return _generate_natural_response(state, catalog, track_ids)
+    if style == "setwise":
+        return _generate_setwise_response(state, catalog, track_ids)
+    if style == "compact_broad":
+        return _generate_compact_response(state, catalog, track_ids, require_good_words=False)
+    return _generate_compact_response(state, catalog, track_ids)
+
+
 def _generate_polished_response(state: ConversationState, catalog: TrackCatalog, track_ids: list[str]) -> str:
     if not track_ids:
         return "I found a few tracks that should fit the direction you described."
@@ -1761,4 +1809,6 @@ def generate_response(
         return _generate_judge_clean_mix_response(state, catalog, track_ids)
     if style == "judge_balanced_mix":
         return _generate_judge_balanced_mix_response(state, catalog, track_ids)
+    if style == "judge_clean_mix_plus":
+        return _generate_judge_clean_mix_plus_response(state, catalog, track_ids)
     raise ValueError(f"Unsupported response style: {style!r}")

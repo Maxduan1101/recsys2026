@@ -243,36 +243,41 @@ Key validation:
 - `lambdarank_truncation_level=100` was rejected after OOF: fold 0 improved slightly, but official five-fold `nDCG@20` dropped to `0.182444`.
 - RRF ensembling over the 120/140/200-tree L2 OOF predictions gives a small local gain, official `nDCG@20=0.183253`; adding the all-column 120-tree L2 variant improves the equal-weight ensemble to `0.183482`.
 - Weighted RRF (`rrf_k=26`, weights `[1.0, 0.5, 1.3, 1.0]`) improves the four-model ensemble to official OOF `nDCG@20=0.183924`; Blind-A-shaped validation versus equal-weight is positive, with the 2000-panel run showing mean delta `+0.00162` and median delta `+0.00062`.
+- Position-band weighted RRF was rejected: equal-head/weighted-tail and weighted-head/equal-tail variants did not beat the global weighted RRF, whose score remains `0.183923885`.
+- Anchored weighted RRF was also rejected for promotion: adding a tiny equal-weight anchor (`k=26`, anchor `k=60`, `lambda=0.05`) reached `0.183956`, only `+0.000032` over the current package and far below the `+0.0005` acceptance bar for a new ranking package.
+- Optional embedding LTR features are now implemented behind `--embedding-features`, but the first fold rejects promoting them: `track_cf + user_cf` scored `0.18341`, metadata seed cosine scored `0.18301`, and attributes seed cosine scored `0.17892` versus the stronger accepted 120-tree L2 baseline. Keep this as a research/probe path, not a submission path.
 - `judge_mix` response style was added as a lower-risk text-upside package. It keeps the same ranking as `judge_v2`, raises official dev lexical diversity from `0.14874` to `0.15926`, and raises Blind A local Distinct-2 from `0.48531` to `0.52209`.
 - `judge_brief`, `judge_compact_mix`, and `judge_clean_mix` were added after the response probe. `judge_brief` reaches official dev lexical `0.17431`; `judge_compact_mix` reaches `0.19493`; after duplicate/list-valued title, artist, and album display cleanup, `judge_clean_mix` reaches `0.19966` on the four-model ensemble ranking. Blind A local Distinct-2 is `0.60519` for the clean mix.
 - `judge_v3` response style was added as a fuller explanation style. It may help LLM-as-a-Judge because it reads more naturally, but local lexical diversity is lower than `judge_v2`, so it is only a text backup.
 - `judge_planned` and `judge_balanced_mix` were added after the Pro response-judge pass. They preserve the same ranking and make the explanations more natural; after album-display cleanup, `judge_balanced_mix` keeps usable lexical diversity (`dev 0.17624`, Blind A `0.55719`), while `judge_planned` is more prose-like but too low-lexical for a first submission.
+- `judge_clean_mix_plus` was added after Pro round 8 as a response-only backup. It preserves the weighted RRF ranking, has official dev lexical `0.19928`, Blind A Distinct-2 `0.60729`, and no quick banned-tag/opening-duplication flags. It is not promoted above `judge_clean_mix` because it sometimes reintroduces less-clean broad tags such as `songsof2011` or `lobpreis`.
 
 Current submission recommendation:
 
 1. `experiments/goalflow_ens_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_judge_clean_mix_clean/blindset_A/submission.zip`
-2. `experiments/goalflow_ens_ltr120_140_200_col1_lambda2_w140half_rrf20_judge_clean_mix_clean/blindset_A/submission.zip`
-3. `experiments/goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_judge_clean_mix_clean/blindset_A/submission.zip`
-4. `experiments/goalflow_ltr120_lambda2_head0_judge_clean_mix_clean/blindset_A/submission.zip`
-5. `experiments/goalflow_ltr120_lambda2_head0_judge_mix_clean/blindset_A/submission.zip`
-6. `experiments/goalflow_ltr120_lambda2_head0_judge_v2_clean/blindset_A/submission.zip`
-7. `experiments/goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_judge_balanced_mix/blindset_A/submission.zip`
-8. `experiments/goalflow_ens_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_compact_clean/blindset_A/submission.zip`
-9. `experiments/goalflow_ens_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_compact_broad_clean/blindset_A/submission.zip`
-10. `experiments/goalflow_ltr120_lambda2_head0_judge_compact_mix_clean/blindset_A/submission.zip`
-11. `experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_clean_mix_clean/blindset_A/submission.zip`
-12. `experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_mix_clean/blindset_A/submission.zip`
-13. `experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v2_clean/blindset_A/submission.zip`
-14. `experiments/goalflow_ltr120_lambda2_head0_compact_clean/blindset_A/submission.zip`
-15. `experiments/goalflow_ltr120_lambda2_head0_compact_broad_clean/blindset_A/submission.zip`
-16. `experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_clean/blindset_A/submission.zip`
-17. `experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_broad_clean/blindset_A/submission.zip`
-18. `experiments/goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_judge_planned/blindset_A/submission.zip`
-19. `experiments/goalflow_ltr120_lambda2_head0_judge_v3_clean/blindset_A/submission.zip`
-18. `experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v3_clean/blindset_A/submission.zip`
-19. `experiments/goalflow_ltr120_head0_judge_v2_clean/blindset_A/submission.zip`
-20. `experiments/goalflow_ltr_head0_polished_v3/blindset_A/submission.zip`
-21. `experiments/goalflow_head20_compact_broad/blindset_A/submission.zip`
+2. `experiments/goalflow_ens_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_judge_clean_mix_plus/blindset_A/submission.zip`
+3. `experiments/goalflow_ens_ltr120_140_200_col1_lambda2_w140half_rrf20_judge_clean_mix_clean/blindset_A/submission.zip`
+4. `experiments/goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_judge_clean_mix_clean/blindset_A/submission.zip`
+5. `experiments/goalflow_ltr120_lambda2_head0_judge_clean_mix_clean/blindset_A/submission.zip`
+6. `experiments/goalflow_ltr120_lambda2_head0_judge_mix_clean/blindset_A/submission.zip`
+7. `experiments/goalflow_ltr120_lambda2_head0_judge_v2_clean/blindset_A/submission.zip`
+8. `experiments/goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_judge_balanced_mix/blindset_A/submission.zip`
+9. `experiments/goalflow_ens_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_compact_clean/blindset_A/submission.zip`
+10. `experiments/goalflow_ens_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_compact_broad_clean/blindset_A/submission.zip`
+11. `experiments/goalflow_ltr120_lambda2_head0_judge_compact_mix_clean/blindset_A/submission.zip`
+12. `experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_clean_mix_clean/blindset_A/submission.zip`
+13. `experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_mix_clean/blindset_A/submission.zip`
+14. `experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v2_clean/blindset_A/submission.zip`
+15. `experiments/goalflow_ltr120_lambda2_head0_compact_clean/blindset_A/submission.zip`
+16. `experiments/goalflow_ltr120_lambda2_head0_compact_broad_clean/blindset_A/submission.zip`
+17. `experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_clean/blindset_A/submission.zip`
+18. `experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_compact_broad_clean/blindset_A/submission.zip`
+19. `experiments/goalflow_ens_ltr120_140_200_col1_lambda2_rrf60_judge_planned/blindset_A/submission.zip`
+20. `experiments/goalflow_ltr120_lambda2_head0_judge_v3_clean/blindset_A/submission.zip`
+21. `experiments/goalflow_ens_ltr120_140_200_lambda2_rrf60_judge_v3_clean/blindset_A/submission.zip`
+22. `experiments/goalflow_ltr120_head0_judge_v2_clean/blindset_A/submission.zip`
+23. `experiments/goalflow_ltr_head0_polished_v3/blindset_A/submission.zip`
+24. `experiments/goalflow_head20_compact_broad/blindset_A/submission.zip`
 
 ## Progress Label Audit
 
@@ -397,6 +402,11 @@ Saved answers:
 - `research/pro_answers/round7/tab3_train_context_usage.txt`
 - `research/pro_answers/round7/tab4_embedding_query_features.txt`
 - `research/pro_answers/round7/tab5_small_blind_validation.txt`
+- `research/pro_answers/round8/tab1_submission_decision.txt`
+- `research/pro_answers/round8/tab2_remaining_low_risk_ranking.txt`
+- `research/pro_answers/round8/tab3_catalog_diversity_stop_or_tail.txt`
+- `research/pro_answers/round8/tab4_embedding_ltr_features.txt`
+- `research/pro_answers/round8/tab5_response_style_next.txt`
 
 Operational takeaways:
 
@@ -408,3 +418,4 @@ Operational takeaways:
 - Public blind feedback shifts the immediate priority toward richer metadata-grounded response realization. Tail diversification is secondary on 80-row Blind A because catalog diversity has a low ceiling.
 - Round 5 Pro answers reinforce a conservative strategy: protect the BM25 head, use extra retrieval/ranking only as tail evidence, and validate changes on Blind-A-shaped panels.
 - Round 7 Pro answers support `judge_clean_mix` over compact-broad for the next real submission, recommend anchored global weighted RRF as the lowest-risk ranking improvement, and warn that train/embedding signals should enter as gated/tail evidence until they pass strict blind-like uncertainty checks.
+- Round 8 Pro answers still favor the weighted RRF ranking and warn against ranking-diversity tweaks on the tiny Blind A ceiling. They suggest response-only `judge_clean_mix_plus` as a possible judge-quality backup, but the local artifact check keeps plain `judge_clean_mix` first.

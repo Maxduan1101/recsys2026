@@ -1,0 +1,355 @@
+Title: Low-risk Ranking Improvements
+URL: https://chatgpt.com/c/6a147a34-db88-8321-bc34-41ac29d57bc8
+Message index: 11
+
+主人，lowest-risk next ranking experiment should be:
+
+Anchored Shrinkage Weighted RRF
+
+Do not add a new source. Do not do hard category selection. Do not train a high-capacity stacker first. The next experiment should only recalibrate the existing four LTR model rankings with a constrained weighted RRF, anchored to the current best 0.18348 ensemble.
+
+The challenge ranking metric is nDCG@20, so tiny position-level improvements in the top 20 matter, but overfitting fusion weights can easily hurt blind transfer. The public competition also evaluates RecSys nDCG@20 alongside response metrics, so this should remain a pure ranking experiment with response generation frozen. 
+Codabench
++1
+
+1. Primary experiment: anchored weighted RRF
+
+Current ensemble is probably close to this:
+
+base_score(q, t) =
+  Σ_m 0.25 / (K + rank_m(q, t))
+
+Replace it with:
+
+score(q, t) =
+  Σ_m w_m / (K + rank_m(q, t))
+  + λ / (K + base_rank(q, t))
+
+Where:
+
+m ∈ {four LTR models}
+K ∈ {20, 40, 60, 80}
+w_m ≥ 0
+Σ w_m = 1
+w_m ∈ [0.15, 0.40]
+λ ∈ {0.00, 0.10, 0.20, 0.35, 0.50}
+
+The λ / (K + base_rank) term is important. It says: the current 0.18348 ensemble is the anchor; new weights must overcome it, not replace it freely.
+
+Candidate pool should be exactly the existing four-model union, for example:
+
+U_q = union of top100 candidates from the four current LTR models
+
+No seed-CF rescue. No train-session mixing. No new retrieval source.
+
+Hard candidate guard:
+
+A candidate may enter top20 only if:
+  candidate is in current base top30
+  OR candidate appears in at least 2 model top50 lists
+  OR candidate appears in one model top5 list
+
+This prevents one weird model from injecting single-source noise.
+
+2. Objective function
+
+Do not optimize raw nDCG only. Optimize an anchored objective:
+
+objective =
+  nDCG@20
+  - 0.10 * top20_churn
+  - 0.25 * top10_churn
+  - 0.50 * top5_churn
+
+Where:
+
+topK_churn = fraction of rows whose topK set changed vs current 0.18348 ensemble
+
+This makes the optimizer prefer changes that improve ranking without destroying the known anchor.
+
+Use raw nDCG@20 as the final reported metric, but use anchored objective for hyperparameter search.
+
+3. Search order
+
+Run these in order and stop as soon as one fails nested validation.
+
+Experiment A: global weighted RRF
+
+Only tune:
+
+K, w_1, w_2, w_3, w_4, λ
+
+This is the lowest-risk version.
+
+Weight grid:
+
+w_m ∈ {0.15, 0.20, 0.25, 0.30, 0.35, 0.40}
+Σ w_m = 1
+
+Acceptance bar:
+
+nested OOF nDCG@20 ≥ 0.18348 + 0.0005
+paired session bootstrap P(delta > 0) ≥ 0.90
+top5 churn ≤ 5%
+top10 churn ≤ 12%
+80-row Blind-A-shaped bootstrap mean delta > 0
+
+If this gives something like 0.1839–0.1842 nested OOF with low churn, this is probably the next safest submission candidate.
+
+Experiment B: position-band weighted RRF
+
+If A is positive, add small rank-band calibration.
+
+score(q, t) =
+  Σ_m [
+    w_m_head * I(rank_m ≤ 5)   / (K + rank_m)
+  + w_m_mid  * I(6 ≤ rank_m ≤ 20) / (K + rank_m)
+  + w_m_tail * I(21 ≤ rank_m ≤ 100) / (K + rank_m)
+  ]
+  + λ / (K + base_rank)
+
+But constrain it tightly:
+
+w_m_head = w_m * (1 + δ_m_head)
+w_m_mid  = w_m * (1 + δ_m_mid)
+w_m_tail = w_m * (1 + δ_m_tail)
+
+δ ∈ [-0.15, +0.15]
+
+Why this may help: one LTR model may be excellent when it ranks something top-5 but noisy in its tail; another may be useful mainly for recall. This learns that without switching models per category.
+
+Acceptance bar should be stricter:
+
+nested OOF nDCG@20 ≥ Experiment A + 0.0003
+top10 churn not materially higher than A
+no large loss in exact-entity / high-specificity rows
+Experiment C: shrinked soft per-query gating
+
+Only try this after A/B. Do not repeat the rejected category segment selection.
+
+The rejected category experiment failed because it was essentially hard selection:
+
+if category = X, use model Y
+
+Instead use small deltas around the global weights:
+
+w_m(q) = normalize(
+  w_m_global
+  + Δ_m(intent)
+  + Δ_m(specificity)
+  + Δ_m(agreement_bucket)
+)
+
+Hard constraints:
+
+|Δ_m(intent)| ≤ 0.03
+|Δ_m(specificity)| ≤ 0.03
+|Δ_m(agreement_bucket)| ≤ 0.04
+final w_m(q) ∈ [0.15, 0.40]
+
+Allowed query-level features:
+
+intent/category
+specificity
+turn number bucket
+current query length
+has exact artist/title/album entity
+has negative feedback
+number of positive seed tracks/artists
+model agreement: pairwise top20 overlap
+model disagreement: union size
+base ensemble confidence: top1-top2 score margin
+support count of top candidate
+
+Do not use features that directly reveal gold availability, dev fold behavior, or train-session identity.
+
+Acceptance bar:
+
+nested OOF nDCG@20 ≥ Experiment B + 0.0004
+or ≥ 0.18348 + 0.0010 overall
+80-row Blind-A-shaped bootstrap positive in ≥ 60% of samples
+no intent bucket with ≥ 500 rows loses more than 0.002 nDCG
+
+If it only wins non-nested, reject it immediately. You already saw that failure mode.
+
+4. Stacking: run only as a shadow diagnostic
+
+A full stacker is higher risk than weighted RRF. It has more degrees of freedom and can exploit fold artifacts.
+
+If you test stacking, make it residual and anchored:
+
+stack_score = ridge_or_logistic(candidate_features)
+
+final_score =
+  0.85 * anchored_weighted_rrf
++ 0.15 * normalized_stack_score
+
+Features:
+
+rank_m for each model
+1 / (K + rank_m)
+is_top1_m, is_top3_m, is_top5_m, is_top10_m, is_top20_m
+support_count across models
+min_rank
+mean_rank
+rank_std
+base_rrf_rank
+base_rrf_score
+top20 agreement count
+candidate appears in current base top20
+candidate appears in current base top10
+intent
+specificity
+turn bucket
+exact entity flag
+negative feedback flag
+
+Model choice:
+
+Ridge regression or logistic regression only.
+No LightGBM/CatBoost stacker for this specific low-risk experiment.
+
+Hard guard:
+
+top5 freeze variant must be tested
+candidate outside base top30 needs support_count ≥ 2
+candidate outside base top50 cannot enter top20
+
+Use stacking only if:
+
+stacked nested OOF beats best weighted RRF by ≥ 0.0007
+and does not increase top10 churn materially
+and wins 80-row blind-like bootstrap more often than weighted RRF
+
+Otherwise, keep it as diagnostic.
+
+5. Validation protocol
+
+This is the most important part.
+
+Use nested OOF, not non-nested segment selection.
+
+For each outer fold:
+
+1. Hold out sessions/users as outer validation.
+2. Train the four base LTR models without outer validation data.
+3. Generate four model rankings for outer validation.
+4. Inside the outer-train portion only:
+   tune weighted RRF / band weights / soft gates.
+5. Apply the chosen fusion to the outer validation predictions.
+6. Concatenate all outer-fold predictions.
+7. Compute final nested OOF nDCG@20.
+
+Report:
+
+nDCG@20 overall
+nDCG@10
+hit@20
+delta vs 0.18348 ensemble
+top1/top5/top10/top20 churn
+changed-row nDCG delta
+unchanged-row nDCG delta
+delta by intent
+delta by specificity
+delta by turn number
+delta by model-agreement bucket
+delta by “gold in base top20 / outside base top20”
+
+Also run 1,000 blind-like bootstraps:
+
+sample 80 rows or sessions using Blind-A-like distribution
+compute delta nDCG@20 vs current ensemble
+record mean / median / 5th percentile / win rate
+
+Because seed-CF rescue already showed “flat dev but negative blind-shaped mean,” this blind-like bootstrap should be a hard gate.
+
+6. Stop conditions
+
+Reject immediately if any of these happen:
+
+nested OOF ≤ 0.18348 + 0.0003
+non-nested improves but nested drops
+top5 churn > 8% without clear nDCG gain
+top10 churn > 15% without clear nDCG gain
+80-row blind-like mean delta < 0
+exact-entity or high-specificity rows lose materially
+gain comes from one small bucket only
+candidate support_count=1 promotions explain most of the gain
+
+For submission, I would require:
+
+nested OOF ≥ 0.1840
+paired bootstrap P(delta > 0) ≥ 0.90
+80-row blind-like win rate ≥ 60%
+no major bucket regression
+ranking-output validity = 100%
+
+If best result is only:
+
+0.18355–0.18375
+
+I would not spend a public submission unless ranking slots are abundant. That gain is too small relative to blind variance.
+
+7. Why this should transfer better than rejected attempts
+Better than category segment selection
+
+Category segment selection failed because it made hard, high-variance decisions:
+
+category X → use model A
+category Y → use model B
+
+The proposed method uses:
+
+global weights first
+small shrinked deltas second
+nested validation always
+
+So it cannot wildly swap models based on noisy category labels.
+
+Better than train-session mixing
+
+Direct train-session mixing likely hurt because it added distribution-specific memorization/noise. Anchored weighted RRF uses only the four honest LTR predictions already known to work OOF.
+
+Better than seed-CF rank-20 rescue
+
+Seed-CF changed 397/8000 rows but had flat dev and negative blind-like mean. That says the signal is too weak or too distribution-sensitive. Weighted RRF does not introduce a new weak source; it only corrects how much each already-useful LTR model contributes.
+
+Better than full stacking
+
+Full stacking may beat OOF, but it has many more parameters and can learn fold quirks. Anchored weighted RRF has maybe 6–20 effective parameters and direct metric tuning, so it is much harder to overfit.
+
+Final recommended ordered plan
+1. Freeze current 0.18348 four-model RRF as baseline.
+
+2. Run anchored global weighted RRF:
+   tune K, four weights, λ.
+   If nested OOF < 0.1840, probably stop.
+
+3. If positive, run position-band weighted RRF:
+   allow small head/mid/tail deltas.
+   Accept only if nested improves further with low churn.
+
+4. If still positive, run shrinked soft per-query gating:
+   small deltas from intent/specificity/agreement features.
+   Reject if non-nested > nested gap appears again.
+
+5. Run residual ridge stacker only as shadow:
+   final_score = 0.85 weighted_RRF + 0.15 stack.
+   Submit only if it beats weighted RRF robustly, not just barely.
+
+6. Choose the simplest model whose nested OOF and blind-like bootstraps pass.
+
+My expected best-risk tradeoff:
+
+Submit candidate:
+Anchored global weighted RRF
+or
+Anchored position-band weighted RRF
+
+Avoid as next submit:
+hard per-category model selection
+full LTR stacker
+new CF rescue
+train-session mixing
+
+This is the kind of experiment that can plausibly move 0.18348 → 0.1840+ without betting the blind score on an unstable new signal.

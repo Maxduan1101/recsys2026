@@ -17,6 +17,14 @@ Why this one:
 - The response cleanup removes private/noisy tag artifacts, title-cases profile fields, and collapses duplicate/list-valued track titles, artist names, and album names before writing them into the explanation.
 - It directly attacks the previous public weak points: `lexical_diversity=0.0125` and `llm_judge_score=1.0`, while also improving local ranking validation.
 
+Response-only judge-quality backup:
+
+```text
+experiments/goalflow_ens_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_judge_clean_mix_plus/blindset_A/submission.zip
+```
+
+This keeps the exact same weighted RRF ranking but mixes a small amount of fuller/natural and compact-broad wording into `judge_clean_mix`. Official dev lexical is `0.19928` and local Blind A Distinct-2 is `0.60729`. Keep it behind the primary clean package because spot checks found occasional less-clean broad tags, even though no quick banned-term/opening-duplication flags fired.
+
 Conservative single-model clean-mix fallback:
 
 ```text
@@ -180,6 +188,9 @@ Rejected near-misses:
 - `colsample_bytree=1.0` and `learning_rate=0.06`: both had small fold 0 gains and worse five-fold OOF.
 - `lambdarank_truncation_level=100`: won fold 0 very slightly, but five-fold OOF dropped to `nDCG@20=0.18244`; default 30 remains best.
 - Directly mixing labeled train-split sessions into the LTR training pool hurt held-out dev: 50 sampled sessions scored `0.18274` and 500 sampled sessions scored `0.17101` on the same fold where the 120-tree L2 dev-only model scored about `0.18489`. The optional code path remains for research, but it is not a submission setting.
+- Position-band weighted RRF did not beat the accepted global weighted RRF; the best variants tied the same `0.183923885` score.
+- Anchored weighted RRF found only a microscopic gain (`0.183956`, `+0.000032`) and is below the acceptance bar for a new ranking package.
+- Optional embedding LTR features are implemented but rejected for promotion. Fold-0 probes scored `0.18341` for `track_cf + user_cf`, `0.18301` for metadata seed cosine, and `0.17892` for attributes seed cosine, all below the accepted baseline path.
 
 Key correction:
 

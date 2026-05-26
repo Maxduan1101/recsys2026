@@ -1,0 +1,701 @@
+Title: RecSys Challenge Ranker Guidance
+URL: https://chatgpt.com/c/6a147a38-f2b4-83a1-8d7f-b906cc3b2fe6
+Message index: 10
+
+主人，核心结论：
+
+现在不要再把 labeled train sessions 当作“更多 LTR 训练样本”直接混进去。把它们降级成 4 类可控辅助信号：train-context augmentation、弱 prior、case-based distillation、sample weighting。所有信号都只能在 train-only / fold-out 条件下构建，并默认只影响 tail 或作为 LTR feature。
+
+RecSys 2026 Music-CRS 官方目标本身是用多轮对话、用户上下文和音乐 metadata 做 ranked track recommendation 与 response generation，所以 train conversations 的价值很大；但它们最安全的用法不是“记住 label”，而是提炼成检索语义、弱统计先验和相似案例信号。
+RecSys
+
+1. 当前策略判断
+
+你已经观察到：
+
+直接把 sampled train sessions 混入 LightGBM LTR training → held-out dev 变差
+
+这说明至少有一个问题存在：
+
+train/dev query distribution 不一致
+train sampled sessions label pattern 太强，模型记忆了 train style
+positive injection / hard-negative 构造方式污染了训练目标
+track_id / popularity / train-context 特征被模型过度利用
+
+所以现在应该改成：
+
+train labels 不直接扩充 LTR 主训练集
+train labels 只产生 auxiliary sources/features
+这些 features 必须能单独 ablate、能 shadow、能关闭
+最终排序仍保护 legacy BM25 head
+2. Safe usage 1：train-context document augmentation
+
+这是最值得保留的路径。
+
+2.1 构建 track-context documents
+
+对每个 train gold occurrence：
+
+conversation_id
+turn_id
+gold_track_id
+user_profile
+conversation_goal
+current user request
+previous user feedback before current turn
+previous positive seed tracks/artists
+assistant/music history before current turn
+
+生成该 gold track 的补充文档片段：
+
+track_id -> [
+  "user asked for ...",
+  "goal mentions ...",
+  "profile preference ...",
+  "liked similar artist/genre/mood ...",
+  ...
+]
+
+但是要拆成两个字段：
+
+ctx_light: cleaned semantic context
+ctx_raw: raw user/query snippets
+
+推荐：
+
+base_doc = title + artist + album + tags + metadata
+aug_doc_light = base_doc + cleaned intent/mood/genre/activity/profile terms
+aug_doc_raw = base_doc + capped raw train user snippets
+
+BM25 source 分开建：
+
+bm25_base
+bm25_trainctx_light
+bm25_trainctx_raw
+
+不要直接把 augmentation 混进唯一 BM25 index。否则一旦 train-context 过拟合，你不知道是谁害的。
+
+2.2 文本清洗规则
+
+保留：
+
+mood words
+genre words
+activity context
+era / decade
+language / region
+energy / tempo adjectives
+profile preference
+explicit comparison like "similar to X"
+positive feedback before current turn
+
+降权或过滤：
+
+exact title repeated too often
+assistant boilerplate
+template phrases
+rare generated phrases
+track-id-like artifacts
+future-turn text
+current gold response after recommendation
+
+特别注意：如果 train assistant explanation 是围绕 gold track 生成的，它很容易把 “gold-specific wording” 写进文档。可以保留，但只放进 ctx_raw，权重低，不能进 head promotion。
+
+2.3 每个 track 限制容量
+
+不要让热门 track 的 train snippets 无限膨胀：
+
+max_snippets_per_track = 20
+max_tokens_per_track_context = 300~600
+deduplicate near-identical snippets
+prefer high-IDF / diverse snippets
+
+否则 BM25 会更偏热门 track。
+
+2.4 使用方式
+
+推荐只把 train-context source 作为：
+
+candidate generator
+LTR feature
+tail rerank source
+
+不要让它直接覆盖 BM25 head。
+
+安全融合：
+
+final[1:15] = legacy BM25 unchanged
+final[16:20] can use trainctx candidates
+
+或者更保守：
+
+final[1:18] = legacy BM25 unchanged
+final[19:20] can use trainctx candidates
+3. Safe usage 2：train-derived priors
+
+train labels 可以变成弱统计 prior，但不能让它变成 track memorization。
+
+3.1 可用 priors
+track_popularity = count_train_gold(track)
+artist_popularity = count_train_gold(artist)
+album_popularity = count_train_gold(album)
+
+intent_track_prior = count(track, intent)
+intent_artist_prior = count(artist, intent)
+
+category_track_prior = count(track, category)
+specificity_track_prior = count(track, specificity)
+
+profile_artist_prior = count(artist, profile_cluster)
+turn_position_prior = count(track, turn_bucket)
+
+但 track-level conditional prior 要非常弱，artist-level 通常更稳。
+
+3.2 平滑
+
+不要用 raw count。用：
+
+log_track_pop = log1p(track_count)
+log_artist_pop = log1p(artist_count)
+
+smoothed_p(track | intent) =
+    (count(track, intent) + alpha * p(track)) / (count(intent) + alpha)
+
+建议：
+
+alpha = 20~100
+
+越怕过拟合，alpha 越大。
+
+3.3 推理使用
+
+prior 只能做 tie-breaker：
+
+final_score =
+    legacy_score_z
+  + 0.05 ~ 0.10 * prior_z
+  + other features
+
+不要超过：
+
+prior_weight > 0.15
+
+否则它会把系统推向 train 热门歌，catalog diversity 和 blind 泛化都会受伤。
+
+3.4 prior 的安全 gate
+
+只在这些情况启用：
+
+broad / vague / mood / genre query
+legacy tail candidates 分数接近
+candidate 已经被 BM25 或 embedding source 召回
+
+不要在 exact title / exact artist query 中让 popularity prior 抢排序。
+
+4. Safe usage 3：case-based distillation
+
+这比直接混 train rows 更安全。
+
+思路：
+
+当前 dev/blind query -> 检索相似 train turns -> 聚合这些 train turns 的 gold tracks/artists/genres -> 作为一个 weak teacher source
+4.1 建 train-turn index
+
+每个 train turn 建一个 query document：
+
+user_profile
+conversation_goal
+dialogue history before turn
+current user request
+positive/negative feedback before turn
+intent/category/specificity
+
+不要包含：
+
+gold track title
+gold artist
+assistant answer after gold
+future turns
+
+每条 train-turn 存：
+
+gold_track_id
+gold_artist_id
+gold_album_id
+gold_genre/tags if available
+4.2 对 dev/blind turn 检索相似 train turns
+similar_train_turns = BM25_or_embedding_search(current_turn_text, topK=20~50)
+
+聚合：
+
+case_track_score[t] = sum(sim_i for train_i if gold_track_i == t)
+case_artist_score[a] = sum(sim_i for train_i if gold_artist_i == a)
+case_album_score[al] = sum(sim_i for train_i if gold_album_i == al)
+
+然后给 candidate 加 features：
+
+candidate_case_track_score
+candidate_case_artist_score
+candidate_case_album_score
+candidate_case_max_sim
+candidate_case_support_count
+4.3 更推荐 artist/tag distillation，不推荐 exact track distillation
+
+exact track distillation 容易记忆 train label。
+
+更稳的使用顺序：
+
+artist score > album score > tag/genre score > exact track score
+
+如果 exact track 只在一个相似 train turn 中出现，不要强推。
+
+安全条件：
+
+case_support_count >= 2
+or max_sim very high and candidate already in BM25 top100
+4.4 使用位置
+
+case-based teacher 只允许影响：
+
+positions 16–20
+or LTR feature
+or response explanation hint
+
+不允许直接把 train gold track 拉进 top5。
+
+5. Safe usage 4：sample weighting，而不是 sample mixing
+
+如果你还想让 LTR 用 train sessions，先不要“随机采样混入”。改成 group-level sample weighting。
+
+5.1 只用 naturally retrieved candidates
+
+训练 LTR 时区分：
+
+natural candidate: retrieval pipeline 本来能召回
+positive-injected candidate: 为了训练强行加入 gold
+
+推荐：
+
+natural positives weight = 1.0
+positive-injected-only positives weight = 0.1 or 0
+
+如果 gold 不在自然 candidate pool，LTR 学它没有意义；那是 retrieval recall 问题，不是 ranking 问题。
+
+5.2 dev-like weighting
+
+对每个 train group 计算输入侧特征：
+
+turn_number
+query length
+intent
+category
+specificity
+number of entities
+has seed tracks
+has profile
+legacy top20 score distribution
+BM25 top1/top5 score gap
+
+训练一个简单 classifier 区分：
+
+train-like vs dev-like
+
+注意：这个 classifier 只能用 input features，不能用 label/gold。
+
+得到 density weight：
+
+w = p(dev_like | x) / p(train_like | x)
+w = clip(w, 0.25, 2.0)
+
+如果不想这么复杂，直接用 stratified caps：
+
+每个 intent/category/turn_bucket 的训练样本数量按 dev 分布重采样
+5.3 noisy train examples 降权
+
+降权：
+
+gold only appears because of positive injection
+query extremely generic
+assistant/history text contains template artifacts
+train context has near-duplicate generated wording
+track is ultra-popular and appears in too many train labels
+
+升权：
+
+exact entity queries
+clear positive feedback turns
+has seed and gold is semantically close to seed
+hard negative clearly outranks gold in legacy
+
+但是不要过度升权热门 track。
+
+6. Dev reporting leakage guards
+
+这是最重要的部分。
+
+6.1 两套评估必须分开
+
+你需要明确输出两类结果：
+
+HONEST DEV:
+  augmentation/prior/distillation built from train only
+  dev gold never used
+  no positive injection in reported end-to-end metric
+
+ORACLE/DIAGNOSTIC:
+  may include positive injection or dev-gold analysis
+  only用于定位问题
+  not comparable to leaderboard expectation
+
+报告里不要混。
+
+6.2 train OOF augmentation
+
+如果你在 train 内做 ablation，不能用全 train augmentation 评估 train fold。必须 K-fold：
+
+split train conversations into K folds by session/user
+
+for fold k:
+    build train-context docs from train folds except k
+    evaluate on fold k
+
+否则你会把某个 fold 的 gold context 写进它自己的 track doc，train OOF 分数虚高。
+
+6.3 official dev / blind 构建规则
+
+对 official dev：
+
+build all artifacts from official train only
+evaluate on official dev
+
+对 blind：
+
+build all artifacts from official train + allowed non-label metadata only
+run on blind input
+
+如果你决定把 official dev labels 也折入 final train artifact，必须单独标记：
+
+not valid for dev reporting
+only for final blind submission candidate
+
+但在 blind mismatch 很大时，我不建议太早把 dev labels 折进去。
+
+6.4 时间泄漏
+
+对每个 turn t，只能用：
+
+profile
+goal
+conversation history before or at current user request
+previous music tracks
+previous user feedback
+
+不能用：
+
+future user turns
+future assistant responses
+current gold response
+goal_progress label if it actually refers to future transition
+
+如果 goal_progress_assessment[turn_number] 对齐还不确定，只能当弱特征，不要当强 positive/negative label。
+
+6.5 文件 manifest
+
+每次生成 artifact 写 manifest：
+
+JSON
+{
+  "artifact": "bm25_trainctx_light",
+  "source_split": "official_train_only",
+  "excluded_splits": ["dev", "blind"],
+  "uses_gold_labels": true,
+  "uses_dev_gold": false,
+  "uses_future_turns": false,
+  "build_time": "...",
+  "git_commit": "..."
+}
+
+没有 manifest 的结果不进入报告。
+
+7. 实验矩阵
+
+按这个顺序跑，不要一口气全混。
+
+B0: legacy BM25 / current OOF pipeline
+
+A1: + trainctx_light source only, shadow metrics
+A2: + trainctx_light as tail source, protect top18
+A3: + trainctx_light as tail source, protect top15
+
+P1: + train priors as LTR features only
+P2: + train priors in tail score, weak weight
+
+D1: + case-based distillation features only
+D2: + case-based distillation as tail source
+
+W1: LTR with sample weights, no new augmentation
+W2: LTR with sample weights + trainctx features
+
+C1: best safe combo, protect top18
+C2: best safe combo, protect top15
+
+每个实验都输出：
+
+nDCG@20
+hit@20
+MRR
+catalog diversity
+unique tracks
+unique artists
+changed groups
+changed positions
+gained hits
+lost hits
+net hits
+legacy hits demoted
+8. 判断 train data 是否真的有帮助
+8.1 必须看 incremental recall
+
+对每个 train-derived source：
+
+legacy_miss = gold not in legacy top20
+source_hit = gold in source topK
+incremental_recall = count(legacy_miss and source_hit) / count(all groups)
+
+如果：
+
+trainctx_light top100 incremental recall ≈ 0
+case_teacher top100 incremental recall ≈ 0
+
+说明它没提供新候选，只是在扰动排序。
+
+8.2 必须看 tail swap precision
+
+对 protect top15 / top18：
+
+gained_hits = legacy top20 missed, new top20 hits
+lost_hits = legacy top20 hit, new top20 misses
+net_hits = gained_hits - lost_hits
+
+接受条件：
+
+net_hits >= 0
+lost_hits <= gained_hits
+nDCG@20 >= legacy - 0.001
+catalog diversity >= legacy
+
+如果只涨 diversity 不涨 net hits，那是 perturbation，不是 ranking improvement。
+
+8.3 分组诊断
+
+至少按这些切：
+
+exact title / artist / album query
+genre / mood query
+similar-to-seed query
+negative feedback query
+vague query
+
+turn 1–2
+turn 3–5
+turn 6–8
+
+has profile
+no profile
+
+has previous seed
+no previous seed
+
+gold popularity high / mid / low
+
+典型判断：
+
+trainctx 对 mood/genre 有收益，exact query 掉分
+=> trainctx 只能在 non-exact intent 启用
+
+case teacher 只在 has-seed late turns 有收益
+=> only enable when seed_count >= 1 and turn >= 3
+
+prior 提升 vague query，但伤 specific query
+=> prior only for broad/vague intent
+8.4 过拟合信号
+
+直接 rollback 的信号：
+
+train OOF 提升，但 official dev 掉
+full-train augmentation > fold-out augmentation 很多
+source 主要提升 ultra-popular tracks
+exact entity query 被 train prior 改坏
+new hits 集中在少数 train-frequent tracks
+candidate 被 trainctx 拉进 top20，但 BM25_base / embedding / entity 都不支持
+randomized train labels 也能带来类似提升
+
+最后一条很重要：做一个 sanity check。
+
+把 train gold track 随机打乱后重建 trainctx/prior
+如果效果还差不多，说明你学到的是 popularity 或 artifact，不是真正语义。
+9. 推荐的最终 production 用法
+
+如果实验通过，我建议上线结构是：
+
+Candidate sources:
+  legacy BM25 top100
+  trainctx_light BM25 top100
+  case_teacher top100
+  embedding/CF top200 if available
+
+Features:
+  legacy rank/score
+  trainctx_light rank/score
+  case_artist_score
+  case_track_score, capped
+  smoothed artist prior
+  smoothed track prior
+  intent/category/specificity
+  exact entity match
+  seed similarity
+
+最终排序：
+
+final[1:15] = legacy BM25 unchanged
+
+final[16:20] =
+  rerank candidates from candidate union
+  using:
+    legacy_score_z
+    trainctx_score_z
+    case_teacher_score_z
+    weak_prior_z
+    exact/rule features
+    repeat penalty
+
+更保守提交版：
+
+final[1:18] = legacy unchanged
+final[19:20] = train-derived tail replacement only when gated
+
+Gate：
+
+enable_trainctx_tail if:
+    candidate in legacy top100
+    or candidate in trainctx top30
+    or candidate supported by trainctx + case_teacher
+    or same artist/genre as high-similar train cases
+
+disable if:
+    exact title/artist query and legacy already has exact match
+    no seed + vague query + source only supported by prior
+    candidate is ultra-popular but semantically unsupported
+10. Concrete implementation plan
+Step 1：build train-context artifact
+
+Create:
+
+build_train_context_docs.py
+
+Outputs:
+
+track_ctx_light.jsonl
+track_ctx_raw.jsonl
+artifact_manifest.json
+
+Then build separate BM25 indexes:
+
+index_base
+index_trainctx_light
+index_trainctx_raw_shadow
+Step 2：build priors
+
+Create:
+
+build_train_priors.py
+
+Outputs:
+
+track_prior.csv
+artist_prior.csv
+intent_track_prior.csv
+intent_artist_prior.csv
+profile_artist_prior.csv
+
+All smoothed, log-scaled.
+
+Step 3：build case teacher
+
+Create:
+
+build_train_turn_index.py
+retrieve_similar_train_turns.py
+
+For each dev/blind group output:
+
+case_track_score
+case_artist_score
+case_album_score
+case_support_count
+case_max_sim
+Step 4：run shadow diagnostics
+
+Before modifying final ranking:
+
+source recall@20/50/100
+incremental recall over legacy
+gold rank distribution
+per-intent source usefulness
+
+If shadow recall is bad, stop.
+
+Step 5：tail-only integration
+
+Run:
+
+protect top18
+protect top15
+
+Never start with full rerank.
+
+Step 6：accept/reject
+
+Accept only if:
+
+OOF and official dev agree directionally
+nDCG@20 does not drop beyond tiny tolerance
+net_hits >= 0
+specific/exact queries do not regress
+catalog diversity does not regress
+train-derived source has real incremental recall
+
+Reject if:
+
+gain only appears in train OOF
+dev loss > 0.001~0.002
+lost_hits > gained_hits
+source mainly promotes train-popular tracks
+random-label sanity check not much worse
+Final recommendation
+
+Use labeled train conversations now, but only in this order:
+
+1. train-context augmentation as separate BM25 source
+2. smoothed artist/track/intent priors as weak features
+3. case-based train-turn distillation as tail-only teacher
+4. sample weighting only if LTR still needed
+
+Do not do:
+
+randomly mix train sessions into LTR
+let train-context source enter top5/top10 freely
+report dev results built with dev labels
+trust full-train augmentation without fold-out check
+use positive-injected candidates as honest metric
+
+The safest production candidate is:
+
+BM25 top15 frozen
+train-derived signals only rerank 16–20
+exact entity queries protected
+broad/mood/genre/seed queries allowed to use train-context/case teacher
+weak priors capped
+all train-derived sources individually ablated
+
+This lets train labels help where they are most useful—semantic recall and tail repair—without letting them overwrite the known strong BM25 head.

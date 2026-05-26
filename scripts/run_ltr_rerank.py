@@ -18,6 +18,7 @@ from tqdm import tqdm
 
 from export_ltr_dataset import candidate_features
 from goalflow.data import BLIND_A_DATASET, CONVERSATION_DATASET, TrackCatalog
+from goalflow.embeddings import TRACK_EMBEDDING_CHANNELS, TrackEmbeddingStore, UserEmbeddingStore
 from goalflow.fusion import CandidateScore, rrf_fuse
 from goalflow.pipeline import (
     GoalFlowConfig,
@@ -35,6 +36,7 @@ from goalflow.validation import validate_predictions
 LTR_CATEGORICAL = ["intent", "category", "specificity"]
 META_COLUMNS = {"session_id", "user_id", "track_id", "label"}
 CANDIDATE_CACHE_VERSION = "ltr_candidate_frames_v1"
+DEFAULT_EMBEDDING_FEATURE_CHANNELS = "metadata,attributes,track_cf"
 
 
 def dcg_at_20(gold_track_id: str | None, ranked_track_ids: list[str]) -> float:
@@ -245,6 +247,157 @@ def build_or_load_candidate_frames(
         legacy_by_group=legacy_by_group,
     )
     return df, legacy_by_group, state_by_group
+
+
+def parse_embedding_channels(value: str) -> list[str]:
+    channels = []
+    for raw in value.split(","):
+        channel = raw.strip()
+        if not channel:
+            continue
+        if channel not in TRACK_EMBEDDING_CHANNELS:
+            allowed = ", ".join(sorted(TRACK_EMBEDDING_CHANNELS))
+            raise ValueError(f"Unknown embedding channel {channel!r}; allowed: {allowed}")
+        if channel not in channels:
+            channels.append(channel)
+    return channels
+
+
+def _valid_embedding_indices(
+    track_store: TrackEmbeddingStore,
+    channel: str,
+    track_ids: Iterable[str],
+) -> list[int]:
+    matrix = track_store.matrices[channel]
+    indices = []
+    for track_id in track_ids:
+        index = track_store.track_index.get(track_id)
+        if index is not None and matrix.valid[index]:
+            indices.append(index)
+    return indices
+
+
+def _rank_percentiles(scores: np.ndarray, valid: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    rank = np.zeros_like(scores, dtype=np.float32)
+    pct = np.zeros_like(scores, dtype=np.float32)
+    valid_positions = np.flatnonzero(valid & np.isfinite(scores))
+    if not len(valid_positions):
+        return rank, pct
+    ordered_positions = valid_positions[np.argsort(-scores[valid_positions])]
+    rank[ordered_positions] = np.arange(1, len(ordered_positions) + 1, dtype=np.float32)
+    if len(ordered_positions) == 1:
+        pct[ordered_positions] = 1.0
+    else:
+        pct[ordered_positions] = 1.0 - (rank[ordered_positions] - 1.0) / (len(ordered_positions) - 1.0)
+    return rank, pct
+
+
+def _zscore(scores: np.ndarray, valid: np.ndarray) -> np.ndarray:
+    out = np.zeros_like(scores, dtype=np.float32)
+    valid_scores = scores[valid & np.isfinite(scores)]
+    if len(valid_scores) < 2:
+        return out
+    std = float(valid_scores.std())
+    if not np.isfinite(std) or std <= 1e-12:
+        return out
+    mean = float(valid_scores.mean())
+    out[valid] = (scores[valid] - mean) / std
+    return out
+
+
+def add_embedding_features(
+    df: pd.DataFrame,
+    *,
+    state_by_group: dict[int, object],
+    track_store: TrackEmbeddingStore,
+    channels: list[str],
+    user_store: UserEmbeddingStore | None,
+) -> pd.DataFrame:
+    """Append optional seed/user embedding features without rebuilding BM25 candidates."""
+    if df.empty:
+        return df
+    out = df.copy()
+    candidate_indices = np.array(
+        [track_store.track_index.get(track_id, -1) for track_id in out["track_id"]],
+        dtype=np.int32,
+    )
+    out["_embedding_track_index"] = candidate_indices
+
+    for channel in channels:
+        prefix = f"emb_{channel}"
+        out[f"{prefix}_candidate_valid"] = 0.0
+        out[f"{prefix}_pos_max"] = 0.0
+        out[f"{prefix}_neg_max"] = 0.0
+        out[f"{prefix}_pos_minus_neg"] = 0.0
+        out[f"{prefix}_pos_seed_count"] = 0.0
+        out[f"{prefix}_neg_seed_count"] = 0.0
+        out[f"{prefix}_pos_rank_pct"] = 0.0
+
+    if user_store is not None:
+        out["emb_user_cf_has_user"] = 0.0
+        out["emb_user_cf_candidate_valid"] = 0.0
+        out["emb_user_cf_raw"] = 0.0
+        out["emb_user_cf_z"] = 0.0
+        out["emb_user_cf_rank"] = 0.0
+        out["emb_user_cf_rank_pct"] = 0.0
+
+    grouped = out.groupby("group_id", sort=False)
+    for group_id, group in tqdm(grouped, desc="Add embedding LTR features"):
+        state = state_by_group[int(group_id)]
+        row_index = group.index
+        group_positions = out.index.get_indexer(row_index)
+        group_embedding_indices = candidate_indices[group_positions]
+
+        for channel in channels:
+            matrix = track_store.matrices[channel]
+            prefix = f"emb_{channel}"
+            valid_candidates = (
+                (group_embedding_indices >= 0)
+                & matrix.valid[np.clip(group_embedding_indices, 0, len(matrix.valid) - 1)]
+            )
+            out.loc[row_index, f"{prefix}_candidate_valid"] = valid_candidates.astype(np.float32)
+
+            pos_indices = _valid_embedding_indices(track_store, channel, state.positive_seed_ids[-4:])
+            neg_indices = _valid_embedding_indices(track_store, channel, state.negative_seed_ids[-4:])
+            out.loc[row_index, f"{prefix}_pos_seed_count"] = float(len(pos_indices))
+            out.loc[row_index, f"{prefix}_neg_seed_count"] = float(len(neg_indices))
+
+            pos_scores = np.zeros(len(group), dtype=np.float32)
+            neg_scores = np.zeros(len(group), dtype=np.float32)
+            if valid_candidates.any() and pos_indices:
+                candidate_vectors = matrix.normalized[group_embedding_indices[valid_candidates]]
+                seed_vectors = matrix.normalized[pos_indices]
+                pos_scores[valid_candidates] = (candidate_vectors @ seed_vectors.T).max(axis=1)
+                out.loc[row_index, f"{prefix}_pos_max"] = pos_scores
+                _rank, pct = _rank_percentiles(pos_scores, valid_candidates)
+                out.loc[row_index, f"{prefix}_pos_rank_pct"] = pct
+            if valid_candidates.any() and neg_indices:
+                candidate_vectors = matrix.normalized[group_embedding_indices[valid_candidates]]
+                seed_vectors = matrix.normalized[neg_indices]
+                neg_scores[valid_candidates] = (candidate_vectors @ seed_vectors.T).max(axis=1)
+                out.loc[row_index, f"{prefix}_neg_max"] = neg_scores
+            out.loc[row_index, f"{prefix}_pos_minus_neg"] = pos_scores - neg_scores
+
+        if user_store is not None and "track_cf" in track_store.matrices:
+            user_vector = user_store.user_vectors.get(state.user_id)
+            matrix = track_store.matrices["track_cf"]
+            valid_candidates = (
+                (group_embedding_indices >= 0)
+                & matrix.valid[np.clip(group_embedding_indices, 0, len(matrix.valid) - 1)]
+            )
+            out.loc[row_index, "emb_user_cf_candidate_valid"] = valid_candidates.astype(np.float32)
+            if user_vector is not None and matrix.raw.shape[1] == user_vector.shape[0]:
+                scores = np.zeros(len(group), dtype=np.float32)
+                if valid_candidates.any():
+                    scores[valid_candidates] = matrix.raw[group_embedding_indices[valid_candidates]] @ user_vector
+                rank, pct = _rank_percentiles(scores, valid_candidates)
+                out.loc[row_index, "emb_user_cf_has_user"] = 1.0
+                out.loc[row_index, "emb_user_cf_raw"] = scores
+                out.loc[row_index, "emb_user_cf_z"] = _zscore(scores, valid_candidates)
+                out.loc[row_index, "emb_user_cf_rank"] = rank
+                out.loc[row_index, "emb_user_cf_rank_pct"] = pct
+
+    return out.drop(columns=["_embedding_track_index"])
 
 
 def prepare_features(
@@ -548,6 +701,7 @@ def parse_args() -> argparse.Namespace:
             "compact", "compact_broad", "concise", "setwise", "natural", "polished",
             "judge_v1", "judge_v2", "judge_v3", "judge_mix", "judge_brief",
             "judge_planned", "judge_compact_mix", "judge_clean_mix", "judge_balanced_mix",
+            "judge_clean_mix_plus",
         ],
         default="compact_broad",
     )
@@ -564,6 +718,21 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=160,
         help="Candidates per extra train-split group. Lower than dev keeps memory bounded.",
+    )
+    parser.add_argument(
+        "--embedding-features",
+        action="store_true",
+        help="Append seed/user official-embedding features to LTR candidates after loading the BM25 cache.",
+    )
+    parser.add_argument(
+        "--embedding-feature-channels",
+        default=DEFAULT_EMBEDDING_FEATURE_CHANNELS,
+        help="Comma-separated official track embedding channels for seed similarity features.",
+    )
+    parser.add_argument(
+        "--no-user-cf-feature",
+        action="store_true",
+        help="Disable user_cf_bpr candidate features when --embedding-features is enabled.",
     )
     parser.add_argument("--rebuild-cache", action="store_true")
     parser.add_argument("--no-train-augmentation", action="store_true")
@@ -625,6 +794,35 @@ def main() -> None:
         retriever=retriever,
         max_candidates_per_group=args.max_candidates_per_group,
     )
+    embedding_channels: list[str] = []
+    track_embedding_store: TrackEmbeddingStore | None = None
+    user_embedding_store: UserEmbeddingStore | None = None
+    embedding_feature_stats = {
+        "enabled": bool(args.embedding_features),
+        "channels": [],
+        "user_cf": False,
+    }
+    if args.embedding_features:
+        embedding_channels = parse_embedding_channels(args.embedding_feature_channels)
+        if not args.no_user_cf_feature and "track_cf" not in embedding_channels:
+            embedding_channels.append("track_cf")
+        track_embedding_store = TrackEmbeddingStore(
+            channels={channel: TRACK_EMBEDDING_CHANNELS[channel] for channel in embedding_channels}
+        )
+        if not args.no_user_cf_feature:
+            user_embedding_store = UserEmbeddingStore()
+        embedding_feature_stats = {
+            "enabled": True,
+            "channels": embedding_channels,
+            "user_cf": user_embedding_store is not None,
+        }
+        dev_df = add_embedding_features(
+            dev_df,
+            state_by_group=dev_state_by_group,
+            track_store=track_embedding_store,
+            channels=embedding_channels,
+            user_store=user_embedding_store,
+        )
     all_groups = sorted(dev_df["group_id"].unique())
     valid_groups = {group_id for group_id in all_groups if group_id % args.valid_mod == 0}
     train_groups = [group_id for group_id in all_groups if group_id not in valid_groups]
@@ -652,6 +850,14 @@ def main() -> None:
             retriever=retriever,
             max_candidates_per_group=args.extra_train_max_candidates,
         )
+        if track_embedding_store is not None:
+            raw_extra_df = add_embedding_features(
+                raw_extra_df,
+                state_by_group=_extra_state_by_group,
+                track_store=track_embedding_store,
+                channels=embedding_channels,
+                user_store=user_embedding_store,
+            )
         group_offset = int(max(all_groups) + 1) if all_groups else 0
         extra_train_df = raw_extra_df.copy()
         extra_train_df["group_id"] = extra_train_df["group_id"] + group_offset
@@ -782,6 +988,7 @@ def main() -> None:
             "reg_lambda": reg_lambda_values[0],
             "lambdarank_truncation_level": args.lambdarank_truncation_level,
             "extra_train": extra_train_stats,
+            "embedding_features": embedding_feature_stats,
             "best_ltr_config_by_head0": best_params,
             "train": first_train_stats,
             "valid_groups": len(valid_groups),
@@ -873,6 +1080,7 @@ def main() -> None:
             "lambdarank_truncation_level": args.lambdarank_truncation_level,
             "preserve_head_k": args.preserve_head_k,
             "extra_train": extra_train_stats,
+            "embedding_features": embedding_feature_stats,
             "output": str(output),
             "folds": fold_stats,
         }
@@ -909,6 +1117,14 @@ def main() -> None:
             retriever=retriever,
             max_candidates_per_group=args.max_candidates_per_group,
         )
+        if track_embedding_store is not None:
+            apply_df = add_embedding_features(
+                apply_df,
+                state_by_group=_state_by_group,
+                track_store=track_embedding_store,
+                channels=embedding_channels,
+                user_store=user_embedding_store,
+            )
     else:
         states = dev_states
         apply_df = dev_df
@@ -936,7 +1152,13 @@ def main() -> None:
     summary = write_run_summary(config, output, args.mode)
     print(
         json.dumps(
-            {"output": str(output), "summary": str(summary), "train": train_stats, "extra_train": extra_train_stats},
+            {
+                "output": str(output),
+                "summary": str(summary),
+                "train": train_stats,
+                "extra_train": extra_train_stats,
+                "embedding_features": embedding_feature_stats,
+            },
             indent=2,
         )
     )

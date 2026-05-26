@@ -1,0 +1,829 @@
+Title: Embedding CF Integration
+URL: https://chatgpt.com/c/6a147a3c-fdb4-8324-95f0-232a1e2a25a3
+Message index: 12
+
+主人，完整结论：现在最安全的 embedding 用法不是 seed/user 继续加权，也不是新增 dense retrieval，而是做“BM25/LTR 候选内部的 embedding-consistency features”。也就是：candidate pool 完全不变，top-rank 不做 postprocess，embedding 只告诉 LightGBM：这个候选是否与 BM25 头部、当前候选簇、明确正负反馈、用户 CF 方向一致。
+
+官方 Music-CRS 任务要求系统根据 dialogue history 和 user context 产出 ranked tracks 与 response text；官方也提供 multimodal track/user embeddings，适合做这种上下文排序证据，而不是盲目替代 BM25。
+RecSys
++1
+
+1. 最安全优先级
+
+按风险从低到高：
+
+P0: BM25-head anchor agreement features
+P0: candidate-cluster consistency features
+P1: exact/generic intent-gated user-CF affinity features
+P1: explicit feedback-only seed margin features
+P2: query-to-track dense scores as features, not retrieval
+P3: gated dense candidate evidence, only for cover-art / lyrics / broad mood
+P4: dense retrieval / seed-CF postprocess，暂时不要做
+
+既然 seed-CF tail rescue neutral，而且 seed/user embedding LTR features 也可能 hurt，下一步不要继续强化 seed/user。优先做不依赖 noisy feedback alignment 的：
+
+BM25 head → embedding centroid → candidate agreement
+
+这类特征最稳，因为它只在当前 BM25 已经找出的候选之间重排，不新增候选、不硬替换 top20。
+
+2. 全局预处理
+
+对每个 channel 的 track embedding 做 L2 normalization：
+
+Python
+运行
+E_c[i] = emb_c[i] / (np.linalg.norm(emb_c[i]) + 1e-12)
+
+channels:
+
+Python
+运行
+C = {
+  "meta": metadata_qwen3,
+  "attr": attributes_qwen3,
+  "lyrics": lyrics_qwen3,
+  "audio": audio_laion_clap,
+  "image": image_siglip2,
+  "track_cf": track_cf_bpr,
+}
+
+user CF:
+
+Python
+运行
+U[u] = user_cf_bpr[u] / (np.linalg.norm(user_cf_bpr[u]) + 1e-12)
+
+每个 candidate group 是一个 session-turn：
+
+Python
+运行
+G = candidates for one session-turn
+
+group 内 robust z-score：
+
+Python
+运行
+def robust_z(xs):
+    med = median(xs_valid)
+    iqr = percentile(xs_valid, 75) - percentile(xs_valid, 25)
+    if iqr < 1e-6:
+        return 0.0
+    return clip((x - med) / (iqr + 1e-6), -5.0, 5.0)
+
+rank score：
+
+Python
+运行
+rank_score(r) = 1.0 / log2(r + 1)
+3. P0 特征一：BM25-head anchor agreement
+
+这是最推荐先做的 block。
+
+3.1 构造 BM25 anchor centroid
+
+对每个 query/group，取当前 BM25-derived rank 的 top-k：
+
+Python
+运行
+H_k(q) = top k BM25 candidates
+k = 5 or 10
+
+建议先用：
+
+k = 5 for exact / narrow query
+k = 10 for broad / playlist / mood query
+
+过滤 anchor：
+
+Python
+运行
+valid_anchor(j, c) =
+    has_embedding(c, j)
+    and not explicitly_rejected(j)
+    and not duplicate_removed(j)
+
+anchor 权重：
+
+Python
+运行
+w_j = 1.0 / log2(bm25_rank_j + 1)
+
+channel centroid：
+
+Python
+运行
+A_c(q) = normalize(
+    sum_{j in H_k(q), valid_anchor(j,c)} w_j * E_c[j]
+)
+
+如果有效 anchor 少于 2 个：
+
+Python
+运行
+A_c(q) = missing
+3.2 per-candidate cosine
+Python
+运行
+anchor_cos_c[i] = dot(E_c[i], A_c(q))
+
+为每个 candidate 生成：
+
+Python
+运行
+feat_anchor_meta_cos
+feat_anchor_meta_z
+feat_anchor_meta_rank
+feat_anchor_meta_rr
+
+feat_anchor_attr_cos
+feat_anchor_attr_z
+feat_anchor_attr_rank
+feat_anchor_attr_rr
+
+feat_anchor_cf_cos
+feat_anchor_cf_z
+feat_anchor_cf_rank
+feat_anchor_cf_rr
+
+其中：
+
+Python
+运行
+feat_anchor_meta_z = robust_z(anchor_cos_meta over group G)
+feat_anchor_meta_rank = descending_rank(anchor_cos_meta within G)
+feat_anchor_meta_rr = 1 / log2(feat_anchor_meta_rank + 1)
+
+先不要全局开 lyrics/audio/image，只对主三路做：
+
+metadata-qwen3
+attributes-qwen3
+track cf-bpr
+3.3 聚合特征
+Python
+运行
+feat_anchor_text_mean_z = mean_available([
+    feat_anchor_meta_z,
+    feat_anchor_attr_z,
+])
+
+feat_anchor_text_max_z = max_available([
+    feat_anchor_meta_z,
+    feat_anchor_attr_z,
+])
+
+feat_anchor_all_mean_z = mean_available([
+    feat_anchor_meta_z,
+    feat_anchor_attr_z,
+    feat_anchor_cf_z,
+])
+
+feat_anchor_agree_count = count([
+    feat_anchor_meta_z > 0.5,
+    feat_anchor_attr_z > 0.5,
+    feat_anchor_cf_z > 0.5,
+])
+
+feat_anchor_disagree_count = count([
+    feat_anchor_meta_z < -0.5,
+    feat_anchor_attr_z < -0.5,
+    feat_anchor_cf_z < -0.5,
+])
+
+BM25 position interaction：
+
+Python
+运行
+feat_anchor_text_z_x_bm25_top5  = feat_anchor_text_mean_z * int(bm25_rank <= 5)
+feat_anchor_text_z_x_bm25_tail  = feat_anchor_text_mean_z * int(bm25_rank > 10)
+feat_anchor_all_z_x_bm25_tail   = feat_anchor_all_mean_z * int(bm25_rank > 10)
+feat_anchor_cf_z_x_bm25_tail    = feat_anchor_cf_z * int(bm25_rank > 10)
+
+为什么安全：它不是说“embedding 喜欢这个歌所以推上去”，而是说“这个 BM25 候选是否和 BM25 头部语义一致”。对 top ranks 的破坏通常比 seed-CF/user-CF 小。
+
+4. P0 特征二：candidate-cluster consistency
+
+这个也很安全，因为只使用当前候选池内部结构。
+
+对每个 channel c，取当前候选池里 BM25 top20 或 LTR base top20：
+
+Python
+运行
+T(q) = top 20 candidates by current baseline score
+
+对 candidate i：
+
+Python
+运行
+cluster_mean_c[i] = mean_{j in T(q), j != i} dot(E_c[i], E_c[j])
+cluster_max_c[i]  = max_{j in T(q), j != i} dot(E_c[i], E_c[j])
+cluster_top3_c[i] = mean top3 similarities to T(q)
+
+生成：
+
+Python
+运行
+feat_cluster_meta_mean_z
+feat_cluster_meta_max_z
+feat_cluster_attr_mean_z
+feat_cluster_attr_max_z
+feat_cluster_cf_mean_z
+feat_cluster_cf_max_z
+
+聚合：
+
+Python
+运行
+feat_cluster_text_mean_z = mean_available([
+    feat_cluster_meta_mean_z,
+    feat_cluster_attr_mean_z,
+])
+
+feat_cluster_all_mean_z = mean_available([
+    feat_cluster_meta_mean_z,
+    feat_cluster_attr_mean_z,
+    feat_cluster_cf_mean_z,
+])
+
+注意：cluster consistency 可能惩罚“正确但独特”的 exact-title，因此 exact-title case 要 gate。
+
+Python
+运行
+if is_exact_title_intent:
+    feat_cluster_* = 0
+    feat_cluster_disabled_exact = 1
+5. P1 特征三：user-CF affinity，但强 gate
+
+user-CF 可能 hurt，因为用户长期偏好不一定等于当前 turn intent。它只能作为 gated feature。
+
+Python
+运行
+user_cf_cos[i] = dot(U[user_id], E_track_cf[i])
+
+features：
+
+Python
+运行
+feat_user_cf_cos
+feat_user_cf_z
+feat_user_cf_rank
+feat_user_cf_rr
+feat_user_cf_available
+
+interaction：
+
+Python
+运行
+feat_user_cf_z_x_personalized = feat_user_cf_z * is_personalized_intent
+feat_user_cf_z_x_broad        = feat_user_cf_z * is_broad_discovery_intent
+feat_user_cf_z_x_playlist     = feat_user_cf_z * is_playlist_continuation_intent
+feat_user_cf_z_x_tail         = feat_user_cf_z * int(bm25_rank > 10)
+
+exact/narrow query 直接关：
+
+Python
+运行
+if is_exact_title_intent or is_exact_artist_track_intent or is_exact_album_intent:
+    feat_user_cf_z = 0
+    feat_user_cf_rr = 0
+    feat_user_cf_disabled_exact = 1
+
+不要做：
+
+user_cf retrieval
+user_cf tail rescue
+user_cf global rerank weight
+6. P1 特征四：explicit feedback-only seed margin
+
+既然 seed-CF rescue neutral，seed features 只能非常保守地用，而且只用明确 feedback。
+
+不要用所有历史推荐当 positive seed。只用：
+
+positive seed:
+- user explicitly liked
+- user asked "more like this"
+- accepted / moves-toward-goal only if label alignment 已验证
+
+negative seed:
+- user explicitly rejected
+- user said wrong / not this / too slow / too pop / not that artist
+
+seed centroid：
+
+Python
+运行
+Pos_c(q) = normalize(sum_s w_s * E_c[s])
+Neg_c(q) = normalize(sum_s w_s * E_c[s])
+
+权重：
+
+Python
+运行
+w_s = feedback_strength_s * 0.85 ** turns_ago_s
+
+candidate features：
+
+Python
+运行
+seed_pos_cos_c[i] = dot(E_c[i], Pos_c(q))
+seed_neg_cos_c[i] = dot(E_c[i], Neg_c(q))
+
+seed_margin_c[i] = seed_pos_cos_c[i] - 0.7 * seed_neg_cos_c[i]
+
+先只做：
+
+metadata
+attributes
+track_cf
+
+features：
+
+Python
+运行
+feat_seed_margin_meta_z
+feat_seed_margin_attr_z
+feat_seed_margin_cf_z
+
+feat_seed_pos_meta_max
+feat_seed_neg_meta_max
+feat_seed_pos_attr_max
+feat_seed_neg_attr_max
+feat_seed_pos_cf_max
+feat_seed_neg_cf_max
+
+feat_has_positive_seed
+feat_has_negative_seed
+
+gated interaction：
+
+Python
+运行
+feat_seed_cf_margin_x_similar_intent =
+    feat_seed_margin_cf_z * is_similar_to_this_intent
+
+feat_seed_text_margin_x_feedback_intent =
+    mean(feat_seed_margin_meta_z, feat_seed_margin_attr_z) * has_explicit_feedback
+
+如果没有 explicit seed：
+
+Python
+运行
+all seed features = 0
+availability flags = 0
+7. P2：query-to-track dense score as feature only
+
+如果你能用相同 encoder 生成 query embedding，才做这一步。不要用不匹配的 sentence-transformer 去打 Qwen3 track embedding。
+
+7.1 query text 构造
+current user request
++ compact listener goal
++ explicit constraints: artist, title, album, genre, mood, era, language
++ positive feedback summary
+- negative feedback summary
+
+不要拼入：
+
+assistant boilerplate
+full conversation
+track IDs
+untrusted generated explanations
+rejected tracks as positive context
+7.2 channel query vectors
+Python
+运行
+q_meta = encode_qwen3(metadata_query_text)
+q_attr = encode_qwen3(attribute_query_text)
+q_lyrics = encode_qwen3(lyrics_query_text)
+
+normalize：
+
+Python
+运行
+q_c = normalize(q_c)
+
+candidate score：
+
+Python
+运行
+query_cos_c[i] = dot(q_c, E_c[i])
+
+features：
+
+Python
+运行
+feat_query_meta_cos
+feat_query_meta_z
+feat_query_meta_rank
+feat_query_meta_rr
+
+feat_query_attr_cos
+feat_query_attr_z
+feat_query_attr_rank
+feat_query_attr_rr
+
+feat_query_lyrics_cos
+feat_query_lyrics_z
+feat_query_lyrics_rr
+feat_query_lyrics_enabled
+
+gates：
+
+Python
+运行
+if is_exact_title_intent:
+    feat_query_meta_z = 0
+    feat_query_attr_z = 0
+    feat_query_lyrics_z = 0
+    feat_query_disabled_exact = 1
+
+lyrics only：
+
+Python
+运行
+feat_query_lyrics_enabled = int(
+    mentions_lyrics or mentions_quote or mentions_theme or mentions_story
+)
+8. P3：gated candidate evidence，不改变排序
+
+如果你需要让 dense 检索进入系统，先不要把 dense candidates 加进 final LTR pool。可以做 evidence-only features：
+
+对每个 candidate，记录它是否被某个 dense channel 检索到：
+
+Python
+运行
+dense_rank_meta[i] = rank in metadata dense topK, else missing
+dense_rank_attr[i] = rank in attributes dense topK, else missing
+dense_rank_lyrics[i] = rank in lyrics dense topK, else missing
+dense_rank_image[i] = rank in image dense topK, else missing
+
+但 candidate pool 仍然是原 BM25-derived pool。
+
+features：
+
+Python
+运行
+feat_dense_meta_hit20  = int(dense_rank_meta <= 20)
+feat_dense_meta_hit50  = int(dense_rank_meta <= 50)
+feat_dense_meta_rr     = 1 / (60 + dense_rank_meta) if hit else 0
+
+feat_dense_attr_hit20
+feat_dense_attr_hit50
+feat_dense_attr_rr
+
+feat_dense_lyrics_hit50
+feat_dense_lyrics_rr
+feat_dense_lyrics_enabled
+
+feat_dense_source_count =
+    feat_dense_meta_hit50
+  + feat_dense_attr_hit50
+  + feat_dense_lyrics_hit50
+
+This gives LTR “dense evidence” without adding dense-only false positives.
+
+Only after this works, test adding gated candidates.
+
+9. Missing-value handling
+
+Use this policy consistently.
+
+9.1 raw cosine
+
+If embedding missing:
+
+Python
+运行
+raw_cos = np.nan
+
+Let LightGBM handle NaN.
+
+9.2 normalized z / rank features
+
+If missing:
+
+Python
+运行
+z = 0.0
+rank = max_rank + 1 or -1
+rr = 0.0
+available = 0
+
+If available:
+
+Python
+运行
+available = 1
+9.3 centroid missing
+
+If fewer than 2 valid anchor tracks:
+
+Python
+运行
+anchor_available = 0
+anchor_cos = np.nan
+anchor_z = 0.0
+anchor_rr = 0.0
+
+For seed centroid, if no explicit positive/negative seeds:
+
+Python
+运行
+seed_available = 0
+seed_margin_z = 0.0
+9.4 channel disabled by intent
+
+Important difference: disabled is not missing.
+
+Python
+运行
+if disabled_by_intent:
+    raw_cos = np.nan       # optional
+    z = 0.0
+    rr = 0.0
+    enabled_flag = 0
+    disabled_exact_flag = 1
+
+This prevents LightGBM from interpreting disabled exact-title cases as real low similarity.
+
+10. Exact-title / exact-artist protection
+
+Hard rule:
+
+Python
+运行
+if is_exact_title_intent or is_exact_artist_track_intent:
+    disable user_cf
+    disable seed_cf unless user explicitly asked similar-to-this
+    disable cluster consistency
+    disable lyrics/audio/image unless query explicitly needs them
+    keep only anchor_meta/anchor_attr if A/B proves safe
+
+Even safer first ablation:
+
+Python
+运行
+if is_exact_title_intent:
+    all_embedding_features = 0 except availability flags
+
+Why: exact-title cases are usually won by lexical/BM25/exact metadata. Embeddings mostly add noise.
+
+For exact artist / album:
+
+Python
+运行
+if exact_artist_constraint:
+    any embedding promotion must also satisfy artist_match = 1
+
+if exact_album_constraint:
+    any embedding promotion must also satisfy album_match = 1
+
+As LTR features only, encode this interaction:
+
+Python
+运行
+feat_anchor_text_z_x_artist_match = feat_anchor_text_mean_z * artist_match
+feat_anchor_text_z_x_no_artist_match = feat_anchor_text_mean_z * (1 - artist_match)
+11. Minimal feature set to implement first
+
+Do not dump hundreds of embedding columns into LTR. Start with 25–35 stable features:
+
+anchor_meta_z
+anchor_meta_rr
+anchor_attr_z
+anchor_attr_rr
+anchor_cf_z
+anchor_cf_rr
+
+anchor_text_mean_z
+anchor_text_max_z
+anchor_all_mean_z
+anchor_agree_count
+anchor_disagree_count
+
+anchor_text_z_x_bm25_top5
+anchor_text_z_x_bm25_tail
+anchor_all_z_x_bm25_tail
+
+cluster_meta_mean_z
+cluster_attr_mean_z
+cluster_cf_mean_z
+cluster_text_mean_z
+cluster_all_mean_z
+
+user_cf_z
+user_cf_rr
+user_cf_available
+user_cf_z_x_personalized
+user_cf_z_x_tail
+
+seed_margin_meta_z
+seed_margin_attr_z
+seed_margin_cf_z
+has_positive_seed
+has_negative_seed
+
+embedding_disabled_exact
+
+If seed/user features hurt, keep only this ultra-safe subset:
+
+anchor_meta_z
+anchor_attr_z
+anchor_cf_z
+anchor_text_mean_z
+anchor_all_mean_z
+anchor_agree_count
+anchor_text_z_x_bm25_tail
+cluster_text_mean_z
+embedding_disabled_exact
+12. Ablation protocol
+
+Use same folds, same candidate pool, same labels, same LightGBM params.
+
+A0 baseline
+current BM25-derived candidates + current LightGBM features
+A1 anchor-only
+
+Add only:
+
+BM25-head anchor agreement:
+metadata, attributes, track_cf
+
+Accept if:
+
+OOF nDCG@20 >= baseline + 0.0005
+exact-title subset delta >= -0.0002
+top5 nDCG delta >= -0.0002
+changed top5 rows not excessive
+
+This is the best first candidate.
+
+A2 cluster-only
+
+Add candidate-cluster consistency.
+
+Accept if:
+
+broad / playlist / mood improves
+exact-title unchanged
+overall OOF non-negative
+
+Reject if exact-title drops; cluster features often punish singleton exact matches.
+
+A3 anchor + cluster
+
+Accept only if better than A1.
+
+If A1 improves but A3 flat/hurts, keep A1.
+
+A4 user-CF gated only
+
+Add user-CF features with exact-title disabled.
+
+Accept if:
+
+personalized/broad subset improves
+overall OOF >= A1 - 0.0002
+exact-title unchanged
+
+Reject if feature importance shows user_cf_z globally dominates. That means the model may overfit user prior.
+
+A5 explicit seed margin only
+
+Add seed margin from explicit feedback only.
+
+Accept if:
+
+similar-to-this / feedback-heavy subset improves
+overall OOF non-negative
+negative feedback cases improve or unchanged
+
+Reject if seed features help only train folds but not OOF.
+
+A6 query dense evidence only
+
+Candidate pool unchanged. Add dense hit/rank features for existing BM25 candidates.
+
+Accept if:
+
+OOF nDCG@20 improves
+exact-title unchanged
+lyrics/theme improves when lyrics enabled
+cover-art improves when image enabled
+A7 gated candidate addition
+
+Only after A1–A6 show safe gains.
+
+Rules:
+
+Do not add dense candidates for exact-title / exact-artist / exact-album.
+For broad/mood: add max 20 dense candidates to candidate pool, not direct final top20.
+For lyrics/theme: add lyrics top50.
+For cover-art: add image top100.
+
+Accept only if:
+
+gold_in_pool@300 increases
+OOF nDCG@20 increases
+dense-only false positives do not flood feature importance
+exact-title unchanged
+13. Metrics to report
+
+For every ablation:
+
+overall OOF nDCG@20
+overall hit@20
+top5 nDCG
+MRR / gold first-rank if available
+
+exact-title nDCG@20
+exact-artist nDCG@20
+broad/personalized nDCG@20
+similar-to-this nDCG@20
+feedback-heavy nDCG@20
+lyrics/theme nDCG@20
+cover-art nDCG@20
+mood/activity nDCG@20
+
+changed rows
+changed top1 rows
+changed top5 rows
+gold promoted into top20
+gold demoted out of top20
+mean gold rank delta
+p10 / p50 / p90 delta over Blind-A-shaped panels
+
+Critical diagnostics:
+
+BM25 top1 gold demoted count
+BM25 top5 gold demoted count
+exact-title gold demoted count
+embedding-feature-only promoted false positives
+dense-only candidate final top20 count
+14. Rollback signals
+
+Rollback immediately if any of these happen:
+
+1. OOF nDCG@20 drops by more than 0.0003–0.0005.
+
+2. exact-title subset drops, even if overall rises slightly.
+
+3. top5 nDCG drops.
+
+4. BM25 top1/top3 gold demotion count increases materially.
+
+5. Blind-A-shaped 80-row panel p10 delta is negative enough, e.g. < -0.001.
+
+6. LightGBM feature importance is dominated by raw user_cf or seed_cf features.
+
+7. Gains are isolated to one tiny subset with unstable fold variance.
+
+8. Dense/evidence features increase changed top5 rows too much.
+
+9. Candidate pool recall rises but final nDCG does not.
+
+10. Embedding features promote already-recommended or explicitly rejected tracks.
+
+For your current setup, I would require:
+
+minimum accept:
+OOF nDCG@20 >= baseline + 0.0005
+exact-title delta >= 0
+top5 nDCG delta >= -0.0002
+Blind-A-shaped panel mean > 0
+Blind-A-shaped p10 not strongly negative
+
+If OOF gain is only +0.0001 and exact-title/top5 worsens, do not submit.
+
+15. Concrete recommendation
+
+Implement in this order:
+
+1. A1 anchor-only:
+   BM25-head centroid agreement over metadata, attributes, track_cf.
+
+2. A1-small:
+   same as A1 but exact-title embedding disabled.
+
+3. A1 + cluster:
+   add candidate-cluster consistency only if exact-title safe.
+
+4. A1 + gated user-CF:
+   user-CF only for broad/personalized/tail interactions.
+
+5. A1 + explicit seed margin:
+   only explicit positive/negative feedback.
+
+6. Dense evidence features:
+   dense rank/hit features for existing candidates only.
+
+7. Gated candidate addition:
+   only for lyrics/theme, cover-art, broad mood, never exact-title.
+
+The best single next experiment is:
+
+BM25-head anchor agreement features only,
+with exact-title cases disabled,
+candidate pool unchanged,
+no postprocess,
+no dense-only candidates.
+
+That gives embeddings a realistic path to improve honest OOF nDCG@20 by helping LightGBM decide which BM25 tail candidates are semantically coherent, while minimizing the risk of disturbing the BM25/exact-match head.
