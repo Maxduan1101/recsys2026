@@ -415,6 +415,7 @@ Saved answers:
 - `research/pro_answers/round8/tab3_catalog_diversity_stop_or_tail.txt`
 - `research/pro_answers/round8/tab4_embedding_ltr_features.txt`
 - `research/pro_answers/round8/tab5_response_style_next.txt`
+- `research/pro_answers/round9/tab1_response_lexplus_decision.txt`
 - `research/pro_answers/round9/tab5_final_submission_sequence.txt`
 - `research/pro_answers/round9/README.md`
 
@@ -429,4 +430,4 @@ Operational takeaways:
 - Round 5 Pro answers reinforce a conservative strategy: protect the BM25 head, use extra retrieval/ranking only as tail evidence, and validate changes on Blind-A-shaped panels.
 - Round 7 Pro answers support `judge_clean_mix` over compact-broad for the next real submission, recommend anchored global weighted RRF as the lowest-risk ranking improvement, and warn that train/embedding signals should enter as gated/tail evidence until they pass strict blind-like uncertainty checks.
 - Round 8 Pro answers still favor the weighted RRF ranking and warn against ranking-diversity tweaks on the tiny Blind A ceiling. They suggest response-only `judge_clean_mix_plus` as a possible judge-quality backup, but the local artifact check keeps plain `judge_clean_mix` first.
-- Round 9 final-submission guidance still favors submitting the weighted RRF + `judge_clean_mix` package first. Additional round 9 browser questions failed with empty ChatGPT responses, so they are recorded for retry rather than treated as research evidence.
+- Round 9 final-submission guidance still favors submitting the weighted RRF + `judge_clean_mix` package first. The response-style retry also keeps `judge_clean_mix` ahead of `lexplus` for the first submission because a small Distinct-2 gain is easier to lose through Gemini judge naturalness. Other round 9 browser questions are still pending or failed with empty ChatGPT responses, so they are recorded for retry rather than treated as research evidence.

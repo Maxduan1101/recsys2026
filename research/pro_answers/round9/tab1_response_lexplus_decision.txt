@@ -1,0 +1,111 @@
+QUESTION:
+Please answer in final visible text only, not hidden thinking. If you cannot answer because of limits, write LIMIT. You are advising RecSys Challenge 2026 Music-CRS. Current first-choice package is weighted four-model LTR RRF + judge_clean_mix. Metrics: dev OOF nDCG@20=0.1839239, dev lexical=0.19958, Blind-A Distinct-2=0.60604. A new clean lexplus response backup has same ranking, dev lexical=0.20460, Blind-A Distinct-2=0.63192, but is more compact-template-heavy. Which response should be submitted first for Gemini judge risk: judge_clean_mix or lexplus? Give decision thresholds after public feedback.
+
+ANSWER:
+主人，submit judge_clean_mix first.
+
+The lexical gain from lexplus is real but small:
+
+0.63192−0.60604=+0.02588
+
+If lexical has weight around 0.1, that is only:
+
+0.1×0.02588=+0.002588
+
+But if Gemini judge is weighted like:
+
+0.3×
+4
+judge−1
+	​
+
+
+then losing just 0.04 raw judge points costs:
+
+0.3×
+4
+0.04
+	​
+
+=0.003
+
+That already wipes out the Distinct-2 gain. Since lexplus is more compact-template-heavy, its main risk is exactly Gemini seeing it as less personalized / more mechanical.
+
+So the safe first submission is:
+
+\boxed{\text{weighted four-model LTR RRF + judge_clean_mix}}
+
+Use lexplus as backup, not first.
+
+Decision rule after public feedback
+
+Assuming ranking is unchanged, compare only response-side metrics.
+
+Let:
+
+ΔD=D
+lexplus
+	​
+
+−D
+mix
+	​
+
+ΔJ=J
+lexplus
+	​
+
+−J
+mix
+	​
+
+
+Approximate response composite delta:
+
+ΔScore=0.1ΔD+0.3
+4
+ΔJ
+	​
+
+
+lexplus is worth switching to only if:
+
+ΔScore>0
+
+Equivalent threshold:
+
+ΔJ>−
+3
+4
+	​
+
+ΔD
+
+With your Blind-A Distinct-2 gap:
+
+ΔD=0.02588
+
+So:
+
+ΔJ>−0.0345
+
+Meaning:
+
+If lexplus judge is equal or higher, switch to lexplus.
+
+If lexplus judge is lower by less than ~0.03, lexplus is still probably okay.
+
+If lexplus judge is lower by 0.04 or more, stay with judge_clean_mix.
+
+If public only shows Distinct-2 and not judge, do not switch blindly unless Distinct-2 gain is much larger, around +0.06 to +0.08, or manual audit shows no template/mechanical degradation.
+
+Practical submission order
+
+First: judge_clean_mix
+Best judge-risk profile.
+
+Second only if needed: lexplus
+Submit if public feedback shows judge is not worse, or if judge_clean_mix lexical is still clearly weak.
+
+Do not submit lexplus first just for +0.02588 Distinct-2.
+That lexical gain is too small to justify a possible Gemini judge drop.

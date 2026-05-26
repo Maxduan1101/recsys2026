@@ -5,11 +5,14 @@ The final submission-sequence answer completed and is saved at:
 
 - `research/pro_answers/round9/tab5_final_submission_sequence.txt`
 
-Three follow-up questions were submitted through macOS Chrome JavaScript injection, but ChatGPT produced empty assistant turns. A connectivity check asking for exactly `OK` also produced an empty assistant turn, so this appears to be a temporary web/model-side failure rather than a prompt-specific issue.
+The response-style follow-up completed after retrying in another existing Chrome tab:
 
-Unresolved round 9 questions to retry later:
+- `research/pro_answers/round9/tab1_response_lexplus_decision.txt`
 
-- Clean response improvement versus keeping `judge_clean_mix`.
+Earlier attempts in the first Chrome window produced empty assistant turns, and a connectivity check asking for exactly `OK` also returned empty. Retrying from older open tabs partially recovered the web path.
+
+Unresolved round 9 questions still running or to retry later:
+
 - Cross-encoder or small neural reranker value after the current weighted RRF.
 - Direct current-query embeddings and compatibility checks.
 - Case-based train-turn distillation.
