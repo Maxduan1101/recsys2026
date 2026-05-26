@@ -59,6 +59,9 @@ Development-set scores from the official evaluator.
 | `goalflow_ens_oof_ltr120_140_200_col1_lambda2_w140half_rrf20_compact_clean` | 0.072000 | 0.163043 | 0.183727 | 0.525844 | 0.211007 | Same weighted ranking with clean compact high-lexical response. |
 | `goalflow_ens_oof_ltr120_140_200_col1_lambda2_w140half_rrf20_compact_broad_clean` | 0.072000 | 0.163043 | 0.183727 | 0.525844 | 0.222685 | Same weighted ranking with highest-lexical compact-broad response. |
 | `goalflow_ens_oof_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_judge_clean_mix` | 0.072000 | 0.163392 | 0.183924 | 0.525547 | 0.199581 | Weighted four-model RRF with clean mixed response; current best OOF candidate. |
+| `goalflow_ens_oof_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_judge_clean_mix_tagclean` | 0.072000 | 0.163392 | 0.183924 | 0.525547 | 0.199573 | Same primary response style with stricter noisy-tag filtering; Blind A artifact is identical to the primary package. |
+| `goalflow_ens_oof_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_judge_clean_mix_safeplus` | 0.072000 | 0.163392 | 0.183924 | 0.525547 | 0.191884 | Rejected clean-plus attempt: no broad tags, but lexical diversity fell below the primary. |
+| `goalflow_ens_oof_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_judge_clean_mix_lexplus_tagclean` | 0.072000 | 0.163392 | 0.183924 | 0.525547 | 0.204602 | Clean high-lexical response backup: same ranking, more compact metadata-grounded wording, no broad-tag source. |
 | `goalflow_ens_oof_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_compact_clean` | 0.072000 | 0.163392 | 0.183924 | 0.525547 | 0.211093 | Same weighted ranking with clean compact high-lexical response. |
 | `goalflow_ens_oof_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_compact_broad_clean` | 0.072000 | 0.163392 | 0.183924 | 0.525547 | 0.222793 | Same weighted ranking with highest-lexical compact-broad response. |
 | `goalflow_segcat_ltr120_140_200_ens_judge_v2` | 0.072125 | 0.164281 | 0.184069 | 0.526481 | 0.148494 | High-risk segment-selection experiment: best non-nested OOF score, but nested segment validation regresses. |
@@ -131,6 +134,7 @@ These are gold-free checks from `scripts/summarize_predictions.py`; they do not 
 | `goalflow_ens_ltr120_140_200_col1_lambda2_w140half_rrf20_compact_clean` | 1495 | 0.9344 | 0.031761 | 0.033991 | 0.673990 | Same weighted ranking; clean compact high-lexical backup. |
 | `goalflow_ens_ltr120_140_200_col1_lambda2_w140half_rrf20_compact_broad_clean` | 1495 | 0.9344 | 0.031761 | 0.033991 | 0.695922 | Same weighted ranking; highest-lexical backup. |
 | `goalflow_ens_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_judge_clean_mix_clean` | 1494 | 0.9338 | 0.031739 | 0.033991 | 0.606040 | Current weighted four-model RRF primary candidate; 66/80 rows differ from equal-weight but only 1 top-1 change. |
+| `goalflow_ens_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_judge_clean_mix_lexplus_tagclean` | 1494 | 0.9338 | 0.031739 | 0.033991 | 0.631916 | Clean high-lexical response backup; same ranking as the primary package, more compact-template-heavy. |
 | `goalflow_ens_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_compact_clean` | 1494 | 0.9338 | 0.031739 | 0.033991 | 0.673790 | Same weighted ranking; clean compact high-lexical backup. |
 | `goalflow_ens_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_compact_broad_clean` | 1494 | 0.9338 | 0.031739 | 0.033991 | 0.695481 | Same weighted ranking; highest-lexical backup. |
 | `goalflow_ltr120_lambda2_head0_judge_v3_clean` | 1496 | 0.9350 | 0.031782 | 0.033991 | 0.434335 | Same 120-tree L2 ranking; fuller prose for LLM-judge testing, lower Distinct-2 than v2. |
@@ -160,6 +164,7 @@ CF-tail blind-like follow-up:
 - On Blind A, it changed only `1 / 80` row, raising unique tracks from `1216` to `1217`.
 - Stacking CF-tail on `head19` reduced dev nDCG; stacking it on `head18` raised nDCG slightly but lowered catalog diversity. Do not prioritize it over the three main packages.
 - Applying the same rank-20 seed-CF rescue to the current four-model ensemble changed `397 / 8000` dev rows and only `1 / 80` Blind A row. Official full-dev nDCG@20 stayed exactly `0.183482` while catalog diversity rose to `0.527798`, but 500 Blind-A-shaped panels had mean delta `-0.00036`; keep this as a rejected shadow experiment.
+- Applying a batch-level repeat repair to the current weighted four-model ensemble is also rejected. The safest `head_k=19` repair improves dev catalog diversity by `+0.01476` but lowers OOF nDCG@20 from `0.183924` to `0.183497`; more aggressive `head_k=15-18` variants lose more nDCG for a small extra catalog gain.
 
 ## Retrieval Source Diagnostics
 
@@ -407,6 +412,8 @@ Saved answers:
 - `research/pro_answers/round8/tab3_catalog_diversity_stop_or_tail.txt`
 - `research/pro_answers/round8/tab4_embedding_ltr_features.txt`
 - `research/pro_answers/round8/tab5_response_style_next.txt`
+- `research/pro_answers/round9/tab5_final_submission_sequence.txt`
+- `research/pro_answers/round9/README.md`
 
 Operational takeaways:
 
@@ -419,3 +426,4 @@ Operational takeaways:
 - Round 5 Pro answers reinforce a conservative strategy: protect the BM25 head, use extra retrieval/ranking only as tail evidence, and validate changes on Blind-A-shaped panels.
 - Round 7 Pro answers support `judge_clean_mix` over compact-broad for the next real submission, recommend anchored global weighted RRF as the lowest-risk ranking improvement, and warn that train/embedding signals should enter as gated/tail evidence until they pass strict blind-like uncertainty checks.
 - Round 8 Pro answers still favor the weighted RRF ranking and warn against ranking-diversity tweaks on the tiny Blind A ceiling. They suggest response-only `judge_clean_mix_plus` as a possible judge-quality backup, but the local artifact check keeps plain `judge_clean_mix` first.
+- Round 9 final-submission guidance still favors submitting the weighted RRF + `judge_clean_mix` package first. Additional round 9 browser questions failed with empty ChatGPT responses, so they are recorded for retry rather than treated as research evidence.

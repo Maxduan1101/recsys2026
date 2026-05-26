@@ -1,0 +1,242 @@
+QUESTION:
+You are advising a submission-limited RecSys Challenge 2026 Music-CRS team. Current recommended package: weighted four-model LTR RRF + judge_clean_mix; backup: same ranking + judge_clean_mix_plus; high-lexical compact packages exist but are mechanical; equal-weight and single-model fallbacks exist. Previous public score was composite 0.1006 with nDCG@20=0.1935, lexical=0.0125, llm_judge=1.0. Given all rejected experiments and current evidence, propose the final submission sequence and stop criteria: what to submit next, what public feedback pattern changes strategy, and what directions should be abandoned even if tempting?
+
+ANSWER:
+主人，我会把它当成“submission budget management”问题：不是选理论最好，而是用 public feedback 最多获取信息、最少暴露 nDCG 风险。我的默认会偏向先提交当前最高证据包，但设置很硬的停止线。
+
+主人，final sequence should be conservative but not frozen. Because the official task evaluates both ranked tracks and generated responses, including nDCG@20, Catalog Diversity, Lexical Diversity, and LLM-as-a-Judge, the next submission should only change ranking when there is a real nDCG upside and should avoid response styles that merely inflate lexical diversity while sounding mechanical. 
+Codabench
++1
+
+Final submission sequence
+Submission 1: submit the current recommended package
+weighted four-model LTR RRF
++ judge_clean_mix
+
+This should be the next public submission. It is the only current package that has a plausible ranking upside while also addressing the previous public response failure. The previous public llm_judge_score=1.0 makes response quality a major opportunity, but because nDCG has the largest apparent composite leverage, do not lead with a purely high-lexical mechanical response package.
+
+Before submitting, run only final sanity checks:
+
+- valid 20 unique catalog track IDs per row
+- no accidental row/order mismatch
+- no invalid/empty responses
+- no noisy tag leakage in response text
+- weighted package preserved its expected local output
+- backup zips saved with manifest
+
+Do not keep tuning weights now. The weighted-vs-equal gap is small, and repeated local tweaking risks fitting dev panels rather than Blind A.
+
+Submission 2: only if Submission 1 has good nDCG but weak judge/lexical
+
+Submit:
+
+same weighted ranking
++ judge_clean_mix_plus
+
+Use this only under this public feedback pattern:
+
+nDCG@20 is stable or improved:
+  nDCG >= previous_public_nDCG - 0.002
+  roughly >= 0.1915
+
+but response is still disappointing:
+  llm_judge_score still 1.0
+  or lexical improves less than expected
+  or composite gain is clearly capped by response metrics
+
+Reason: same ranking isolates response. If the first weighted package already improves judge/lexical enough, this second submission may be unnecessary.
+
+Submission 3: equal-weight fallback only if weighted ranking visibly loses
+
+Submit:
+
+equal-weight RRF / safer ranking
++ best judge_clean response
+
+Use this only if Submission 1 shows:
+
+nDCG drops materially:
+  nDCG <= previous_public_nDCG - 0.004
+  roughly <= 0.1895
+
+and response metrics improve:
+  lexical/judge better than prior
+
+That pattern says: “response work helped, weighted ranking overfit.” Then keep the response generator but revert ranking toward the safer equal-weight or previous public-safe ranking.
+
+Submission 4: previous-safe / single-model fallback only if ranking collapse is severe
+
+Use the old public-safe ranking or strongest single-model fallback only if:
+
+weighted nDCG drops by >= 0.008
+or public result suggests LTR/RRF fusion is systematically worse than the old BM25-head behavior
+or exact/entity-heavy Blind A distribution punishes the LTR ensemble
+
+This is a rescue path, not an exploration path.
+
+Stop criteria
+Stop immediately if Submission 1 is clearly good
+
+Stop submitting if:
+
+nDCG >= 0.1935
+and lexical_diversity is much higher than 0.0125
+and llm_judge_score > 1.0
+and composite improves clearly
+
+At that point, do not burn submissions on compact or equal-weight variants. The variance of 80-row public feedback is too high; a marginal second variant could just move you backward.
+
+Stop after Submission 2 if ranking is confirmed good
+
+If both Submission 1 and Submission 2 use the same ranking and show:
+
+nDCG stable
+response metrics differ
+
+then choose the better response package and stop. Do not submit more ranking variants unless the nDCG signal is bad.
+
+Stop and preserve backups if results are within noise
+
+If public changes are tiny:
+
+|ΔnDCG| <= 0.002
+|Δcomposite| <= 0.001
+judge unchanged
+
+then stop public probing. Save the top packages as backups instead of submitting more. Under an 80-row public set, this is noise territory, not reliable evidence.
+
+Public feedback patterns that change strategy
+Pattern A: weighted wins cleanly
+nDCG up or flat
+lexical up
+judge > 1.0
+composite up
+
+Decision:
+
+weighted + judge_clean_mix becomes champion
+stop or submit only same-ranking judge_clean_mix_plus if judge still leaves obvious room
+Pattern B: nDCG good, judge still 1.0
+nDCG >= 0.1915
+lexical up
+judge still 1.0
+
+Decision:
+
+ranking is probably fine
+submit same ranking + judge_clean_mix_plus
+do not change ranking
+
+This means Gemini is not rewarding the current explanation style enough; improve grounding/personality, not recommender logic.
+
+Pattern C: response improves, nDCG drops
+nDCG <= 0.1895
+lexical/judge up
+
+Decision:
+
+keep response generator
+revert ranking toward equal-weight or previous-safe fallback
+
+This says the LTR/RRF weighting transferred poorly.
+
+Pattern D: lexical huge, judge still 1.0
+lexical_diversity much higher
+judge still 1.0
+composite barely moves
+
+Decision:
+
+abandon high-lexical mechanical variants
+focus on explicit personalization/explanation
+
+This is the strongest warning against compact_broad-style optimization.
+
+Pattern E: catalog/lexical gains but nDCG loss
+catalog or lexical improves
+nDCG drops more than ~0.002-0.003
+
+Decision:
+
+do not chase diversity
+preserve ranking head
+
+Catalog and lexical gains are unlikely to compensate for meaningful nDCG damage unless judge also rises substantially.
+
+Directions to abandon now
+1. High-lexical compact mechanical responses
+
+Abandon as primary submissions.
+
+They are tempting because:
+
+dev lexical higher
+Blind-A Distinct-2 higher
+
+But the risk is:
+
+Gemini sees template-spun text
+judge remains 1.0
+response sounds optimized for metric, not for the user
+
+Use compact phrasing only as a phrase-bank donor, not as the main style.
+
+2. More tail-diversity ranking hacks
+
+Abandon unless they are nDCG-flat under blind-like panels.
+
+The public catalog diversity ceiling is small because 80 rows × 20 tracks gives only 1600 recommendation slots. Small catalog gains cannot justify a real nDCG drop.
+
+3. More RRF weight searching
+
+Stop now.
+
+The current weighted package has evidence, but the gap is close and the p10 panel delta is negative. More local weight tuning is likely to overfit the dev/panel sampler. Submit the current weighted package once, then let public feedback decide whether to revert or hold.
+
+4. Segment gating / category selection that failed nested validation
+
+Abandon for final submissions.
+
+If non-nested looks good but nested drops, it is not safe under Blind A uncertainty.
+
+5. Direct train-session mixing into LTR
+
+Abandon as a final push.
+
+You already saw it hurt dev. It also creates leakage/overfit risk and is too dangerous close to submission.
+
+6. Seed-CF rescue that changes many rows but is flat/negative
+
+Abandon for current public submissions.
+
+If it changes hundreds of rows but produces flat nDCG and negative blind-shaped mean, it is not a safe rescue mechanism.
+
+7. Full rerank / top-5-touching LTR experiments
+
+Abandon for this phase.
+
+Only protected reranking should be considered later. A full rerank can erase the exact-entity/BM25 head strength that likely produced the previous strong public nDCG.
+
+Practical final policy
+
+Use this sequence:
+
+1. Submit:
+   weighted four-model LTR RRF + judge_clean_mix
+
+2. If nDCG is good but judge/lexical weak:
+   submit same ranking + judge_clean_mix_plus
+
+3. If nDCG drops materially but response improves:
+   submit equal-weight or previous-safe ranking + best judge_clean response
+
+4. If all changes are within noise:
+   stop, preserve backups, do not burn submissions
+
+5. Do not submit:
+   compact mechanical high-lexical package
+   aggressive tail-diversity package
+   newly tuned RRF weights
+   segment-gated or direct train-mixed variants
+
+My final call: submit weighted four-model LTR RRF + judge_clean_mix next, then stop unless public feedback clearly diagnoses either “ranking good, response weak” or “response good, ranking overfit.”

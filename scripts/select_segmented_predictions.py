@@ -103,6 +103,8 @@ def parse_args() -> argparse.Namespace:
             "judge_clean_mix",
             "judge_balanced_mix",
             "judge_clean_mix_plus",
+            "judge_clean_mix_safeplus",
+            "judge_clean_mix_lexplus",
         ],
         default="judge_v2",
     )

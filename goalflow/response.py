@@ -79,10 +79,12 @@ BAD_TAG_WORDS = {
     "cunt",
     "fuck",
     "fucking",
+    "gay",
     "negro",
     "negroes",
     "nigga",
     "nigger",
+    "sexist",
     "shit",
 }
 
@@ -95,6 +97,7 @@ BAD_TAG_PHRASES = (
     "favorites",
     "funk lift off",
     "funk tag",
+    "hip hop tag",
     "ifs and buts",
     "i own",
     "lap dance",
@@ -109,6 +112,7 @@ BAD_TAG_PHRASES = (
     "songs i",
     "songs ya",
     "sruuu",
+    "not metal",
     "to live by",
     "zielonypaw",
 )
@@ -1674,6 +1678,92 @@ def _generate_judge_clean_mix_plus_response(
     return _generate_compact_response(state, catalog, track_ids)
 
 
+def _generate_judge_clean_mix_safeplus_response(
+    state: ConversationState,
+    catalog: TrackCatalog,
+    track_ids: list[str],
+) -> str:
+    bucket = int(
+        hashlib.md5(
+            f"{state.session_id}:{state.turn_number}:judge_clean_mix_safeplus".encode("utf-8")
+        ).hexdigest()[:8],
+        16,
+    ) % 20
+    style = [
+        "judge_v2",
+        "judge_v2",
+        "judge_v2",
+        "judge_v2",
+        "judge_v2",
+        "judge_brief",
+        "judge_brief",
+        "judge_brief",
+        "judge_brief",
+        "compact",
+        "compact",
+        "compact",
+        "compact",
+        "compact",
+        "compact",
+        "compact",
+        "concise",
+        "concise",
+        "judge_planned",
+        "setwise",
+    ][bucket]
+    if style == "judge_v2":
+        return _generate_judge_v2_response(state, catalog, track_ids)
+    if style == "judge_brief":
+        return _generate_judge_brief_response(state, catalog, track_ids)
+    if style == "concise":
+        return _generate_concise_response(state, catalog, track_ids)
+    if style == "judge_planned":
+        return _generate_judge_planned_response(state, catalog, track_ids)
+    if style == "setwise":
+        return _generate_setwise_response(state, catalog, track_ids)
+    return _generate_compact_response(state, catalog, track_ids)
+
+
+def _generate_judge_clean_mix_lexplus_response(
+    state: ConversationState,
+    catalog: TrackCatalog,
+    track_ids: list[str],
+) -> str:
+    bucket = int(
+        hashlib.md5(
+            f"{state.session_id}:{state.turn_number}:judge_clean_mix_lexplus".encode("utf-8")
+        ).hexdigest()[:8],
+        16,
+    ) % 20
+    style = [
+        "judge_v2",
+        "judge_v2",
+        "judge_v2",
+        "judge_v2",
+        "judge_brief",
+        "judge_brief",
+        "judge_brief",
+        "judge_brief",
+        "compact",
+        "compact",
+        "compact",
+        "compact",
+        "compact",
+        "compact",
+        "compact",
+        "compact",
+        "compact",
+        "compact",
+        "compact",
+        "compact",
+    ][bucket]
+    if style == "judge_v2":
+        return _generate_judge_v2_response(state, catalog, track_ids)
+    if style == "judge_brief":
+        return _generate_judge_brief_response(state, catalog, track_ids)
+    return _generate_compact_response(state, catalog, track_ids)
+
+
 def _generate_polished_response(state: ConversationState, catalog: TrackCatalog, track_ids: list[str]) -> str:
     if not track_ids:
         return "I found a few tracks that should fit the direction you described."
@@ -1811,4 +1901,8 @@ def generate_response(
         return _generate_judge_balanced_mix_response(state, catalog, track_ids)
     if style == "judge_clean_mix_plus":
         return _generate_judge_clean_mix_plus_response(state, catalog, track_ids)
+    if style == "judge_clean_mix_safeplus":
+        return _generate_judge_clean_mix_safeplus_response(state, catalog, track_ids)
+    if style == "judge_clean_mix_lexplus":
+        return _generate_judge_clean_mix_lexplus_response(state, catalog, track_ids)
     raise ValueError(f"Unsupported response style: {style!r}")
