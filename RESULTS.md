@@ -184,6 +184,18 @@ Gold-free Blind A checks:
 - Lexplus softened backup: 80 rows, audit Distinct-2 `0.58996`, word counts `41-112` with average `71.24`, no noisy phrase hits, no long/short rows.
 - This audit is a response QA guard, not an official metric replacement. It catches banned/noisy tag leaks, overly long/short responses, and repeated opening phrases before spending a public submission.
 
+## Prediction Hashes
+
+Script: `scripts/hash_predictions.py`
+
+Primary and `lexplus_softened` Blind A artifacts have identical ranking hashes, confirming the backup is response-only:
+
+```text
+ranking_sha256 = b83bd55e238206fb22eeca4e950b2930d82d4762c178c4bf1a82b3c0df1a6f27
+primary_response_sha256 = 8e3ce4fa69ce4669673e4894f115822d2ad4cf8df9774e77a1d057264472670b
+lexplus_softened_response_sha256 = ef6739fc8cf568ed8055cd613973b330d326f94499708603b9124915d0744b28
+```
+
 ## Retrieval Source Diagnostics
 
 Run: `source_diag_full`

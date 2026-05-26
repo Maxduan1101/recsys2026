@@ -221,3 +221,4 @@ This file tracks questions and optimization directions that deserve a dedicated 
 
 20. **Submission validation against Codabench**
    - Confirm whether submission zip requires only `prediction.json` or a nested path for all phases.
+   - Implemented `scripts/hash_predictions.py` to compute file, ranking, and response SHA-256 hashes. Primary and `lexplus_softened` Blind A artifacts share the same ranking hash, so `lexplus_softened` is confirmed response-only.

@@ -28,6 +28,14 @@ This keeps the exact same weighted RRF ranking. It is a cleaned `lexplus` varian
 
 Round 11 Pro guidance: submit the primary `judge_clean_mix` package first, then use `lexplus_softened` as the only response-only challenger. Plain `lexplus` is now obsolete.
 
+Hash check with `scripts/hash_predictions.py` confirms the primary and `lexplus_softened` backup have the same Blind A ranking:
+
+```text
+ranking_sha256 = b83bd55e238206fb22eeca4e950b2930d82d4762c178c4bf1a82b3c0df1a6f27
+```
+
+Only the response hash differs.
+
 Previous clean high-lexical response backup:
 
 ```text
