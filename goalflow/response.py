@@ -315,6 +315,10 @@ def _join_words(items: list[str]) -> str:
     return ", ".join(items[:-1]) + f", and {items[-1]}"
 
 
+def _response_word_count(response: str) -> int:
+    return len(re.findall(r"[A-Za-z0-9][A-Za-z0-9']*", response))
+
+
 def _year_hint(catalog: TrackCatalog, track_id: str) -> str:
     year = catalog.release_year(track_id)
     return str(year) if year else ""
@@ -1764,6 +1768,20 @@ def _generate_judge_clean_mix_lexplus_response(
     return _generate_compact_response(state, catalog, track_ids)
 
 
+def _generate_judge_clean_mix_lexplus_softened_response(
+    state: ConversationState,
+    catalog: TrackCatalog,
+    track_ids: list[str],
+) -> str:
+    response = _generate_judge_clean_mix_lexplus_response(state, catalog, track_ids)
+    if _response_word_count(response) <= 112:
+        return response
+    brief = _generate_judge_brief_response(state, catalog, track_ids)
+    if _response_word_count(brief) <= 112:
+        return brief
+    return _generate_compact_response(state, catalog, track_ids)
+
+
 def _generate_polished_response(state: ConversationState, catalog: TrackCatalog, track_ids: list[str]) -> str:
     if not track_ids:
         return "I found a few tracks that should fit the direction you described."
@@ -1905,4 +1923,6 @@ def generate_response(
         return _generate_judge_clean_mix_safeplus_response(state, catalog, track_ids)
     if style == "judge_clean_mix_lexplus":
         return _generate_judge_clean_mix_lexplus_response(state, catalog, track_ids)
+    if style == "judge_clean_mix_lexplus_softened":
+        return _generate_judge_clean_mix_lexplus_softened_response(state, catalog, track_ids)
     raise ValueError(f"Unsupported response style: {style!r}")

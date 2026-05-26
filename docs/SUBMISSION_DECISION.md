@@ -17,18 +17,27 @@ Why this one:
 - The response cleanup removes private/noisy tag artifacts, title-cases profile fields, and collapses duplicate/list-valued track titles, artist names, and album names before writing them into the explanation.
 - It directly attacks the previous public weak points: `lexical_diversity=0.0125` and `llm_judge_score=1.0`, while also improving local ranking validation.
 
-Clean high-lexical response backup:
+Softened high-lexical response backup:
+
+```text
+experiments/goalflow_ens_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_judge_clean_mix_lexplus_softened/blindset_A/submission.zip
+```
+
+This keeps the exact same weighted RRF ranking. It is a cleaned `lexplus` variant that falls back to shorter grounded wording when the compact/judge mix gets too long. It raises official dev lexical diversity to `0.20531` and local Blind A Distinct-2 to `0.63566`, with no noisy phrase hits and no long/short rows in `scripts/audit_response_text.py`. Keep it as the strongest response-only backup, not the default first submission, because `judge_clean_mix` is still less compact-template-heavy.
+
+Previous clean high-lexical response backup:
 
 ```text
 experiments/goalflow_ens_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_judge_clean_mix_lexplus_tagclean/blindset_A/submission.zip
 ```
 
-This keeps the exact same weighted RRF ranking and uses only cleaned `judge_v2`, `judge_brief`, and compact metadata-grounded templates. It raises official dev lexical diversity to `0.20460` and local Blind A Distinct-2 to `0.63192`, with the same local Blind A catalog diversity `0.03174`. Keep it as a response-only backup rather than the default first submission because it is more compact-template-heavy than `judge_clean_mix`, so Gemini may or may not prefer it.
+This keeps the exact same weighted RRF ranking and uses only cleaned `judge_v2`, `judge_brief`, and compact metadata-grounded templates. It raises official dev lexical diversity to `0.20460` and local Blind A Distinct-2 to `0.63192`, with the same local Blind A catalog diversity `0.03174`. It is now behind the softened version because one Blind A response reaches 120 words.
 
 Gold-free response audit:
 
 - Primary `judge_clean_mix` has no banned/noisy phrase hits, word counts `41-112`, and no long/short rows under `scripts/audit_response_text.py`.
 - Lexplus also has no banned/noisy phrase hits, but one Blind A response reaches 120 words; keep it as a backup unless public feedback shows lexical diversity is still the binding constraint.
+- Lexplus softened has no banned/noisy phrase hits, word counts `41-112`, and local Blind A Distinct-2 `0.63566`, so it supersedes plain lexplus as the high-lexical backup.
 
 Response-only judge-quality backup:
 
@@ -215,6 +224,7 @@ Rejected near-misses:
 - Ultra-conservative batch-level repeat repair is rejected. Even the safest variant, which freezes ranks 1-19 and repairs only rank 20, lowers OOF nDCG@20 to `0.183497` while buying catalog diversity that has little Blind A headroom left.
 - `judge_clean_mix_safeplus` is rejected for promotion: removing broad/noisy tags was safe, but the style mix lowered official dev lexical diversity to `0.19188` and Blind A Distinct-2 to `0.60487`, both below the primary `judge_clean_mix` package.
 - Zero-shot cross-encoder reranking is rejected for now. A MiniLM CE probe over 160 dev turns and top-50 candidates scored far below the current weighted RRF base: lock15 protection still lost `0.00912` nDCG@20 on the slice, with only `3` better rows and `11` worse rows.
+- Case-neighbor direct candidate promotion is rejected for now. A train-turn BM25 case probe over 1000 train sessions and 160 dev turns had low exact-track coverage and lock15 protection still lost `0.01788` nDCG@20, with `0` better rows and `12` worse rows.
 
 Key correction:
 

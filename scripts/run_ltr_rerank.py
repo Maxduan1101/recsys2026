@@ -702,6 +702,7 @@ def parse_args() -> argparse.Namespace:
             "judge_v1", "judge_v2", "judge_v3", "judge_mix", "judge_brief",
             "judge_planned", "judge_compact_mix", "judge_clean_mix", "judge_balanced_mix",
             "judge_clean_mix_plus", "judge_clean_mix_safeplus", "judge_clean_mix_lexplus",
+            "judge_clean_mix_lexplus_softened",
         ],
         default="compact_broad",
     )

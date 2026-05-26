@@ -63,6 +63,7 @@ Development-set scores from the official evaluator.
 | `goalflow_ens_oof_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_judge_clean_mix_tagclean` | 0.072000 | 0.163392 | 0.183924 | 0.525547 | 0.199573 | Same primary response style with stricter noisy-tag filtering; Blind A artifact is identical to the primary package. |
 | `goalflow_ens_oof_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_judge_clean_mix_safeplus` | 0.072000 | 0.163392 | 0.183924 | 0.525547 | 0.191884 | Rejected clean-plus attempt: no broad tags, but lexical diversity fell below the primary. |
 | `goalflow_ens_oof_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_judge_clean_mix_lexplus_tagclean` | 0.072000 | 0.163392 | 0.183924 | 0.525547 | 0.204602 | Clean high-lexical response backup: same ranking, more compact metadata-grounded wording, no broad-tag source. |
+| `goalflow_ens_oof_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_judge_clean_mix_lexplus_softened` | 0.072000 | 0.163392 | 0.183924 | 0.525547 | 0.205313 | Softened high-lexical response backup: same ranking as the primary, but long lexplus responses fall back to shorter grounded wording. |
 | `goalflow_ens_oof_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_compact_clean` | 0.072000 | 0.163392 | 0.183924 | 0.525547 | 0.211093 | Same weighted ranking with clean compact high-lexical response. |
 | `goalflow_ens_oof_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_compact_broad_clean` | 0.072000 | 0.163392 | 0.183924 | 0.525547 | 0.222793 | Same weighted ranking with highest-lexical compact-broad response. |
 | `goalflow_segcat_ltr120_140_200_ens_judge_v2` | 0.072125 | 0.164281 | 0.184069 | 0.526481 | 0.148494 | High-risk segment-selection experiment: best non-nested OOF score, but nested segment validation regresses. |
@@ -136,6 +137,7 @@ These are gold-free checks from `scripts/summarize_predictions.py`; they do not 
 | `goalflow_ens_ltr120_140_200_col1_lambda2_w140half_rrf20_compact_broad_clean` | 1495 | 0.9344 | 0.031761 | 0.033991 | 0.695922 | Same weighted ranking; highest-lexical backup. |
 | `goalflow_ens_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_judge_clean_mix_clean` | 1494 | 0.9338 | 0.031739 | 0.033991 | 0.606040 | Current weighted four-model RRF primary candidate; 66/80 rows differ from equal-weight but only 1 top-1 change. |
 | `goalflow_ens_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_judge_clean_mix_lexplus_tagclean` | 1494 | 0.9338 | 0.031739 | 0.033991 | 0.631916 | Clean high-lexical response backup; same ranking as the primary package, more compact-template-heavy. |
+| `goalflow_ens_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_judge_clean_mix_lexplus_softened` | 1494 | 0.9338 | 0.031739 | 0.033991 | 0.635660 | Softened high-lexical response backup; same ranking as the primary package, no long response rows in the local audit. |
 | `goalflow_ens_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_compact_clean` | 1494 | 0.9338 | 0.031739 | 0.033991 | 0.673790 | Same weighted ranking; clean compact high-lexical backup. |
 | `goalflow_ens_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_compact_broad_clean` | 1494 | 0.9338 | 0.031739 | 0.033991 | 0.695481 | Same weighted ranking; highest-lexical backup. |
 | `goalflow_ltr120_lambda2_head0_judge_v3_clean` | 1496 | 0.9350 | 0.031782 | 0.033991 | 0.434335 | Same 120-tree L2 ranking; fuller prose for LLM-judge testing, lower Distinct-2 than v2. |
@@ -169,6 +171,7 @@ CF-tail blind-like follow-up:
 - A narrower RRF grid around the current weighted package found `rrf_k=28`, weights `[1.0, 0.45, 1.45, 1.05]`, but official OOF only reached `0.183966` and Blind-A-shaped 1000-panel mean delta was `-0.000096`; reject it as dev-fold noise.
 - `scripts/apply_consensus_fallback.py` implements a conservative top-1 support fallback. The first rule (`support_top_k=1`, `base_max_support=0`, `fallback_min_support=2`) raises official OOF to `0.183986` and Blind-A-shaped 5000-panel mean delta to `+0.000278` with p10 `0.0`, but it changes `0 / 80` Blind A rows. Keep it as a Blind-B/future-split tool rather than a replacement for the current Blind A package.
 - `scripts/probe_cross_encoder_zero_shot.py` implements a protected zero-shot cross-encoder probe. On the 160-turn dev cache with `cross-encoder/ms-marco-MiniLM-L-6-v2` over top-50 candidates, the current weighted RRF base scored `0.29136` nDCG@20 on that slice, while CE-only/lock0 scored `0.14385`, lock5 `0.24440`, lock10 `0.27000`, and lock15 `0.28224`. Even top-15 protection is `-0.00912` nDCG@20 with only `3` better rows versus `11` worse rows. Round 10 Pro follow-up recommends stopping CE reranking as a submission path, so no full-dev CE run is planned.
+- `scripts/probe_case_neighbors.py` implements a cheap train-turn case-neighbor source probe. On a train-1000-session / dev-160-turn sample with BM25 top-20 cases, gold track appeared among neighbor gold tracks for only `6.25%` of turns and the gold artist for `28.13%`. Direct protected insertion is strongly negative: case-only `-0.26481`, lock5 `-0.07614`, lock10 `-0.03824`, and lock15 `-0.01788` nDCG@20 versus the current base on that slice. Stop case-neighbor direct candidate promotion; only keep case features as future research if time allows a proper fold-local LTR feature test.
 
 ## Response Text Audit
 
@@ -178,6 +181,7 @@ Gold-free Blind A checks:
 
 - Primary `judge_clean_mix`: 80 rows, audit Distinct-2 `0.56394` with this script's tokenizer, word counts `41-112` with average `75.88`, no noisy phrase hits, no long/short rows.
 - Lexplus backup: 80 rows, audit Distinct-2 `0.58673`, word counts `41-120` with average `72.05`, no noisy phrase hits, one long row at 120 words.
+- Lexplus softened backup: 80 rows, audit Distinct-2 `0.58996`, word counts `41-112` with average `71.24`, no noisy phrase hits, no long/short rows.
 - This audit is a response QA guard, not an official metric replacement. It catches banned/noisy tag leaks, overly long/short responses, and repeated opening phrases before spending a public submission.
 
 ## Retrieval Source Diagnostics
@@ -435,6 +439,7 @@ Saved answers:
 - `research/pro_answers/round10/tab3_direct_embedding_guardrails.txt`
 - `research/pro_answers/round10/tab4_consensus_fallback_calibration.txt`
 - `research/pro_answers/round10/tab5_final_iteration_decision_tree.txt`
+- `research/pro_answers/round10/tab6_case_based_distillation.txt`
 - `research/pro_answers/round10/README.md`
 
 Operational takeaways:

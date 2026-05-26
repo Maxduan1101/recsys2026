@@ -1,0 +1,554 @@
+# Source-Gating Algorithm Design
+
+URL: https://chatgpt.com/c/6a1464da-5f6c-8323-9f11-46c673a4d8ec
+
+## Question
+
+Please answer in final visible text only. Do not use hidden reasoning. If limited, write exactly LIMIT. RecSys Challenge 2026 Music-CRS. We already use train-context item augmentation and strong LightGBM LambdaRank/RRF. Could case-based train-turn distillation still help without leakage: e.g. nearest training conversations as candidate features or item-doc snippets? Propose a minimal experiment, feature design, validation protocol, acceptance bar, and reasons it might fail.
+
+## Answer
+
+主人，case-based train-turn distillation is still worth one minimal offline experiment, but not as a new retrieval/ranking backbone.
+
+Because you already use train-context item augmentation and strong LightGBM LambdaRank/RRF, the remaining useful signal is not “add more train text to item docs.” That is likely redundant. The plausible remaining value is state-to-state analogy:
+
+current dialogue state→nearest train turns→tracks that solved similar turns
+
+Use it as candidate features / weak candidate source, not as direct promotion.
+
+Recommendation
+
+Run exactly one small experiment:
+
+case-neighbor features over existing candidate pool + optional low-rank candidate source
+	​
+
+
+Do not start by injecting nearest-train snippets into item docs globally. Since you already do train-context augmentation, more snippets may just amplify memorization/noise.
+
+Minimal experiment
+Step 1: Build a train-turn case index
+
+Each train case is one recommendation turn.
+
+For each train turn t, create a compact case text:
+
+Current user request: ...
+Conversation goal: ...
+Recent accepted / rejected tracks or artists: ...
+Intent: ...
+Positive constraints: ...
+Negative constraints: ...
+Gold track: ...
+Gold artist: ...
+Gold album: ...
+
+Index only train-fold cases when evaluating validation folds.
+
+Use either:
+
+BM25 over case text
+
+Qwen/official text embedding if already available
+
+simple hybrid: BM25 rank + embedding cosine
+
+Start with BM25 case search because it is cheap and transparent.
+
+Step 2: For each dev / validation state, retrieve nearest train cases
+
+For each query state x:
+
+N
+K
+	​
+
+(x)=top-K nearest training turns
+
+Use:
+
+K∈{5,10,20,50}
+
+Start with:
+
+K=20
+
+For each neighbor case n, store:
+
+similarity score
+
+neighbor rank
+
+neighbor intent
+
+neighbor gold track
+
+neighbor gold artist
+
+neighbor gold album
+
+neighbor gold genre/tags if available
+
+Step 3: Add case-neighbor features to existing LTR candidates
+
+For each candidate track d, add features:
+
+Direct case-hit features
+case_gold_hit(d)=1[d∈gold tracks of nearest cases]
+case_gold_rank(d)=min neighbor rank where gold track=d
+case_gold_sim(d)=
+n:gold(n)=d
+max
+	​
+
+sim(x,n)
+case_gold_count(d)=
+n∈N
+K
+	​
+
+(x)
+∑
+	​
+
+1[gold(n)=d]
+
+These are the most important features.
+
+Artist / album / metadata analogy features
+case_artist_hit(d)=1[artist(d)∈gold artists of nearest cases]
+case_artist_count(d)
+case_album_hit(d)
+case_genre_overlap(d)
+case_tag_overlap(d)
+
+These help when the exact gold track does not repeat but similar cases point to a useful artist/style.
+
+Neighbor quality features
+
+Use only if available without leakage:
+
+mean_neighbor_sim
+max_neighbor_sim
+neighbor_sim_gap=sim
+1
+	​
+
+−sim
+5
+	​
+
+same_intent_neighbor_count
+case_confidence=sim
+1
+	​
+
+⋅1[sim
+1
+	​
+
+−sim
+5
+	​
+
+>margin]
+
+This helps LightGBM learn when case retrieval is trustworthy.
+
+Interaction features
+
+Add interactions with current model rank:
+
+case_gold_hit×
+rank
+base
+	​
+
+1
+	​
+
+case_artist_hit×entity_intent
+case_gold_sim×similar_to_seed_intent
+case_tag_overlap×mood/genre_intent
+
+Useful because case evidence should not have equal weight for all intents.
+
+Optional candidate source
+
+After adding features, optionally add a tiny case source:
+
+C
+case
+	​
+
+(x)={gold tracks from top-K nearest train cases}
+
+But do not let this source enter the final top-20 directly.
+
+Use it only if:
+
+d∈C
+case
+	​
+
+(x)
+
+then include d in the LTR candidate pool with features.
+
+Safety cap:
+
+∣C
+case
+	​
+
+(x)∣≤20
+
+and only include if:
+
+sim(x,n)≥τ
+case
+	​
+
+
+or:
+
+rank(n)≤10
+
+Do not allow case-only candidates into top-10 unless LTR strongly promotes them.
+
+Validation protocol
+
+This is the most important part.
+
+Rule 1: fold-local case index
+
+For each OOF fold:
+
+case index for validation fold=train folds only
+
+Never let validation turns appear in their own case index.
+
+Bad:
+
+build case index on all train+dev, then evaluate dev
+
+Good:
+
+for fold f:Index=TrainFolds
+¬f
+	​
+
+Eval=Fold
+f
+	​
+
+Rule 2: group split by session or user/session
+
+Use your existing leakage-safe split.
+
+Prefer:
+
+GroupKFold(session_id)
+
+Stricter:
+
+GroupKFold(user_id)
+
+or:
+
+GroupKFold(user_id,session_id)
+
+Do not split by turn row. Neighboring turns from the same conversation are too similar and would inflate results.
+
+Rule 3: compare with identical candidate base
+
+Run two comparisons:
+
+A. Feature-only comparison
+
+Same candidate pool as current system:
+
+C
+base
+	​
+
+
+Add only case features.
+
+This tests whether case signal helps ranking.
+
+B. Feature + case-source comparison
+
+Candidate pool:
+
+C
+base
+	​
+
+∪C
+case
+	​
+
+
+This tests whether nearest train cases recover missed gold tracks.
+
+Keep these separate. If B improves but A does not, the gain is from recall. If A improves, the signal helps ranking.
+
+Rule 4: no positive injection in validation
+
+Do not inject validation golds. Ever.
+
+For diagnostics you may report oracle coverage separately, but final decision must use honest candidate generation.
+
+Model integration
+
+Use the same LightGBM LambdaRank setup.
+
+Do not train a new neural case model.
+
+Add features to your existing JSONL and retrain the four-model ensemble.
+
+Recommended feature groups:
+
+case_gold_hit_top5
+case_gold_hit_top10
+case_gold_hit_top20
+case_gold_best_rank
+case_gold_best_sim
+case_gold_count_top20
+
+case_artist_hit_top5
+case_artist_hit_top20
+case_artist_count_top20
+case_album_hit_top20
+case_tag_overlap_max
+case_tag_overlap_mean
+
+case_neighbor_sim_max
+case_neighbor_sim_mean_top5
+case_neighbor_sim_gap_1_5
+case_same_intent_count_top20
+
+candidate_from_case_source
+case_source_rank
+
+Keep feature count small. Do not dump hundreds of sparse snippet features.
+
+Acceptance bar
+
+Because the current ranking is already strong, the bar should be strict.
+
+Feature-only case distillation
+
+Accept if:
+
+ΔOOF nDCG@20≥+0.0025
+
+and:
+
+ΔOOF nDCG@10≥0
+
+and:
+
+ΔOOF nDCG@5≥−0.0003
+
+and:
+
+gain in at least 3/4 folds
+
+and:
+
+better turns≥1.5×worse turns
+
+Submission-worthy only if:
+
+ΔOOF nDCG@20≥+0.004
+Feature + case-source version
+
+Higher risk, so require more:
+
+ΔOOF nDCG@20≥+0.004
+ΔOOF hit@20>0
+ΔOOF nDCG@10≥+0.001
+ΔOOF nDCG@5≥−0.0003
+
+Also require:
+
+lost top-20 hits≤0.5×gained top-20 hits
+
+and:
+
+case-only candidates entering top-10 are rare
+
+If case source improves hit@20 but hurts nDCG@10, do not submit.
+
+Exact minimal next step
+
+Do this, and only this first:
+
+BM25 nearest train-turn cases K=20→case features only→same LTR folds
+	​
+
+
+No new snippets, no candidate injection yet.
+
+Implementation sketch
+
+For each fold:
+
+Build case BM25 index from training folds only.
+
+For each validation state, retrieve top-20 train cases.
+
+For each existing candidate, compute:
+
+exact gold-track match among neighbor cases
+
+artist match among neighbor golds
+
+album match among neighbor golds
+
+tag/genre overlap with neighbor golds
+
+best neighbor rank/sim/count
+
+Add features to LTR table.
+
+Retrain LightGBM LambdaRank.
+
+Evaluate OOF against current exact base.
+
+If this fails, stop.
+
+If it passes +0.0025 nDCG@20 cleanly, then try:
+
+C
+base
+	​
+
+∪C
+case
+	​
+
+
+with case-source candidates restricted to ranks 11–20.
+
+Why it might help
+
+It can help when:
+
+Similar dialogue states recur
+Users may ask common patterns: “chill study music,” “more like this,” “upbeat workout,” “sad indie,” “classic rock.”
+
+Train cases encode hidden mapping from language to tracks
+Case neighbors can reveal which tracks the dataset tends to consider relevant for certain phrasing.
+
+It adds state-level evidence not captured by item docs
+Item augmentation stores text per item, but case retrieval stores analogies between full user states.
+
+It helps source gating
+If nearest cases point to the same artist/track family as a candidate, LTR may trust that candidate more.
+
+It may recover missed candidates
+If similar train cases repeatedly gold the same track or artist, the case source may add candidates absent from BM25/RRF.
+
+Why it might fail
+
+It may fail for several reasons.
+
+1. Redundancy
+
+You already use train-context item augmentation. The same signal may already be baked into item BM25 and LTR features.
+
+Expected symptom:
+
+case_features have low importance
+
+and:
+
+ΔnDCG@20≈0
+2. Memorization does not transfer to blind
+
+Nearest train cases may overfit dev phrasing but not blind phrasing.
+
+Expected symptom:
+
+dev gains concentrate in obvious repeated templates
+
+fold gains are unstable
+
+user/session split reduces gains sharply
+
+3. Wrong analogy
+
+Similar-looking requests may require different tracks.
+
+Example:
+
+“chill indie”
+
+“chill electronic”
+
+“chill but upbeat”
+
+“chill sad songs”
+
+BM25 case retrieval may collapse these together.
+
+Expected symptom:
+
+case candidates increase hit@20 but hurt nDCG@10
+
+or entity/constraint turns regress.
+
+4. Popular-track amplification
+
+Nearest train golds may repeat popular tracks and reduce diversity.
+
+Expected symptom:
+
+more repeated tracks
+
+catalog diversity falls
+
+top tracks appear too often
+
+Mitigation:
+
+case_popularity_penalty
+
+or cap case-source frequency.
+
+5. Leakage-like split sensitivity
+
+If same session/user patterns appear across folds, case retrieval may look strong but fail on blind.
+
+Expected symptom:
+
+GroupKFold(session) gain>GroupKFold(user) gain
+
+If user-grouped validation kills the gain, do not trust it.
+
+Final decision
+Yes, one minimal case-based train-turn distillation experiment is worth doing.
+	​
+
+
+But the safe version is:
+
+case-neighbor features only, same candidates, fold-local train-case index
+	​
+
+
+Do not submit unless it achieves:
+
+ΔOOF nDCG@20≥+0.004
+	​
+
+
+with no nDCG@5/10 damage and stable fold gains.
+
+If feature-only fails:
+
+stop; do not try snippet expansion or case-source promotion.
+	​
