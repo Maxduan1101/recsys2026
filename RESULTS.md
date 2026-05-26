@@ -104,6 +104,23 @@ Interpretation:
 - Pro sanity check saved at `research/pro_answers/round4/tab1_submission_package_decision.txt`: submit the safest head20 response-first package before diversity-heavy variants.
 - Latest response iteration upgrades the response style to `compact_broad`, which keeps compact v2 lexical diversity while filtering noisy/private tag artifacts.
 
+Latest public Blind A score for the primary weighted-RRF + `judge_clean_mix` package:
+
+| Metric | Score |
+|---|---:|
+| nDCG@20 | 0.1898 |
+| Catalog Diversity | 0.0317 |
+| Lexical Diversity | 0.6060 |
+| LLM Judge Score | 1.5000 |
+| Composite Score | 0.1962 |
+
+Interpretation:
+
+- The score nearly doubled from `0.1006` to `0.1962`.
+- Recommendation nDCG did not transfer upward on public Blind A: it moved from `0.1935` in the older public package to `0.1898`.
+- The improvement came from response/diversity: lexical diversity jumped from `0.0125` to `0.6060`, catalog diversity moved close to the Blind A ceiling, and judge rose from `1.0` to `1.5`.
+- The next score bottleneck is no longer lexical diversity; it is LLM judge quality and recovering nDCG.
+
 ## Blind A Local Diversity Summaries
 
 These are gold-free checks from `scripts/summarize_predictions.py`; they do not estimate nDCG.

@@ -1,5 +1,17 @@
 # Blind A Submission Decision
 
+Latest public result for the primary package:
+
+```text
+ndcg@20            0.1898
+catalog_diversity  0.0317
+lexical_diversity  0.6060
+llm_judge_score    1.5000
+composite_score    0.1962
+```
+
+This nearly doubles the previous public score `0.1006`, but the gain came from response/diversity rather than ranking: nDCG moved slightly down from `0.1935` to `0.1898`, while lexical diversity jumped from `0.0125` to `0.6060`.
+
 Recommended first retry after LTR tuning, response cleanup, and ensemble probing:
 
 ```text
