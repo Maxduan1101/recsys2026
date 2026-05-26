@@ -332,15 +332,56 @@ goalflow_bm25_aug_v2 nDCG@20 = 0.074497
 baseline              nDCG@20 = 0.085870
 ```
 
-结论：
+只看这三行，严格来说只能得出一个结论：
 
 ```text
-多路召回确实找到了更多候选
-但简单 RRF 把 baseline 原本排得靠前的正确歌冲散了
-推荐排序变差
+多路 BM25 + RRF 的最终 top-20 排序，比 baseline 差。
 ```
 
-这叫 head-rank dilution。意思是头部排名被稀释了。
+不能只凭这三行就说“找到了更多候选”，也不能只凭这三行就说“一定是 RRF 冲散了 baseline”。这两个判断来自后面专门做的 `Source Diagnostics`，也就是把每一个召回源单独拆开看。
+
+后续诊断发现：
+
+```text
+legacy source hit@20      = 0.2303
+best single source hit@20 = 0.4715
+RRF fused hit@20          = 0.2595
+```
+
+这里的 `hit@20` 意思是：正确歌曲有没有出现在某个 source 的前 20 名里。
+
+`hit@20` 和 `nDCG@20` 不一样：
+
+```text
+hit@20 只问：正确歌有没有进前 20。
+nDCG@20 还问：正确歌排第几。
+```
+
+如果正确歌排第 20，`hit@20` 算命中，但 `nDCG@20` 分数很低。这个区别很重要，因为我们的很多新 source 是“能找到”，但“不一定排得足够靠前”。
+
+`legacy source` 是接近 baseline 的旧搜索源。
+
+`best single source` 是诊断用的“事后最佳 source”。它不是一个可提交模型，而是问：如果我们事后知道每一轮哪个 source 最会找正确歌，那么所有 source 里最好的那个能不能把正确歌放进前 20。
+
+这组数说明：
+
+```text
+旧 source 自己只能在 23.03% 的轮次把正确歌放进前 20。
+但多路 source 里，确实有一些 source 能覆盖更多正确歌，事后最佳能到 47.15%。
+实际 RRF 融合后只有 25.95%，远低于事后最佳。
+```
+
+所以更准确的结论是：
+
+```text
+新增 source 让候选池里出现了更多正确答案。
+但简单 RRF 没有学会什么时候该相信哪个 source。
+它一边带进了一些新命中，一边也把 baseline 原本靠前的正确答案挤下去了。
+```
+
+这才叫 head-rank dilution。意思是：头部排名被稀释了。
+
+白话说，baseline 像一个保守但靠谱的老搜索器；多路 RRF 像让很多搜索器一起投票。新搜索器确实知道一些老搜索器不知道的歌，但投票规则太粗糙，于是有些老搜索器本来排第 1、第 2 的正确答案，被一堆“也有点相关”的候选挤到了后面。
 
 策略改变：
 
@@ -450,6 +491,8 @@ composite_score    0.1006
 LLM judge 也只给最低档
 ```
 
+这里也要注意证据边界：`nDCG@20=0.1935` 只能说明这个旧包在 public Blind A 的推荐排序不差，不能说明它在所有 split 都强；`lexical_diversity=0.0125` 和 `llm_judge_score=1.0` 才直接说明回复文本是当时最大的短板。
+
 于是重点转到 response。
 
 我们做了多种回复风格。
@@ -558,6 +601,18 @@ Judge 从 1.0 提到 1.5
 这一阶段是总分提升的核心
 ```
 
+这个判断来自 public 指标对比，而不是主观感觉：
+
+```text
+nDCG@20            0.1935 -> 0.1898   小降
+catalog_diversity  0.0257 -> 0.0317   小幅上升
+lexical_diversity  0.0125 -> 0.6060   巨幅上升
+llm_judge_score    1.0000 -> 1.5000   上升
+composite_score    0.1006 -> 0.1962   接近翻倍
+```
+
+所以这轮总分上涨不是因为 ranking 变强，而是因为 response 和 diversity 修复成功。
+
 ## 10. 第五阶段：Source Diagnostics
 
 `Source Diagnostics` 是分析每个召回源到底有没有用。
@@ -664,6 +719,24 @@ assistant 当时怎么解释
 enriched source 的召回有帮助
 但直接 RRF 融合仍会稀释头部排名
 ```
+
+这里的证据也来自 source diagnostics：
+
+```text
+legacy source hit@20       = 0.2303
+index_any=enriched hit@20  = 0.3685
+index_any=metadata hit@20  = 0.3635
+RRF fused hit@20           = 0.2595
+```
+
+意思是：
+
+```text
+enriched 文档单独看，比 legacy source 更容易把正确歌放进前 20。
+但混合到 RRF 后，最终 fused 排序没有接近 enriched 的单源潜力。
+```
+
+所以准确说法不是“augmentation 直接让最终系统变强”，而是“augmentation 提高了候选覆盖潜力，但需要更聪明的重排模型才能兑现”。
 
 策略改变：
 
@@ -1348,4 +1421,3 @@ ranking 需要重新诊断
 下一阶段要从“能写多样回复”升级到“能写让 judge 更满意的回复”
 同时要解决 LTR 在 Blind A 上 nDCG 不增反降的问题
 ```
-
