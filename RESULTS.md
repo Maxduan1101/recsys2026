@@ -59,6 +59,7 @@ Development-set scores from the official evaluator.
 | `goalflow_ens_oof_ltr120_140_200_col1_lambda2_w140half_rrf20_compact_clean` | 0.072000 | 0.163043 | 0.183727 | 0.525844 | 0.211007 | Same weighted ranking with clean compact high-lexical response. |
 | `goalflow_ens_oof_ltr120_140_200_col1_lambda2_w140half_rrf20_compact_broad_clean` | 0.072000 | 0.163043 | 0.183727 | 0.525844 | 0.222685 | Same weighted ranking with highest-lexical compact-broad response. |
 | `goalflow_ens_oof_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_judge_clean_mix` | 0.072000 | 0.163392 | 0.183924 | 0.525547 | 0.199581 | Weighted four-model RRF with clean mixed response; current best OOF candidate. |
+| `goalflow_ens_oof_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_single_fallback_top1_script` | 0.072125 | 0.163487 | 0.183986 | 0.525547 | 0.199581 | Experimental consensus fallback: 52 dev rows switch to the single 120-tree model when weighted top1 has no component-top1 support. |
 | `goalflow_ens_oof_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_judge_clean_mix_tagclean` | 0.072000 | 0.163392 | 0.183924 | 0.525547 | 0.199573 | Same primary response style with stricter noisy-tag filtering; Blind A artifact is identical to the primary package. |
 | `goalflow_ens_oof_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_judge_clean_mix_safeplus` | 0.072000 | 0.163392 | 0.183924 | 0.525547 | 0.191884 | Rejected clean-plus attempt: no broad tags, but lexical diversity fell below the primary. |
 | `goalflow_ens_oof_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_judge_clean_mix_lexplus_tagclean` | 0.072000 | 0.163392 | 0.183924 | 0.525547 | 0.204602 | Clean high-lexical response backup: same ranking, more compact metadata-grounded wording, no broad-tag source. |
@@ -165,6 +166,8 @@ CF-tail blind-like follow-up:
 - Stacking CF-tail on `head19` reduced dev nDCG; stacking it on `head18` raised nDCG slightly but lowered catalog diversity. Do not prioritize it over the three main packages.
 - Applying the same rank-20 seed-CF rescue to the current four-model ensemble changed `397 / 8000` dev rows and only `1 / 80` Blind A row. Official full-dev nDCG@20 stayed exactly `0.183482` while catalog diversity rose to `0.527798`, but 500 Blind-A-shaped panels had mean delta `-0.00036`; keep this as a rejected shadow experiment.
 - Applying a batch-level repeat repair to the current weighted four-model ensemble is also rejected. The safest `head_k=19` repair improves dev catalog diversity by `+0.01476` but lowers OOF nDCG@20 from `0.183924` to `0.183497`; more aggressive `head_k=15-18` variants lose more nDCG for a small extra catalog gain.
+- A narrower RRF grid around the current weighted package found `rrf_k=28`, weights `[1.0, 0.45, 1.45, 1.05]`, but official OOF only reached `0.183966` and Blind-A-shaped 1000-panel mean delta was `-0.000096`; reject it as dev-fold noise.
+- `scripts/apply_consensus_fallback.py` implements a conservative top-1 support fallback. The first rule (`support_top_k=1`, `base_max_support=0`, `fallback_min_support=2`) raises official OOF to `0.183986` and Blind-A-shaped 5000-panel mean delta to `+0.000278` with p10 `0.0`, but it changes `0 / 80` Blind A rows. Keep it as a Blind-B/future-split tool rather than a replacement for the current Blind A package.
 
 ## Retrieval Source Diagnostics
 

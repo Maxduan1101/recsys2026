@@ -41,6 +41,14 @@ experiments/goalflow_ltr120_lambda2_head0_judge_clean_mix_clean/blindset_A/submi
 
 Use this if the submission budget favors the simplest validated LTR path. Five-fold out-of-fold dev validation reaches official `nDCG@20=0.18302`, with local Blind A catalog diversity `0.03178` and Distinct-2 `0.60453`.
 
+Future-split consensus fallback:
+
+```text
+experiments/goalflow_ens_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_single_fallback_top1_judge_clean_mix_script/blindset_A/submission.zip
+```
+
+This currently changes `0 / 80` Blind A rows, so it is identical to the primary package for Blind A. The script is still useful for Blind B or future splits: on dev it changes 52 rows, improves official OOF nDCG@20 to `0.183986`, and has positive Blind-A-shaped 5000-panel mean delta `+0.000278` with p10 `0.0`.
+
 Equal-weight four-model fallback:
 
 ```text
