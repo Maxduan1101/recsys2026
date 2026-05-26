@@ -1,0 +1,150 @@
+# RecSys 2026 Report Outline
+
+URL: https://chatgpt.com/c/6a146195-b808-8321-b5de-994a93b54184
+
+## Question
+
+Please answer in final visible text only. Do not use hidden reasoning. If limited, write exactly LIMIT. RecSys Challenge 2026 Music-CRS final-stage triage. Failed/negative: CE zero-shot, case-neighbor direct source, seed/user embedding LTR, quoted-title promotion, batch diversity repair, RRF microgrid. Current best package is strong and valid; response-only lexplus_softened improved lexical but may be more templated. Should we still attempt direct Qwen3 current-query dense retrieval now, or stop all ranking changes and only use response/package backups? Give exact stop/go decision.
+
+## Answer
+
+Exact decision: STOP ranking changes. NO-GO on direct Qwen3 current-query dense retrieval.
+
+Do not attempt direct Qwen3 current-query dense retrieval now for the final package.
+
+Your current evidence pattern is clear: several plausible ranking-side interventions have already failed or gone negative:
+
+Direction	Result
+CE zero-shot	failed / negative
+case-neighbor direct source	failed / negative
+seed/user embedding LTR	failed / negative
+quoted-title promotion	failed / negative
+batch diversity repair	failed / negative
+RRF microgrid	failed / negative
+
+That is enough signal to stop adding ranking complexity. Direct Qwen3 current-query dense retrieval would be another new ranking source with the same risk profile: it can perturb top-k ordering, introduce dense-query mismatch, overfit dev/public feedback, and create hard-to-debug final drift. At final stage, it is not worth opening a new retrieval branch unless it has already shown a clean blind/public win.
+
+Final-stage rule
+
+If a change affects predicted_track_ids, it is frozen.
+If a change only affects predicted_response or packaging validity, it may still be considered.
+
+So the final triage should be:
+
+Area	Decision
+Weighted four-model RRF ranking	Freeze
+Direct Qwen3 dense retrieval	Stop / no-go
+New retrieval sources	Stop
+Reranking rules	Stop
+Diversity repair	Stop
+Quoted-title / exact-match promotion	Stop
+LTR / embedding rerankers	Stop
+Response-only variants	Allowed
+Packaging / validity / hash backups	Allowed
+What to do instead
+
+Use the current strong valid package as the main artifact.
+
+Recommended final hierarchy:
+
+Primary final: current best package with frozen ranking.
+
+Response backup A: same ranking + current safest response style.
+
+Response backup B: same ranking + lexplus_softened, only if its public/validation response signal is clearly better.
+
+Package backup: identical predictions, separately generated and validated, in case of formatting/cache/file issues.
+
+Decision on lexplus_softened
+
+Use lexplus_softened only if it satisfies all of these:
+
+Ranking hash is identical to the current best package.
+
+JSON validity is identical.
+
+It improves public or blind feedback enough to matter.
+
+Manual inspection does not show obvious repetitive compact-template behavior.
+
+It does not make responses feel less grounded in the user’s conversation.
+
+If the gain is only lexical/diversity-based and it visibly sounds more templated, do not switch. Keep it as backup.
+
+Exact public-feedback decision tree
+Step 1: Freeze ranking
+
+Set:
+
+FINAL_RANKING = current best weighted four-model RRF ranking
+
+Do not modify it again.
+
+Reject any candidate where:
+
+ranking_hash != FINAL_RANKING_HASH
+
+unless you already have a clear blind/public win from that exact artifact. For Qwen3 dense retrieval, you do not, so reject it.
+
+Step 2: Compare response-only candidates
+
+Allowed candidates:
+
+A = current best ranking + safest current response
+B = current best ranking + lexplus_softened
+
+Only compare candidates where:
+
+ranking_hash(A) == ranking_hash(B)
+
+This isolates response quality.
+
+Step 3: Choose response
+
+If public feedback has a separate response score:
+
+if B_response_score > A_response_score by clear margin
+   and B is not visibly more templated:
+       choose B
+else:
+       choose A
+
+If public feedback has only a combined score:
+
+if B_total_score > A_total_score by at least a meaningful margin
+   and B is not visibly more templated:
+       choose B
+else:
+       choose A
+
+Use a conservative margin. If the difference is tiny, choose the less risky response.
+
+Step 4: Final package validation
+
+Before final submission, validate only mechanical properties:
+
+all sessions present
+all turns present
+track IDs valid
+no duplicate track IDs per turn
+ranked lists length <= 20
+ranking order stable
+response field present
+JSON schema valid
+file hash recorded
+ranking hash recorded
+response hash recorded
+
+Do not use this step to introduce model changes.
+
+Final answer
+
+Stop all ranking changes now. Do not attempt direct Qwen3 current-query dense retrieval.
+
+Proceed with:
+
+Frozen current best ranking + best response-only variant + clean package backups.
+
+My final pick would be:
+
+Submit the current best valid package unless lexplus_softened wins clearly as a response-only swap without looking more templated.

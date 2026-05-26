@@ -16,6 +16,7 @@ Why this one:
 - Official dev lexical diversity is `0.19958`, versus `0.14874` for fixed `judge_v2`.
 - The response cleanup removes private/noisy tag artifacts, title-cases profile fields, and collapses duplicate/list-valued track titles, artist names, and album names before writing them into the explanation.
 - It directly attacks the previous public weak points: `lexical_diversity=0.0125` and `llm_judge_score=1.0`, while also improving local ranking validation.
+- Round 11 final triage freezes the weighted four-model RRF ranking. Do not introduce direct Qwen3 dense retrieval, case-neighbor features, cross-encoder reranking, new diversity repair, or new exact-match promotion unless public feedback explicitly reopens ranking work.
 
 Softened high-lexical response backup:
 
@@ -24,6 +25,8 @@ experiments/goalflow_ens_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_judge
 ```
 
 This keeps the exact same weighted RRF ranking. It is a cleaned `lexplus` variant that falls back to shorter grounded wording when the compact/judge mix gets too long. It raises official dev lexical diversity to `0.20531` and local Blind A Distinct-2 to `0.63566`, with no noisy phrase hits and no long/short rows in `scripts/audit_response_text.py`. Keep it as the strongest response-only backup, not the default first submission, because `judge_clean_mix` is still less compact-template-heavy.
+
+Round 11 Pro guidance: submit the primary `judge_clean_mix` package first, then use `lexplus_softened` as the only response-only challenger. Plain `lexplus` is now obsolete.
 
 Previous clean high-lexical response backup:
 

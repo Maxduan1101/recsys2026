@@ -1,0 +1,209 @@
+# Embedding-based Extension Design
+
+URL: https://chatgpt.com/c/6a146183-ca4c-8320-b934-f263988c2d47
+
+## Question
+
+Please answer in final visible text only. Do not use hidden reasoning. If limited, write exactly LIMIT. RecSys Challenge 2026 Music-CRS. Case-based train-turn BM25 probe on train1000/dev160: neighbor gold-track coverage=6.25%, gold-artist coverage=28.13%; protected direct insertion was bad: case-only delta=-0.2648, lock5=-0.0761, lock10=-0.0382, lock15=-0.0179 nDCG@20, 0 better / 12 worse for lock15. Is feature-only case distillation still worth coding now, or should this branch stop? Give strict criteria.
+
+## Answer
+
+Stop this branch now, unless it passes a very strict rescue test
+
+Given these probe results, feature-only case distillation is not worth coding as a normal branch right now.
+
+Your evidence says the case memory is not merely weak; it is directionally harmful:
+
+neighbor gold-track coverage:   6.25%
+neighbor gold-artist coverage: 28.13%
+
+case-only Δ nDCG@20:  -0.2648
+lock5 Δ nDCG@20:      -0.0761
+lock10 Δ nDCG@20:     -0.0382
+lock15 Δ nDCG@20:     -0.0179
+
+lock15 slices:        0 better / 12 worse
+
+That is a strong stop signal. Locking the head reduced the damage, but the tail signal was still bad, and every measured slice got worse. Feature-only distillation is safer than direct insertion, but it is still built from the same neighbor signal. If the nearest cases do not retrieve the right item or even reliably the right artist, LightGBM will mostly see noisy priors, popularity artifacts, or misleading artist/template correlations.
+
+My recommendation:
+
+Do not code feature-only case distillation now.
+Move effort back to higher-probability branches.
+Why this branch should stop
+1. Exact item signal is too sparse
+
+At:
+
+gold-track coverage = 6.25%
+
+an exact case-item feature would be active on too few useful positives. It may still fire on negatives, but not often enough on true positives to justify complexity.
+
+Strict minimum I would want before coding feature-only exact-item features:
+
+gold-track coverage@caseK >= 12% on probe
+
+Preferred:
+
+gold-track coverage@caseK >= 15%
+
+You are roughly half of the minimum bar.
+
+2. Artist signal is not strong enough to rescue it
+
+At:
+
+gold-artist coverage = 28.13%
+
+there is some artist-level signal, but not enough to justify a new feature family unless it is clearly non-harmful in protected insertion. Since lock15 is still negative and all slices are worse, the artist matches are probably not aligned with ranking relevance.
+
+Strict minimum before coding artist-level case features:
+
+gold-artist coverage >= 40%
+
+Preferred:
+
+gold-artist coverage >= 45%–50%
+
+And even then, I would require lock15 to be near-neutral.
+
+3. Protected insertion stayed harmful
+
+This is the biggest red flag.
+
+If case memory were a useful tail-recall source, then locking the top 15 should have made the damage small or mixed. Instead:
+
+lock15 Δ nDCG@20 = -0.0179
+0 / 12 slices better
+12 / 12 slices worse
+
+That says the case-derived candidates are not just unsafe for the head; they are also bad tail candidates.
+
+Feature-only may let LightGBM ignore them, but “maybe the model ignores this” is not a reason to add features to a strong system.
+
+Strict criteria to reopen the branch
+
+Only reopen case distillation if a revised case retriever passes all of these criteria on the same kind of probe.
+
+Reopen Gate 1 — coverage
+
+For nearest train cases:
+
+gold-track coverage >= 12%
+gold-artist coverage >= 40%
+
+Preferred reopen bar:
+
+gold-track coverage >= 15%
+gold-artist coverage >= 45%
+
+If you cannot reach these with a better case retriever, stop permanently.
+
+Reopen Gate 2 — protected insertion must be almost neutral
+
+Before feature-only coding, the crude protected insertion test must no longer be strongly negative.
+
+Required:
+
+lock15 Δ nDCG@20 >= -0.0030
+
+Preferred:
+
+lock15 Δ nDCG@20 >= 0.0000
+
+Also require:
+
+at least 4 / 12 slices non-negative
+no slice worse than -0.0100
+
+Your current result:
+
+lock15 Δ = -0.0179
+0 / 12 slices better
+
+fails hard.
+
+Reopen Gate 3 — case signal must beat popularity
+
+Compare nearest-case gold items against a simple popularity prior.
+
+Reopen only if:
+
+case-neighbor gold/item artist hit rate > popularity baseline by at least 50% relative
+
+Example:
+
+if popularity topK artist coverage = 24%
+case artist coverage must be >= 36%
+
+If case retrieval is only reproducing frequent artists/tracks, it is not a useful feature.
+
+Reopen Gate 4 — high-confidence neighbor slice must work
+
+Define high-confidence case turns, for example:
+
+top1 case BM25 score >= p90
+or mean top5 case score >= p90
+
+Reopen only if, on this high-confidence slice:
+
+gold-track coverage >= 20%
+gold-artist coverage >= 55%
+lock15 Δ nDCG@20 >= 0
+
+If even the best-matched case turns do not help, feature-only case distillation has no credible path.
+
+Reopen Gate 5 — feature-only must be tiny and removable
+
+If all gates above pass, code only this minimal feature-only set:
+
+case_exact_item_hit_count
+case_exact_item_best_rank
+case_exact_item_rrf
+
+case_artist_hit_count
+case_artist_best_rank
+case_artist_rrf
+
+case_same_turn_count
+case_top1_similarity
+case_top5_mean_similarity
+case_gold_item_popularity
+case_gold_artist_popularity
+
+No case candidate insertion.
+No item-doc snippets.
+No case-generated pseudo-labels.
+No top-rank promotion.
+
+Acceptance after coding:
+
+Δ nDCG@20 >= +0.0015
+Δ nDCG@10 >= +0.0010
+Δ nDCG@1  >= -0.0003
+at least 3 / 4 folds improve
+at least 6 / 8 turns non-negative
+no exact-title / quoted-title head regression
+
+If feature-only gives:
+
+0.0000 < Δ nDCG@20 < +0.0015
+
+do not keep it. The operational complexity and overfit risk are not worth it.
+
+Current decision
+
+With the numbers you reported, the strict decision is:
+
+STOP.
+
+Do not spend more implementation effort on feature-only case distillation unless you first improve the case retriever enough to pass the reopen gates.
+
+The current probe says:
+
+nearest train turns are not reliable cases;
+direct case evidence is harmful;
+artist-level overlap is too weak;
+protected tail insertion still degrades every slice.
+
+So the rational move is to close this branch and preserve the current strong LightGBM/RRF system rather than adding another noisy feature family.

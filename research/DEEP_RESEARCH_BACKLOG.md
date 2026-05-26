@@ -128,6 +128,7 @@ This file tracks questions and optimization directions that deserve a dedicated 
    - Deep research question: how should labeled train-split conversations be used without hurting dev/Blind transfer: sample weighting, distillation into augmentation text, stratified sampling, or train-only pretraining followed by dev calibration?
    - Round 10 Pro answer saved at `research/pro_answers/round10/tab6_case_based_distillation.txt`: case-based train-turn distillation is worth at most one minimal fold-local feature experiment, not a new retrieval backbone.
    - Implemented `scripts/probe_case_neighbors.py`. The first direct candidate-source probe using 1000 train sessions and 160 dev turns is strongly negative: neighbor exact-gold coverage `6.25%`, gold-artist coverage `28.13%`, lock15 insertion delta `-0.01788` nDCG@20 with `0` better and `12` worse rows. Stop direct case-source promotion; keep fold-local case features as a future research-only path.
+   - Round 11 follow-up saved at `research/pro_answers/round11/tab2_case_branch_stop_decision.txt`: do not code feature-only case distillation now. Reopen only if a revised case retriever reaches at least roughly `12-15%` exact-gold coverage, `40-45%` gold-artist coverage, and near-neutral protected insertion.
    - Deep research question: should response generation optimize explicit Distinct-2, naturalness, explanation completeness, or controlled style mixing for Gemini judging, and how can we simulate that locally?
    - Deep research question: given inferred composite weights, is `judge_clean_mix` more likely than `judge_mix` to transfer on Blind A/B once Gemini judge risk is considered, or should the safer `judge_mix` remain primary despite lower lexical diversity?
 
@@ -177,6 +178,7 @@ This file tracks questions and optimization directions that deserve a dedicated 
    - Implemented `judge_clean_mix_lexplus`, a clean response-only backup that uses more compact metadata-grounded responses without broad tags. With the current weighted RRF ranking, official dev lexical rises to `0.20460` and Blind A Distinct-2 rises to `0.63192`; keep it behind `judge_clean_mix` until public feedback clarifies the Distinct-2 vs Gemini naturalness tradeoff.
    - Implemented `scripts/audit_response_text.py` as a gold-free response QA guard. It flags noisy tag leaks, repeated openings, and long/short responses. Current primary has no noisy hits and no long/short rows; lexplus has no noisy hits but one 120-word Blind A response.
    - Implemented `judge_clean_mix_lexplus_softened`, which keeps the same ranking and same clean high-lexical family but falls back when a response exceeds 112 words. It improves official dev lexical to `0.20531`, local Blind A Distinct-2 to `0.63566`, and removes the long-row audit issue. Keep it as the stronger high-lexical backup behind the primary `judge_clean_mix`.
+   - Round 11 follow-up saved at `research/pro_answers/round11/tab1_lexplus_softened_decision.txt`: `lexplus_softened` supersedes plain `lexplus`, but it should still be submitted after the primary because it may be more compact-template-heavy.
    - Next research question: does Gemini judge prefer compact-broad's high lexical diversity, polished's longer explanations, or judge_v2's shorter first-track reasoning?
    - Next research question: what is the minimum lexical diversity needed before judge quality dominates, given the inferred composite weight for `llm_judge_score`?
    - Pro answers saved at `research/pro_answers/round2/tab4_recsys_2026_response_generation.txt` and `research/pro_answers/round3/tab5_metadata_grounded_response_design.txt`.
@@ -204,6 +206,10 @@ This file tracks questions and optimization directions that deserve a dedicated 
    - Round 3 Pro answer saved at `research/pro_answers/round3/tab4_dev_blind_evaluation_analysis.txt`.
    - Implemented `scripts/evaluate_blind_like.py`, which samples dev panels matching Blind A `(turn_number, category, specificity)` strata and reports mean/p10/median nDCG deltas.
    - Round 5 Pro answer saved at `research/pro_answers/round5/tab5_offline_validation_design.txt`.
+
+22. **Final-stage ranking freeze**
+   - Round 11 Pro answer saved at `research/pro_answers/round11/tab5_final_ranking_stop_decision.txt`.
+   - Decision: freeze all changes that alter `predicted_track_ids`. Direct Qwen3 current-query dense retrieval, new retrieval sources, reranking rules, diversity repair, exact-match promotion, and neural/LTR changes are no-go for the final package unless public feedback explicitly forces a ranking rethink.
 
 ## Engineering
 

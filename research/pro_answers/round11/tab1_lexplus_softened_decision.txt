@@ -1,0 +1,133 @@
+# Source-Gating Algorithm Design
+
+URL: https://chatgpt.com/c/6a1464da-5f6c-8323-9f11-46c673a4d8ec
+
+## Question
+
+Please answer in final visible text only. Do not use hidden reasoning. If limited, write exactly LIMIT. RecSys Challenge 2026 Music-CRS final iteration. Primary is weighted four-model RRF + judge_clean_mix: dev nDCG@20=0.1839239, dev lexical=0.19958, BlindA D2=0.60604. New response-only backup lexplus_softened has same ranking, dev lexical=0.20531, BlindA D2=0.63566, no noisy phrase hits, word counts 41-112. It is more compact-template-heavy than primary. Should lexplus_softened supersede plain lexplus, and when should it be submitted relative to primary?
+
+## Answer
+
+主人，yes: lexplus_softened should fully supersede plain lexplus as the response backup.
+
+Compared with plain lexplus, lexplus_softened is strictly better on the available response-side signals:
+
+0.63566−0.63192=+0.00374
+
+Blind-A Distinct-2 improves slightly, dev lexical also improves:
+
+0.20531−0.20460=+0.00071
+
+and it has no noisy phrase hits with reasonable word counts:
+
+41–112
+
+So plain lexplus is now obsolete. Keep only:
+
+primary: judge_clean_mix
+	​
+
+
+and
+
+backup/challenger: lexplus_softened
+	​
+
+Submit order
+
+I would still submit:
+
+weighted four-model RRF + judge_clean_mix first
+	​
+
+
+Then submit:
+
+same ranking + lexplus_softened second
+	​
+
+
+Reason: lexplus_softened has a better lexical/D2 profile, but it is still more compact-template-heavy. The only real risk left is Gemini judge deciding it feels less personalized or more formulaic than judge_clean_mix.
+
+The D2 gain over primary is:
+
+0.63566−0.60604=+0.02962
+
+If lexical/D2 weight is around 0.1, that gives approximately:
+
+0.1×0.02962=+0.002962
+
+If Gemini judge contributes roughly:
+
+0.3×
+4
+judge−1
+	​
+
+
+then lexplus_softened can only afford to lose about:
+
+3
+4
+	​
+
+×0.02962≈0.0395
+
+raw judge points versus judge_clean_mix.
+
+So the threshold is:
+
+lexplus_softened wins only if its Gemini judge is not lower by ≥0.04
+	​
+
+
+That is a very small margin. Therefore judge_clean_mix remains the safer first package.
+
+After public feedback: decision thresholds
+
+If both submissions get public feedback, choose lexplus_softened over primary if:
+
+ΔJudge>−0.04
+
+where:
+
+ΔJudge=Judge
+softened
+	​
+
+−Judge
+primary
+	​
+
+
+Practical cases:
+
+Public result	Decision
+lexplus_softened judge equal or higher	Use lexplus_softened
+judge lower by < 0.03	Use lexplus_softened
+judge lower by 0.03–0.04	borderline; prefer higher composite
+judge lower by ≥ 0.04	stay with judge_clean_mix
+public only shows D2, not judge	keep judge_clean_mix as safest unless manual audit strongly favors softened
+When to submit lexplus_softened
+
+Submit it after primary, not before, unless one of these is true:
+
+You already know judge_clean_mix has weak/floor Gemini judge.
+
+You have enough submissions to test a response-only variant safely.
+
+Manual audit shows lexplus_softened is not meaningfully more generic despite compact templates.
+
+Otherwise:
+
+Primary first, lexplus_softened second as the only response backup.
+	​
+
+
+Final ranking:
+
+First submit: weighted four-model RRF + judge_clean_mix
+
+Second submit: weighted four-model RRF + lexplus_softened
+
+Drop: plain lexplus

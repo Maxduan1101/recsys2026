@@ -441,6 +441,10 @@ Saved answers:
 - `research/pro_answers/round10/tab5_final_iteration_decision_tree.txt`
 - `research/pro_answers/round10/tab6_case_based_distillation.txt`
 - `research/pro_answers/round10/README.md`
+- `research/pro_answers/round11/tab1_lexplus_softened_decision.txt`
+- `research/pro_answers/round11/tab2_case_branch_stop_decision.txt`
+- `research/pro_answers/round11/tab5_final_ranking_stop_decision.txt`
+- `research/pro_answers/round11/README.md`
 
 Operational takeaways:
 
@@ -455,3 +459,4 @@ Operational takeaways:
 - Round 8 Pro answers still favor the weighted RRF ranking and warn against ranking-diversity tweaks on the tiny Blind A ceiling. They suggest response-only `judge_clean_mix_plus` as a possible judge-quality backup, but the local artifact check keeps plain `judge_clean_mix` first.
 - Round 9 final-submission guidance still favors submitting the weighted RRF + `judge_clean_mix` package first. The response-style retry also keeps `judge_clean_mix` ahead of `lexplus` for the first submission because a small Distinct-2 gain is easier to lose through Gemini judge naturalness. Other round 9 browser questions are still pending or failed with empty ChatGPT responses, so they are recorded for retry rather than treated as research evidence.
 - Round 10 Pro answers keep the current primary package unchanged, demote cross-encoder work to a strict offline-only audition, recommend any direct dense query retrieval go through Qwen3-compatible text channels with protected-head gates, and keep the consensus fallback only as a rare future-split repair.
+- Round 11 Pro answers freeze all ranking changes for the final stage. They promote `lexplus_softened` over plain `lexplus` as the response-only backup, reject feature-only case distillation after the negative case probe, and mark direct Qwen3 current-query dense retrieval as no-go for the final package.
