@@ -57,10 +57,11 @@ def parse_args():
         "--response-style",
         choices=[
             "compact", "compact_broad", "concise", "setwise", "natural", "polished",
+            "smooth_compact",
             "judge_v1", "judge_v2", "judge_v3", "judge_mix", "judge_brief",
             "judge_planned", "judge_compact_mix", "judge_clean_mix", "judge_balanced_mix",
             "judge_clean_mix_plus", "judge_clean_mix_safeplus", "judge_clean_mix_lexplus",
-            "judge_clean_mix_lexplus_softened",
+            "judge_clean_mix_lexplus_softened", "judge_clean_smooth",
         ],
         default="compact",
     )

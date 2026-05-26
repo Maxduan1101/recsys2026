@@ -50,13 +50,10 @@ Gold-free response audit:
 - Lexplus also has no banned/noisy phrase hits, but one Blind A response reaches 120 words; keep it as a backup unless public feedback shows lexical diversity is still the binding constraint.
 - Lexplus softened has no banned/noisy phrase hits, word counts `41-112`, and local Blind A Distinct-2 `0.63566`, so it supersedes plain lexplus as the high-lexical backup.
 
-Response-only judge-quality backup:
+Final freeze audit:
 
-```text
-experiments/goalflow_ens_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_judge_clean_mix_plus/blindset_A/submission.zip
-```
-
-This keeps the exact same weighted RRF ranking but mixes a small amount of fuller/natural and compact-broad wording into `judge_clean_mix`. Official dev lexical is `0.19928` and local Blind A Distinct-2 is `0.60729`. Keep it behind the primary clean package because spot checks found occasional less-clean broad tags, even though no quick banned-term/opening-duplication flags fired.
+- `scripts/final_freeze_audit.py` passes both primary and `lexplus_softened`: valid schema, ZIP contains exactly `prediction.json`, 80 rows, 1600 slots, 1494 unique tracks, no noisy hits, no long/short rows, and no top-1 title/artist mention misses.
+- `judge_clean_mix_plus` is no longer a backup. The final audit found one noisy tag leak (`songsof2011` / `lobpreis`) and two long Blind A rows, so it is rejected despite sharing the same ranking.
 
 Conservative single-model clean-mix fallback:
 
@@ -237,14 +234,17 @@ Rejected near-misses:
 - Zero-shot cross-encoder reranking is rejected for now. A MiniLM CE probe over 160 dev turns and top-50 candidates scored far below the current weighted RRF base: lock15 protection still lost `0.00912` nDCG@20 on the slice, with only `3` better rows and `11` worse rows.
 - Case-neighbor direct candidate promotion is rejected for now. A train-turn BM25 case probe over 1000 train sessions and 160 dev turns had low exact-track coverage and lock15 protection still lost `0.01788` nDCG@20, with `0` better rows and `12` worse rows.
 - Response-only blending between `judge_clean_mix` and `lexplus_softened` is rejected for promotion. The best blend (`hybrid`) reached official dev lexical `0.20420`, below `lexplus_softened` at `0.20531`; repeated-opening blending even dropped below the primary.
+- Response naturalization via `judge_clean_smooth` is rejected: it preserved nDCG but dropped official dev lexical to `0.16081` and created many long responses.
+- `judge_clean_mix_plus` is rejected by the final freeze audit: one noisy tag leak and two long rows.
 
 Final mechanical checklist:
 
-- Both primary and `lexplus_softened` prediction files validate with `scripts/validate_predictions.py`.
+- Both primary and `lexplus_softened` prediction files validate with `scripts/validate_predictions.py` and `scripts/final_freeze_audit.py`.
 - Both submission ZIPs contain exactly `prediction.json`.
 - Both artifacts have 80 rows, 1600 recommendation slots, and 1494 unique tracks.
 - Primary and `lexplus_softened` share the same ranking hash, so the backup is response-only.
-- No running Pro/browser tasks remain required for the final decision; the last stuck checklist prompt was stopped and replaced by local validation.
+- Final audit hashes are saved under `experiments/final_freeze_audit_round13/`.
+- Round 13 Pro guidance says the only positive-EV final iteration is frozen-package validation, not further artifact changes.
 
 Key correction:
 

@@ -1,0 +1,166 @@
+主人，rational move: stop changing artifacts and only validate/submit.
+
+If I am forced to choose one “last iteration,” it should be more validation + packaging QA, not response selector, not rank gating, not embeddings, not distillation.
+
+The official task evaluates both ranked tracks and response text, including nDCG@20 plus response-generation metrics such as catalog diversity, lexical diversity, and LLM judge. But your project has already entered the regime where most new changes are tiny local wins with high transfer risk. Under a small 80-row public set, the expected value of another modeling tweak is now lower than the expected value of preventing a bad final package. 
+Codabench
++1
+
+Final answer
+
+Do not create a new scoring/modeling artifact.
+
+Run one final frozen-artifact validation and submission audit on:
+
+primary = weighted four-model LTR RRF + judge_clean_mix
+backup  = same ranking + judge_clean_mix_plus
+
+Then submit primary unless the audit finds a concrete defect.
+
+Why not the other directions?
+1. Response QA/selector
+
+Best non-ranking idea, but still not worth a final artifact change unless it only rejects obviously broken responses.
+
+Risk:
+
+- selecting per-row A/B responses can overfit local Distinct-2
+- selector may prefer compact/mechanical text
+- public judge=1.0 says you need better explanation, but not necessarily more lexical variety
+- any new selector bug can silently create unnatural responses
+
+Use response QA only as an audit, not as a new blender.
+
+Allowed:
+
+flag bad/noisy/hallucinated responses
+manually inspect worst 30
+fall back only if response is objectively invalid
+
+Not allowed now:
+
+train or tune a per-row response selector
+hash-based A/B blending
+Distinct-2-maximizing style router
+2. Existing-prediction rank gating
+
+Too dangerous now.
+
+You already tried many near-miss gates. A tiny local nDCG delta does not justify touching the ranking when public feedback has only 80 rows.
+
+Reject unless:
+
+same top-20 ranking on Blind A
+or only changes rows with hard, pre-declared safety evidence
+
+At this point, rank gating is more likely to produce “one clever exception too many” than a real gain.
+
+3. Dense embedding feature revival
+
+Stop.
+
+Embedding probes already hurt first-fold / validation. Reviving them now means new features, new calibration, new failure modes, and likely top-rank churn. That is not final-round work.
+
+4. Train-context distillation
+
+Stop.
+
+The case/BM25 probe showed weak gold-track coverage and direct insertion was bad. Feature-only might be future-ROI, but not before final submission.
+
+5. More validation
+
+Yes. This is the only remaining positive-EV direction.
+
+It does not try to create score from nothing. It reduces catastrophic submission risk.
+
+One concrete final task
+
+Build and run a Final Freeze Audit.
+
+Inputs:
+
+primary.zip
+backup_judge_clean_mix_plus.zip
+previous_public_safe.zip
+manifest of ranking hashes
+500-1000 Blind-A-shaped local panels
+response QA script
+submission schema checker
+
+The task:
+
+For each candidate zip:
+  1. Validate schema and row count.
+  2. Validate exactly 20 unique valid track IDs per row.
+  3. Validate no duplicate track IDs inside a row.
+  4. Validate response is non-empty and within length band.
+  5. Validate primary/backup ranking hash relationship:
+       primary vs backup should have identical ranking if response-only.
+  6. Compare primary against anchor on blind-shaped panels.
+  7. Run grouped diagnostics:
+       turn bucket
+       category
+       specificity
+       exact/entity rows
+       feedback/refinement rows
+  8. Run response QA:
+       banned noisy tags
+       hallucinated artist/title
+       placeholder/generic responses
+       over-mechanical compact phrases
+  9. Save immutable manifest:
+       git commit
+       data version
+       package hash
+       ranking hash
+       response hash
+       evaluator version
+
+Decision:
+
+Submit primary if:
+  - schema passes
+  - ranking hash is expected
+  - no response corruption
+  - no banned/noisy response leakage above threshold
+  - blind-shaped panel diagnostics do not show a regression
+  - package zip hash is saved
+
+Submit backup only if:
+  - primary fails response QA
+  - backup has identical ranking
+  - backup response QA is cleaner
+
+Do not submit any new model variant.
+Hard stop criteria
+
+Stop changing artifacts if all are true:
+
+- primary zip passes schema
+- primary ranking hash matches expected final ranking
+- backup has identical ranking
+- response QA finds no severe issue
+- manual audit of worst 30 responses finds no obvious embarrassment
+- blind-shaped validation does not show a ranking regression
+
+Stop even if you still have ideas.
+
+Final recommendation
+Best action:
+  stop changing artifacts
+  run final freeze audit
+  submit weighted four-model LTR RRF + judge_clean_mix
+
+Only backup path:
+  same ranking + judge_clean_mix_plus
+  if primary response QA finds concrete defects
+
+Abandon:
+  rank gating
+  embedding revival
+  train-context distillation
+  cross-encoder/case tricks
+  compact high-lexical response packages
+  further RRF weight tuning
+
+At Round13, the highest expected value is not another clever improvement. It is not breaking the best package you already have.

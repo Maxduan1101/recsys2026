@@ -172,7 +172,7 @@ This file tracks questions and optimization directions that deserve a dedicated 
    - Implemented `compact_broad`, `compact`, `concise`, `setwise`, and `natural` response styles. `compact_broad` is the current submission default; `natural` and `setwise` were more judge-friendly in tone but lowered Distinct-2 to roughly `0.10-0.12`.
    - Implemented `polished` response style for LTR submissions. Blind A local Distinct-2 is `0.4512` for `goalflow_ltr_head0_polished_v3` versus `0.7000` for compact-broad, but the text is much more natural and should be better for LLM judge.
    - Implemented `judge_v1` and `judge_v2`. `judge_v2_clean` keeps the 120-tree OOF ranking, raises OOF lexical diversity to `0.14877`, and Blind A local Distinct-2 to `0.48833` while staying more natural than compact-broad.
-   - Implemented `judge_clean_mix_plus` as a response-only backup for the current weighted RRF ranking. It keeps official dev nDCG unchanged, has dev lexical `0.19928` and Blind A Distinct-2 `0.60729`, but remains below `judge_clean_mix` as a primary because quick spot checks found occasional less-clean broad tags.
+   - Implemented `judge_clean_mix_plus` as a response-only backup for the current weighted RRF ranking. It keeps official dev nDCG unchanged, has dev lexical `0.19928` and Blind A Distinct-2 `0.60729`, but the Round 13 final freeze audit now rejects it because Blind A has one noisy tag leak and two long rows.
    - Tightened tag filtering for judge responses by blocking additional last.fm-style noise such as `sexist metal`, `gay metal`, `hip hop tag`, and `not metal`.
    - Implemented `judge_clean_mix_safeplus`, but rejected it because official dev lexical fell to `0.19188` and Blind A Distinct-2 fell to `0.60487`.
    - Implemented `judge_clean_mix_lexplus`, a clean response-only backup that uses more compact metadata-grounded responses without broad tags. With the current weighted RRF ranking, official dev lexical rises to `0.20460` and Blind A Distinct-2 rises to `0.63192`; keep it behind `judge_clean_mix` until public feedback clarifies the Distinct-2 vs Gemini naturalness tradeoff.
@@ -181,6 +181,9 @@ This file tracks questions and optimization directions that deserve a dedicated 
    - Round 11 follow-up saved at `research/pro_answers/round11/tab1_lexplus_softened_decision.txt`: `lexplus_softened` supersedes plain `lexplus`, but it should still be submitted after the primary because it may be more compact-template-heavy.
    - Implemented `scripts/blend_response_predictions.py` for deterministic response-only blending between two same-ranking artifacts. Five blends were tested; all had unchanged ranking but lower official dev lexical than `lexplus_softened`, so blending is rejected for promotion and retained only as tooling.
    - Round 12 follow-up saved at `research/pro_answers/round12/tab1_response_blender_decision.txt`: reject deterministic blenders and keep only primary `judge_clean_mix` plus backup/challenger `lexplus_softened`.
+   - Implemented `judge_clean_smooth` as a naturalized-label response probe. It preserved nDCG but official dev lexical fell to `0.16081` and many responses became too long, so it is rejected.
+   - Round 13 follow-up saved at `research/pro_answers/round13/tab5_future_roi_stop.txt`: stop changing artifacts and spend the last iteration on frozen-package validation/packaging QA.
+   - Implemented `scripts/final_freeze_audit.py`, which checks schema, ZIP contents, file/ranking/response hashes, response length, noisy phrase leakage, top-1 title/artist mention coverage, and mechanical/generic response risk counts. Primary and `lexplus_softened` pass severe checks; `judge_clean_mix_plus` fails and is removed from the backup set.
    - Next research question: does Gemini judge prefer compact-broad's high lexical diversity, polished's longer explanations, or judge_v2's shorter first-track reasoning?
    - Next research question: what is the minimum lexical diversity needed before judge quality dominates, given the inferred composite weight for `llm_judge_score`?
    - Pro answers saved at `research/pro_answers/round2/tab4_recsys_2026_response_generation.txt` and `research/pro_answers/round3/tab5_metadata_grounded_response_design.txt`.
@@ -212,6 +215,7 @@ This file tracks questions and optimization directions that deserve a dedicated 
 22. **Final-stage ranking freeze**
    - Round 11 Pro answer saved at `research/pro_answers/round11/tab5_final_ranking_stop_decision.txt`.
    - Decision: freeze all changes that alter `predicted_track_ids`. Direct Qwen3 current-query dense retrieval, new retrieval sources, reranking rules, diversity repair, exact-match promotion, and neural/LTR changes are no-go for the final package unless public feedback explicitly forces a ranking rethink.
+   - Round 13 Pro answer reinforces the freeze: the rational final move is validation/packaging QA, not another rank gate, response selector, embedding revival, or train-context distillation pass.
 
 ## Engineering
 
@@ -224,3 +228,4 @@ This file tracks questions and optimization directions that deserve a dedicated 
 20. **Submission validation against Codabench**
    - Confirm whether submission zip requires only `prediction.json` or a nested path for all phases.
    - Implemented `scripts/hash_predictions.py` to compute file, ranking, and response SHA-256 hashes. Primary and `lexplus_softened` Blind A artifacts share the same ranking hash, so `lexplus_softened` is confirmed response-only.
+   - Implemented `scripts/final_freeze_audit.py` and saved final audit manifests under `experiments/final_freeze_audit_round13/`.

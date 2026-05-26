@@ -536,6 +536,147 @@ def _generate_compact_response(
     return " ".join(part for part in [lead, f"Grounding: {metadata}.", extra, backup] if part)
 
 
+def _generate_smooth_compact_response(
+    state: ConversationState,
+    catalog: TrackCatalog,
+    track_ids: list[str],
+    require_good_words: bool = True,
+) -> str:
+    if not track_ids:
+        return "I found a few tracks that should fit the direction you described."
+
+    first_phrase = _track_phrase(catalog, track_ids[0])
+    request_hint = _short_request(state)
+    metadata = _metric_metadata(catalog, track_ids[0], require_good_words=require_good_words)
+    intent = infer_intent(state)
+
+    if intent == "specific_track":
+        lead = _pick(
+            state,
+            [
+                f"For the song clue \"{request_hint}\", I would try {first_phrase} first.",
+                f"{first_phrase} is my closest first answer to \"{request_hint}\".",
+                f"I put {first_phrase} up front because the request sounds like a specific-song search.",
+                f"My first check for \"{request_hint}\" is {first_phrase}.",
+            ],
+            salt="smooth-specific",
+        )
+    elif intent == "album":
+        lead = _pick(
+            state,
+            [
+                f"For the album clue \"{request_hint}\", I would start with {first_phrase}.",
+                f"{first_phrase} gives the cleanest record-context lead for \"{request_hint}\".",
+                f"I treated this as an album-aware search and put {first_phrase} first.",
+            ],
+            salt="smooth-album",
+        )
+    elif intent == "artist_exploration":
+        lead = _pick(
+            state,
+            [
+                f"For the artist-led cue, I would open with {first_phrase}.",
+                f"{first_phrase} is the first artist-path pick I would test.",
+                f"I started the discovery path with {first_phrase} and kept nearby options behind it.",
+            ],
+            salt="smooth-artist",
+        )
+    elif intent == "cover_art":
+        lead = _pick(
+            state,
+            [
+                f"For the visual clue in \"{request_hint}\", I would check {first_phrase} first.",
+                f"{first_phrase} is my first cover-art or image-hint anchor.",
+                f"I used {first_phrase} as the lead while keeping the backups close to the visual cue.",
+            ],
+            salt="smooth-cover",
+        )
+    elif intent == "lyrics_theme":
+        lead = _pick(
+            state,
+            [
+                f"For the lyric or story cue in \"{request_hint}\", I would start with {first_phrase}.",
+                f"{first_phrase} is the first theme-focused check I would make.",
+                f"I led with {first_phrase} before widening into looser theme matches.",
+            ],
+            salt="smooth-lyrics",
+        )
+    else:
+        lead = _pick(
+            state,
+            [
+                f"For \"{request_hint}\", I would start with {first_phrase}.",
+                f"{first_phrase} is the opening pick for the mood and style you described.",
+                f"I put {first_phrase} first, then let the rest of the list explore nearby options.",
+                f"My lead recommendation is {first_phrase} for \"{request_hint}\".",
+            ],
+            salt="smooth-mood",
+        )
+
+    reason = _pick(
+        state,
+        [
+            f"The grounded catalog cues are {metadata}.",
+            f"I can safely cite {metadata} as the evidence for that lead.",
+            f"The metadata support comes from {metadata}.",
+        ],
+        salt="smooth-reason",
+    )
+
+    context_parts = []
+    seed = _seed_phrase(state, catalog)
+    negative = _negative_phrase(state, catalog)
+    if seed and negative:
+        context_parts.append(
+            _pick(
+                state,
+                [
+                    f"I kept the useful signal from {seed} while moving away from the weaker path around {negative}.",
+                    f"The ranking carries forward what worked about {seed} and avoids repeating {negative}.",
+                ],
+                salt="smooth-feedback-both",
+            )
+        )
+    elif seed:
+        context_parts.append(
+            _pick(
+                state,
+                [
+                    f"The earlier fit around {seed} keeps the list anchored in the same lane.",
+                    f"I carried forward the positive signal from {seed}.",
+                ],
+                salt="smooth-feedback-positive",
+            )
+        )
+    elif negative:
+        context_parts.append(
+            _pick(
+                state,
+                [
+                    f"I treated {negative} as a weaker route and avoided leaning too hard on it.",
+                    f"The list backs away from the less helpful direction around {negative}.",
+                ],
+                salt="smooth-feedback-negative",
+            )
+        )
+
+    profile = _profile_hint(state)
+    if profile:
+        context_parts.append(
+            _pick(
+                state,
+                [
+                    f"I used {profile} only as a soft tie-breaker.",
+                    f"{_capitalize_first(profile)} helped settle close calls without overriding the request.",
+                ],
+                salt="smooth-profile",
+            )
+        )
+
+    backup = _compact_backup(state, catalog, track_ids)
+    return " ".join(part for part in [lead, reason, *context_parts[:2], backup] if part)
+
+
 def _generate_concise_response(state: ConversationState, catalog: TrackCatalog, track_ids: list[str]) -> str:
     if not track_ids:
         return "I found a few tracks that should fit the direction you described."
@@ -1782,6 +1923,38 @@ def _generate_judge_clean_mix_lexplus_softened_response(
     return _generate_compact_response(state, catalog, track_ids)
 
 
+def _generate_judge_clean_smooth_response(
+    state: ConversationState,
+    catalog: TrackCatalog,
+    track_ids: list[str],
+) -> str:
+    bucket = int(
+        hashlib.md5(
+            f"{state.session_id}:{state.turn_number}:judge_clean_smooth".encode("utf-8")
+        ).hexdigest()[:8],
+        16,
+    ) % 12
+    style = [
+        "judge_v2",
+        "judge_v2",
+        "judge_v2",
+        "judge_brief",
+        "judge_brief",
+        "judge_brief",
+        "smooth_compact",
+        "smooth_compact",
+        "smooth_compact",
+        "smooth_compact",
+        "smooth_compact",
+        "smooth_compact",
+    ][bucket]
+    if style == "judge_v2":
+        return _generate_judge_v2_response(state, catalog, track_ids)
+    if style == "judge_brief":
+        return _generate_judge_brief_response(state, catalog, track_ids)
+    return _generate_smooth_compact_response(state, catalog, track_ids)
+
+
 def _generate_polished_response(state: ConversationState, catalog: TrackCatalog, track_ids: list[str]) -> str:
     if not track_ids:
         return "I found a few tracks that should fit the direction you described."
@@ -1889,6 +2062,8 @@ def generate_response(
 ) -> str:
     if style == "compact":
         return _generate_compact_response(state, catalog, track_ids)
+    if style == "smooth_compact":
+        return _generate_smooth_compact_response(state, catalog, track_ids)
     if style == "compact_broad":
         return _generate_compact_response(state, catalog, track_ids, require_good_words=False)
     if style == "concise":
@@ -1925,4 +2100,6 @@ def generate_response(
         return _generate_judge_clean_mix_lexplus_response(state, catalog, track_ids)
     if style == "judge_clean_mix_lexplus_softened":
         return _generate_judge_clean_mix_lexplus_softened_response(state, catalog, track_ids)
+    if style == "judge_clean_smooth":
+        return _generate_judge_clean_smooth_response(state, catalog, track_ids)
     raise ValueError(f"Unsupported response style: {style!r}")

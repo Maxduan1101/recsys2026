@@ -64,6 +64,7 @@ Development-set scores from the official evaluator.
 | `goalflow_ens_oof_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_judge_clean_mix_safeplus` | 0.072000 | 0.163392 | 0.183924 | 0.525547 | 0.191884 | Rejected clean-plus attempt: no broad tags, but lexical diversity fell below the primary. |
 | `goalflow_ens_oof_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_judge_clean_mix_lexplus_tagclean` | 0.072000 | 0.163392 | 0.183924 | 0.525547 | 0.204602 | Clean high-lexical response backup: same ranking, more compact metadata-grounded wording, no broad-tag source. |
 | `goalflow_ens_oof_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_judge_clean_mix_lexplus_softened` | 0.072000 | 0.163392 | 0.183924 | 0.525547 | 0.205313 | Softened high-lexical response backup: same ranking as the primary, but long lexplus responses fall back to shorter grounded wording. |
+| `goalflow_ens_oof_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_judge_clean_smooth` | 0.072000 | 0.163392 | 0.183924 | 0.525547 | 0.160811 | Rejected response naturalization probe: removing label-like wording made responses longer and collapsed lexical diversity. |
 | `goalflow_ens_oof_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_respblend_r25` | 0.072000 | 0.163392 | 0.183924 | 0.525547 | 0.200886 | Rejected response-only blend: 25% softened responses, below `lexplus_softened`. |
 | `goalflow_ens_oof_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_respblend_r50` | 0.072000 | 0.163392 | 0.183924 | 0.525547 | 0.202473 | Rejected response-only blend: 50% softened responses, below `lexplus_softened`. |
 | `goalflow_ens_oof_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_respblend_r75` | 0.072000 | 0.163392 | 0.183924 | 0.525547 | 0.203737 | Rejected response-only blend: 75% softened responses, below `lexplus_softened`. |
@@ -194,6 +195,21 @@ Gold-free Blind A checks:
 Script: `scripts/blend_response_predictions.py`
 
 The blender creates response-only artifacts from the primary and `lexplus_softened` predictions, refusing to run if ranking payload hashes differ. Five dev probes kept nDCG/catalog unchanged but all lexical scores stayed below `lexplus_softened`; keep the script as tooling, not as a promoted backup.
+
+## Final Freeze Audit
+
+Script: `scripts/final_freeze_audit.py`
+
+Round 13 added a frozen-package audit that validates schema/ZIP contents, package hashes, ranking hashes, response hashes, slot counts, catalog diversity, response length, noisy phrase leakage, top-1 title/artist mention coverage, and mechanical/generic response risk counts.
+
+Audit artifacts:
+
+- `experiments/final_freeze_audit_round13/final_freeze_audit.json`
+- `experiments/final_freeze_audit_round13/final_freeze_audit_with_plus.json`
+
+Primary and `lexplus_softened` both pass severe checks: valid schema, ZIP contains exactly `prediction.json`, 80 rows, 1600 slots, 1494 unique tracks, identical ranking hash, no noisy hits, no long/short rows, and no top-1 title/artist mention misses after variant normalization. `lexplus_softened` has higher audit Distinct-2 (`0.58996` vs `0.56394`) but also more mechanical-pattern rows (`65` vs `56`).
+
+`judge_clean_mix_plus` is now hard-rejected by the final audit despite earlier being a response-only backup: it has one noisy tag leak (`songsof2011` / `lobpreis`) and two long rows. This confirms the final response set should stay `judge_clean_mix` first and `lexplus_softened` second.
 
 ## Prediction Hashes
 
@@ -470,6 +486,8 @@ Saved answers:
 - `research/pro_answers/round11/README.md`
 - `research/pro_answers/round12/tab1_response_blender_decision.txt`
 - `research/pro_answers/round12/README.md`
+- `research/pro_answers/round13/tab5_future_roi_stop.txt`
+- `research/pro_answers/round13/README.md`
 
 Operational takeaways:
 
@@ -486,3 +504,4 @@ Operational takeaways:
 - Round 10 Pro answers keep the current primary package unchanged, demote cross-encoder work to a strict offline-only audition, recommend any direct dense query retrieval go through Qwen3-compatible text channels with protected-head gates, and keep the consensus fallback only as a rare future-split repair.
 - Round 11 Pro answers freeze all ranking changes for the final stage. They promote `lexplus_softened` over plain `lexplus` as the response-only backup, reject feature-only case distillation after the negative case probe, and mark direct Qwen3 current-query dense retrieval as no-go for the final package.
 - Round 12 Pro answer rejects response blenders after local blend probes underperformed `lexplus_softened` on lexical diversity. The final response set is therefore the primary `judge_clean_mix` package plus the `lexplus_softened` response-only challenger.
+- Round 13 Pro answer recommends stopping artifact changes and spending the last iteration on frozen-package validation. The new final-freeze audit passes the primary and `lexplus_softened`, while rejecting `judge_clean_mix_plus` because of concrete response QA defects.
