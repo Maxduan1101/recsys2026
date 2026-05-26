@@ -64,6 +64,11 @@ Development-set scores from the official evaluator.
 | `goalflow_ens_oof_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_judge_clean_mix_safeplus` | 0.072000 | 0.163392 | 0.183924 | 0.525547 | 0.191884 | Rejected clean-plus attempt: no broad tags, but lexical diversity fell below the primary. |
 | `goalflow_ens_oof_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_judge_clean_mix_lexplus_tagclean` | 0.072000 | 0.163392 | 0.183924 | 0.525547 | 0.204602 | Clean high-lexical response backup: same ranking, more compact metadata-grounded wording, no broad-tag source. |
 | `goalflow_ens_oof_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_judge_clean_mix_lexplus_softened` | 0.072000 | 0.163392 | 0.183924 | 0.525547 | 0.205313 | Softened high-lexical response backup: same ranking as the primary, but long lexplus responses fall back to shorter grounded wording. |
+| `goalflow_ens_oof_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_respblend_r25` | 0.072000 | 0.163392 | 0.183924 | 0.525547 | 0.200886 | Rejected response-only blend: 25% softened responses, below `lexplus_softened`. |
+| `goalflow_ens_oof_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_respblend_r50` | 0.072000 | 0.163392 | 0.183924 | 0.525547 | 0.202473 | Rejected response-only blend: 50% softened responses, below `lexplus_softened`. |
+| `goalflow_ens_oof_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_respblend_r75` | 0.072000 | 0.163392 | 0.183924 | 0.525547 | 0.203737 | Rejected response-only blend: 75% softened responses, below `lexplus_softened`. |
+| `goalflow_ens_oof_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_respblend_opening` | 0.072000 | 0.163392 | 0.183924 | 0.525547 | 0.192786 | Rejected response-only blend: replacing repeated primary openings lowered lexical below the primary. |
+| `goalflow_ens_oof_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_respblend_hybrid` | 0.072000 | 0.163392 | 0.183924 | 0.525547 | 0.204196 | Rejected response-only blend: closest blend result, still below `lexplus_softened`. |
 | `goalflow_ens_oof_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_compact_clean` | 0.072000 | 0.163392 | 0.183924 | 0.525547 | 0.211093 | Same weighted ranking with clean compact high-lexical response. |
 | `goalflow_ens_oof_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_compact_broad_clean` | 0.072000 | 0.163392 | 0.183924 | 0.525547 | 0.222793 | Same weighted ranking with highest-lexical compact-broad response. |
 | `goalflow_segcat_ltr120_140_200_ens_judge_v2` | 0.072125 | 0.164281 | 0.184069 | 0.526481 | 0.148494 | High-risk segment-selection experiment: best non-nested OOF score, but nested segment validation regresses. |
@@ -183,6 +188,12 @@ Gold-free Blind A checks:
 - Lexplus backup: 80 rows, audit Distinct-2 `0.58673`, word counts `41-120` with average `72.05`, no noisy phrase hits, one long row at 120 words.
 - Lexplus softened backup: 80 rows, audit Distinct-2 `0.58996`, word counts `41-112` with average `71.24`, no noisy phrase hits, no long/short rows.
 - This audit is a response QA guard, not an official metric replacement. It catches banned/noisy tag leaks, overly long/short responses, and repeated opening phrases before spending a public submission.
+
+## Response-Only Blender
+
+Script: `scripts/blend_response_predictions.py`
+
+The blender creates response-only artifacts from the primary and `lexplus_softened` predictions, refusing to run if ranking payload hashes differ. Five dev probes kept nDCG/catalog unchanged but all lexical scores stayed below `lexplus_softened`; keep the script as tooling, not as a promoted backup.
 
 ## Prediction Hashes
 
@@ -457,6 +468,8 @@ Saved answers:
 - `research/pro_answers/round11/tab2_case_branch_stop_decision.txt`
 - `research/pro_answers/round11/tab5_final_ranking_stop_decision.txt`
 - `research/pro_answers/round11/README.md`
+- `research/pro_answers/round12/tab1_response_blender_decision.txt`
+- `research/pro_answers/round12/README.md`
 
 Operational takeaways:
 
@@ -472,3 +485,4 @@ Operational takeaways:
 - Round 9 final-submission guidance still favors submitting the weighted RRF + `judge_clean_mix` package first. The response-style retry also keeps `judge_clean_mix` ahead of `lexplus` for the first submission because a small Distinct-2 gain is easier to lose through Gemini judge naturalness. Other round 9 browser questions are still pending or failed with empty ChatGPT responses, so they are recorded for retry rather than treated as research evidence.
 - Round 10 Pro answers keep the current primary package unchanged, demote cross-encoder work to a strict offline-only audition, recommend any direct dense query retrieval go through Qwen3-compatible text channels with protected-head gates, and keep the consensus fallback only as a rare future-split repair.
 - Round 11 Pro answers freeze all ranking changes for the final stage. They promote `lexplus_softened` over plain `lexplus` as the response-only backup, reject feature-only case distillation after the negative case probe, and mark direct Qwen3 current-query dense retrieval as no-go for the final package.
+- Round 12 Pro answer rejects response blenders after local blend probes underperformed `lexplus_softened` on lexical diversity. The final response set is therefore the primary `judge_clean_mix` package plus the `lexplus_softened` response-only challenger.

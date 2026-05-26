@@ -236,6 +236,15 @@ Rejected near-misses:
 - `judge_clean_mix_safeplus` is rejected for promotion: removing broad/noisy tags was safe, but the style mix lowered official dev lexical diversity to `0.19188` and Blind A Distinct-2 to `0.60487`, both below the primary `judge_clean_mix` package.
 - Zero-shot cross-encoder reranking is rejected for now. A MiniLM CE probe over 160 dev turns and top-50 candidates scored far below the current weighted RRF base: lock15 protection still lost `0.00912` nDCG@20 on the slice, with only `3` better rows and `11` worse rows.
 - Case-neighbor direct candidate promotion is rejected for now. A train-turn BM25 case probe over 1000 train sessions and 160 dev turns had low exact-track coverage and lock15 protection still lost `0.01788` nDCG@20, with `0` better rows and `12` worse rows.
+- Response-only blending between `judge_clean_mix` and `lexplus_softened` is rejected for promotion. The best blend (`hybrid`) reached official dev lexical `0.20420`, below `lexplus_softened` at `0.20531`; repeated-opening blending even dropped below the primary.
+
+Final mechanical checklist:
+
+- Both primary and `lexplus_softened` prediction files validate with `scripts/validate_predictions.py`.
+- Both submission ZIPs contain exactly `prediction.json`.
+- Both artifacts have 80 rows, 1600 recommendation slots, and 1494 unique tracks.
+- Primary and `lexplus_softened` share the same ranking hash, so the backup is response-only.
+- No running Pro/browser tasks remain required for the final decision; the last stuck checklist prompt was stopped and replaced by local validation.
 
 Key correction:
 

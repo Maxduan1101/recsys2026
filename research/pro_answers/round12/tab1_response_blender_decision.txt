@@ -1,0 +1,103 @@
+# Source-Gating Algorithm Design
+
+URL: https://chatgpt.com/c/6a1464da-5f6c-8323-9f11-46c673a4d8ec
+
+## Question
+
+Please answer in final visible text only. Do not use hidden reasoning. If limited, write exactly LIMIT. RecSys Challenge 2026 Music-CRS final response-only test. Ranking frozen. We tried deterministic response blending between A=judge_clean_mix and B=lexplus_softened. Official dev lexical: A=0.19958, B=0.20531. Blends: r25=0.20089, r50=0.20247, r75=0.20374, repeated-opening=0.19279, hybrid=0.20420. All have same nDCG/ranking, but all are below B on lexical. Should any blender be kept as a backup for naturalness, or should we reject blends and keep only A primary + B backup?
+
+## Answer
+
+Reject the blends. Keep only:
+
+A primary = judge_clean_mix
+	​
+
+B backup/challenger = lexplus_softened
+	​
+
+
+No deterministic blender should be kept unless a manual Gemini-style audit shows a clear naturalness advantage large enough to offset the lexical loss. Based on the numbers given, none does.
+
+Why reject blends?
+
+Ranking is frozen, so the only possible benefit is response quality. On measurable lexical diversity:
+
+Variant	Dev lexical	Delta vs A	Delta vs B
+A judge_clean_mix	0.19958	—	-0.00573
+B lexplus_softened	0.20531	+0.00573	—
+r25	0.20089	+0.00131	-0.00442
+r50	0.20247	+0.00289	-0.00284
+r75	0.20374	+0.00416	-0.00157
+repeated-opening	0.19279	-0.00679	-0.01252
+hybrid	0.20420	+0.00462	-0.00111
+
+Every blend is worse than B on lexical. The best blend, hybrid, still loses:
+
+0.20531−0.20420=0.00111
+
+That is small, but it gives you no clear compensating signal. Worse, blending adds another moving part and can create mixed-style inconsistency: some rows read like A, some like B, and the judge may perceive unevenness without rewarding it.
+
+Decision
+
+Use:
+
+Submit A first if Gemini judge risk is the priority.
+	​
+
+
+Use:
+
+Submit B second if you want the higher lexical/D2 challenger.
+	​
+
+
+Drop:
+
+r25, r50, r75, repeated-opening, hybrid
+	​
+
+Only exception
+
+Keep hybrid only as a private diagnostic, not a submission backup, if manual audit shows all of the following:
+
+hybrid naturalness>B naturalness
+hybrid template feel<B template feel
+no noisy phrases
+no short/generic rows
+no repeated opening regression
+
+and the expected Gemini judge gain is at least enough to compensate for the lexical loss.
+
+The lexical loss from B to hybrid is:
+
+ΔD=−0.00111
+
+If lexical weight is about 0.1 and judge weight is about 0.3×
+4
+judge−1
+	​
+
+, then hybrid only needs a tiny judge gain:
+
+ΔJudge>
+3
+4
+	​
+
+×0.00111≈0.0015
+
+But you cannot reliably measure such a tiny judge difference offline. So this is not actionable under limited submissions.
+
+Final call
+Reject all blends. Keep A primary + B backup only.
+	​
+
+
+Submission order:
+
+weighted four-model RRF + judge_clean_mix
+
+weighted four-model RRF + lexplus_softened
+
+Do not spend a submission on a blender.
