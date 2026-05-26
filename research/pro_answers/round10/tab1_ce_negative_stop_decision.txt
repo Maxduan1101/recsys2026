@@ -1,0 +1,223 @@
+# Source-Gating Algorithm Design
+
+URL: https://chatgpt.com/c/6a1464da-5f6c-8323-9f11-46c673a4d8ec
+
+## Question
+
+Please answer in final visible text only. Do not use hidden reasoning. If limited, write exactly LIMIT. RecSys Challenge 2026 Music-CRS: we ran a zero-shot MiniLM cross-encoder over 160 dev turns, current weighted four-model LTR/RRF base nDCG@20 on this sample=0.29136. CE-only/top50 protected variants were bad: ce_only delta=-0.1475, lock5=-0.0470, lock10=-0.0214, lock15=-0.00912; lock15 had 3 better / 11 worse / 146 ties. Should we stop the CE branch entirely, or is there still a very small leakage-safe fine-tune/feature experiment worth doing? Give stop/go criteria and exact minimal next step if any.
+
+## Answer
+
+主人，stop the CE reranking branch as a submission path.
+
+Your diagnostic is strongly negative:
+
+base sample nDCG@20=0.29136
+Δ
+ce-only
+	​
+
+=−0.1475
+Δ
+lock5
+	​
+
+=−0.0470
+Δ
+lock10
+	​
+
+=−0.0214
+Δ
+lock15
+	​
+
+=−0.00912
+
+Even with top-15 locked, the CE still hurts:
+
+3 better/11 worse/146 ties
+
+That means the CE is not just “too aggressive”; its score ordering is mostly unhelpful for this task. If a model cannot safely improve after locking 75% of the final list, it is not a promising reranker.
+
+So the decision is:
+
+Do not fine-tune CE as a reranker. Do not submit any CE-reranked package.
+	​
+
+Is there any tiny experiment still worth doing?
+
+Yes, but only one minimal leakage-safe experiment:
+
+use CE score as a weak diagnostic feature inside the existing LightGBM LTR, not as a direct reranker.
+	​
+
+
+This is worth at most one short offline branch because LightGBM may learn:
+
+CE is useful only for a tiny subset,
+
+CE is useful as a disagreement signal,
+
+CE should be ignored in most cases.
+
+But if this feature experiment does not clearly help, kill the entire CE branch.
+
+Minimal next step
+
+Add zero-shot CE features to your existing LTR training table, but do not change candidate generation.
+
+For each candidate in current top-50/top-100 pool, add:
+
+ce_score
+ce_rank_within_state
+ce_score_zscore_within_state
+ce_score_percentile_within_state
+ce_minus_ltr_score_rank_proxy
+ce_top1_flag
+ce_top3_flag
+ce_top5_flag
+ce_below_base_rank_flag
+
+Most important features:
+
+ce_rank_within_state
+ce_score_zscore_within_state
+ce_top5_flag
+current_ltr_rank
+ce_rank - current_ltr_rank
+
+Then retrain the same four-model LightGBM LambdaRank setup with identical folds.
+
+Do not fine-tune MiniLM yet.
+
+Leakage-safe recipe
+
+Use exactly the same OOF folds as the current four-model LTR.
+
+Important:
+
+CE is zero-shot, so no label leakage from CE itself.
+
+Candidate pools must be generated without validation labels.
+
+Do not positive-inject golds for validation.
+
+Refit LightGBM only on train folds.
+
+Evaluate on the held-out fold.
+
+Compare against the exact same base predictions on the same rows.
+
+Report:
+
+ΔnDCG@20
+ΔnDCG@10
+ΔnDCG@5
+fold win rate
+better/worse/tie turns
+CE feature importance
+damage on exact/entity turns
+Go criteria
+
+Continue CE only if the feature experiment gives all of:
+
+ΔOOF nDCG@20≥+0.0025
+ΔOOF nDCG@10≥0
+ΔOOF nDCG@5≥−0.0003
+better turns≥1.5×worse turns
+gain appears in at least 3/4 folds
+
+and no severe regression on entity/exact-match turns.
+
+For limited submissions, I would require even more:
+
+ΔOOF nDCG@20≥+0.004
+
+before submitting anything CE-related.
+
+Stop criteria
+
+Stop the CE branch completely if any of these happens:
+
+1. CE-feature LTR gain is small
+ΔOOF nDCG@20<+0.002
+
+Stop.
+
+2. Head worsens
+ΔnDCG@5<−0.0005
+
+Stop.
+
+3. Fold instability
+
+If only one fold improves and the rest are flat/negative, stop.
+
+4. Better/worse ratio is weak
+
+If:
+
+better turns≤worse turns
+
+stop.
+
+5. Feature importance is fake or harmful
+
+If CE features have high importance but OOF does not improve, or entity turns regress, stop.
+
+6. Zero-shot CE rank is anti-correlated with relevance
+
+Given your protected-rerank result already suggests this, fine-tune only if the feature experiment unexpectedly finds useful interactions.
+
+Should you fine-tune?
+
+Not now.
+
+Fine-tuning is only justified if the zero-shot CE feature experiment shows a positive but underused signal, for example:
+
++0.0025≤ΔOOF nDCG@20<+0.004
+
+with stable fold gains and no head damage.
+
+Then the only fine-tune worth trying is tiny:
+
+MiniLM-L6
+
+top-50 candidates only
+
+pairwise positive-vs-hard-negative loss
+
+1 epoch
+
+same session-group folds
+
+no validation positive injection
+
+use resulting OOF CE score only as an LTR feature
+
+But given your current numbers, the prior is bad. I would not spend much time there.
+
+Final decision
+Stop CE reranking entirely.
+	​
+
+
+Run at most one tiny check:
+
+zero-shot CE score as weak LightGBM feature, same folds, same candidates.
+	​
+
+
+Submit CE-related output only if it clears:
+
+ΔOOF nDCG@20≥+0.004
+	​
+
+
+with no nDCG@5/10 damage and stable fold gains.
+
+Otherwise, abandon CE and focus on:
+
+response judge quality, calibration, packaging, and submission-risk control.
+	​

@@ -132,6 +132,9 @@ This file tracks questions and optimization directions that deserve a dedicated 
 7. **Cross-encoder reranking**
    - Compare `bge-reranker-v2-m3`, DeBERTa, and Qwen reranker-style LoRA for top-100 reranking.
    - Determine whether cross-encoder is worth the latency for Blind B.
+   - Round 10 Pro answer saved at `research/pro_answers/round10/tab1_cross_encoder_audition.txt`: only try cross-encoders as a protected offline audition; require roughly `+0.004` OOF nDCG@20, no top-5/top-10 damage, and fold-consistent wins before submission.
+   - Implemented `scripts/probe_cross_encoder_zero_shot.py`. The first zero-shot MiniLM probe over 160 dev turns is strongly negative: CE-only/lock0 `-0.1475`, lock5 `-0.0470`, lock10 `-0.0214`, and lock15 `-0.00912` nDCG@20 versus the current weighted RRF base on the same slice.
+   - Follow-up Pro answer saved at `research/pro_answers/round10/tab1_ce_negative_stop_decision.txt`: stop CE reranking as a submission path. Keep only as future error analysis unless a new model/feature can pass a protected OOF acceptance bar.
 
 8. **Entity extraction strategy**
    - The current system uses lexical heuristics. Research whether a small LLM parser materially improves exact title/artist/album recognition.
@@ -146,6 +149,7 @@ This file tracks questions and optimization directions that deserve a dedicated 
 
 11. **Official `metadata-qwen3`, `lyrics-qwen3`, and `attributes-qwen3` embeddings**
    - Decide whether to use dot product, cosine, whitening, or learned fusion.
+   - Round 10 Pro answer saved at `research/pro_answers/round10/tab2_direct_query_embedding_path.txt`: if direct current-query dense retrieval is attempted, use `Qwen/Qwen3-Embedding-0.6B` against official Qwen3 text channels, prioritize `attributes-qwen3` and `metadata-qwen3`, gate `lyrics-qwen3`, and require dimension/norm/synthetic-title/BM25-agreement/protected-head checks before any label-based tuning.
 
 12. **Audio CLAP retrieval**
    - Determine whether text-query-to-audio embedding is possible with a compatible CLAP text encoder, or whether audio embedding should be used only for seed similarity.
@@ -169,6 +173,7 @@ This file tracks questions and optimization directions that deserve a dedicated 
    - Tightened tag filtering for judge responses by blocking additional last.fm-style noise such as `sexist metal`, `gay metal`, `hip hop tag`, and `not metal`.
    - Implemented `judge_clean_mix_safeplus`, but rejected it because official dev lexical fell to `0.19188` and Blind A Distinct-2 fell to `0.60487`.
    - Implemented `judge_clean_mix_lexplus`, a clean response-only backup that uses more compact metadata-grounded responses without broad tags. With the current weighted RRF ranking, official dev lexical rises to `0.20460` and Blind A Distinct-2 rises to `0.63192`; keep it behind `judge_clean_mix` until public feedback clarifies the Distinct-2 vs Gemini naturalness tradeoff.
+   - Implemented `scripts/audit_response_text.py` as a gold-free response QA guard. It flags noisy tag leaks, repeated openings, and long/short responses. Current primary has no noisy hits and no long/short rows; lexplus has no noisy hits but one 120-word Blind A response.
    - Next research question: does Gemini judge prefer compact-broad's high lexical diversity, polished's longer explanations, or judge_v2's shorter first-track reasoning?
    - Next research question: what is the minimum lexical diversity needed before judge quality dominates, given the inferred composite weight for `llm_judge_score`?
    - Pro answers saved at `research/pro_answers/round2/tab4_recsys_2026_response_generation.txt` and `research/pro_answers/round3/tab5_metadata_grounded_response_design.txt`.

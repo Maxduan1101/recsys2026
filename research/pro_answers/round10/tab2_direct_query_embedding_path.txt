@@ -1,0 +1,516 @@
+# Embedding-based Extension Design
+
+URL: https://chatgpt.com/c/6a146183-ca4c-8320-b934-f263988c2d47
+
+## Question
+
+Please answer in final visible text only. Do not use hidden reasoning. If the web app cannot answer because of limits, write exactly LIMIT. You are advising RecSys Challenge 2026 Music-CRS. Official track embeddings include metadata-qwen3, attributes-qwen3, lyrics-qwen3, image-siglip2, audio CLAP, cf-bpr. Seed/user embedding features hurt validation. What is the safest direct current-query-to-track dense retrieval path? Specify encoder compatibility checks, no-label validation gates, feature/candidate insertion that cannot hurt BM25/LTR head ranks, and when to abandon it.
+
+## Answer
+
+Safest path
+
+Use current-query → Qwen3 text embedding → official Qwen3 track text channels, not seed/user vectors.
+
+Concretely:
+
+query_text
+  → Qwen/Qwen3-Embedding-0.6B, 1024d, L2-normalized
+  → cosine search over:
+       1. attributes-qwen3_embedding_0.6b
+       2. metadata-qwen3_embedding_0.6b
+       3. lyrics-qwen3_embedding_0.6b only as gated/late feature
+  → insert only as tail candidates or weak LTR features
+  → never allowed to move BM25/LTR head ranks directly
+
+This is the safest dense path because the official track vectors already include Qwen3 text channels with 1024-dimensional metadata, attributes, and lyrics embeddings, while audio CLAP, image SigLIP2, and CF-BPR require different query encoders or non-text compatibility assumptions. The track-embedding dataset exposes all_tracks with 47.1k rows and channels including audio-laion_clap, image-siglip2, cf-bpr, attributes-qwen3_embedding_0.6b, lyrics-qwen3_embedding_0.6b, and metadata-qwen3_embedding_0.6b. 
+Hugging Face
+ Qwen3-Embedding-0.6B is a text embedding model with up to 1024-dimensional output, matching the Qwen3 track channels. 
+Hugging Face
+
+1. Query text construction
+
+Do not embed the full conversation blindly. Use a compact, current-intent query.
+
+Recommended query template:
+
+Represent this music recommendation request for retrieving matching tracks.
+
+Current user request:
+{last_user_utterance}
+
+Active constraints:
+{resolved genre / mood / era / artist / language / activity / exclusions}
+
+Positive context:
+{only explicit liked tracks/artists/genres from prior turns}
+
+Negative context:
+{explicit dislikes or "not X" constraints}
+
+Return tracks that satisfy the current request, not just the user's general taste.
+
+Keep it short:
+
+max input tokens: 256–512
+include last user turn always
+include prior turns only if they express active constraints
+drop old system recommendation text unless user accepted it
+
+The important change from failed seed/user features is that this path is query-conditioned. It retrieves against “what the user is asking now,” not against centroided seed taste or user-history taste.
+
+2. Channel priority
+
+Use this order:
+
+primary:   attributes-qwen3
+secondary: metadata-qwen3
+tertiary:  lyrics-qwen3
+avoid:     cf-bpr for direct query retrieval
+avoid:     image-siglip2 unless exact SigLIP2 text tower is proven compatible
+avoid:     audio-laion_clap unless exact CLAP text tower is proven compatible
+
+Why:
+
+attributes-qwen3:
+    Best first target for mood, genre, activity, vibe, instrumentation.
+
+metadata-qwen3:
+    Useful for artist/title/album/era constraints, but BM25 already covers much of this.
+
+lyrics-qwen3:
+    Risky. It may help when the user asks for lyrical themes, but can drift badly for generic mood queries.
+
+cf-bpr:
+    Not a direct text-query space.
+
+audio-laion_clap:
+    Theoretically text-audio retrieval may be possible, but only if you know the exact CLAP checkpoint, text tower, projection, pooling, and normalization.
+
+image-siglip2:
+    Same issue: possible only with exact compatible text tower, and likely weak for music intent.
+
+Initial retrieval sizes:
+
+attributes_qwen3 topK = 200
+metadata_qwen3   topK = 200
+lyrics_qwen3     topK = 100 only for lyric/theme-triggered turns
+
+Search over the full all_tracks catalog. The official baseline README warns that inference must retrieve from the entire track catalog and not filter/subset tracks by split or other mechanisms. 
+GitHub
+
+3. Encoder compatibility checks
+
+Do these before any label-based validation.
+
+A. Hard compatibility checks
+
+Pass all of these:
+
+model_id == Qwen/Qwen3-Embedding-0.6B
+output_dim == 1024
+track_channel_dim == 1024 for metadata/attributes/lyrics
+pooling method fixed and documented
+query embeddings L2-normalized
+track embeddings L2-normalized before cosine
+no dimensional truncation
+same tokenizer/model revision for every run
+
+Reject the path immediately if output dimension differs from the official Qwen3 channels.
+
+B. Norm and distribution checks
+
+On 1,000 random queries and all tracks:
+
+query_norm before L2: finite, nonzero
+query_norm after L2: 1.0 ± 1e-4
+track_norm after L2: 1.0 ± 1e-4 for non-empty vectors
+cosine top1 not all identical
+cosine top100 score spread is nonzero
+missing-vector masks respected
+
+Acceptance bars:
+
+p95(top1_cosine - top100_cosine) > 0.02
+p50(top1_cosine - top100_cosine) > 0.005
+top1 track frequency across random queries < 2%
+top10 track frequency across random queries < 5%
+
+If the same popular tracks dominate unrelated queries, abandon or keep as offline diagnostic only.
+
+C. Synthetic title/artist sanity check, no labels required
+
+Generate synthetic queries from catalog metadata:
+
+"play {track_name} by {artist_name}"
+"songs like {track_name} by {artist_name}"
+"I want music by {artist_name} from the album {album_name}"
+"{genre/tag} songs similar to {artist_name}"
+
+Then retrieve with query→metadata and query→attributes.
+
+For exact title+artist synthetic queries, require:
+
+metadata_qwen3:
+    exact track in top20 for >= 60%
+    exact artist appears in top20 for >= 80%
+
+attributes_qwen3:
+    exact track in top100 for >= 30%
+    exact artist/tag consistency visibly plausible
+
+Do not expect attributes to exact-match titles; that is BM25/metadata’s job.
+
+D. BM25 agreement check, no labels required
+
+For high-confidence lexical queries, dense should not contradict BM25.
+
+Define a high-confidence lexical query as one where BM25 top1 has:
+
+exact title match
+or exact title + artist match
+or quoted title match
+
+Acceptance bars:
+
+metadata_qwen3 top20 overlaps BM25 top20 by >= 1 item in >= 70% of cases
+metadata_qwen3 top100 contains BM25 top1 in >= 60% of cases
+attributes_qwen3 top100 contains BM25 top1 in >= 30% of cases
+
+If dense retrieval routinely excludes obvious BM25 exact-title hits, it is not safe for ranking head positions.
+
+E. Perturbation stability check
+
+For each query, create paraphrases:
+
+original: "upbeat nostalgic punk for a road trip"
+paraphrase: "energetic punk songs with a nostalgic road-trip feel"
+constraint flip: "not punk, more mellow nostalgic songs"
+
+Acceptance bars:
+
+original/paraphrase top50 Jaccard >= 0.20
+constraint flip top50 Jaccard <= 0.50
+adding "not {genre}" must reduce that genre in top20
+
+If paraphrases are unstable but constraint flips do not change results, the encoder is not tracking intent.
+
+4. No-label validation gates
+
+Run these gates before touching dev labels.
+
+Gate 1 — head safety
+
+On your existing BM25/LTR outputs:
+
+dense insertion must not alter ranks 1–5
+dense insertion must not alter ranks 1–10 for exact-title / quoted-title / artist-specific turns
+
+This is deterministic, not metric-based.
+
+Pass condition:
+
+100% unchanged protected head ranks
+Gate 2 — candidate-only usefulness
+
+Dense candidates should add new plausible items without replacing lexical candidates.
+
+Track:
+
+new_dense_candidates_per_turn
+dense_overlap_with_base_top100
+dense_overlap_with_base_top500
+artist/tag consistency of dense-only candidates
+
+Acceptance bars:
+
+median new dense candidates in top500 union: >= 20
+median overlap with base top100: 5%–50%
+dense-only candidates with empty metadata or masks: 0
+
+If overlap is near zero, the dense space is probably off-distribution. If overlap is near 100%, it adds no candidate value.
+
+Gate 3 — source-specific sanity
+
+For top20 dense-only candidates:
+
+attributes_qwen3 should match mood/genre/activity words
+metadata_qwen3 should match artist/title/album/era words
+lyrics_qwen3 should only fire on lyric/theme/story/emotion requests
+
+Acceptance bar from manual inspection:
+
+>= 70% of sampled dense-only top20 candidates are plausibly relevant
+
+Use 100–200 sampled turns. No labels required.
+
+Gate 4 — lexical-protection adversarial set
+
+Create no-label adversarial queries:
+
+"not Taylor Swift"
+"anything except country"
+"play Queen, not Queens of the Stone Age"
+"the song 'Halo' by Beyoncé"
+"old school hip hop, not modern trap"
+"instrumental jazz, no vocals"
+
+Pass condition:
+
+dense path does not promote explicitly excluded entities into protected head
+exact artist/title constraints remain controlled by BM25/LTR
+5. Feature insertion that cannot hurt head ranks
+
+There are two safe ways to insert this.
+
+Safest version: tail-only candidate insertion
+
+Keep your current final ranking for the head:
+
+base_final = current BM25/LTR/RRF ranking
+dense_union = attributes_top200 ∪ metadata_top200 ∪ gated_lyrics_top100
+
+Final output construction:
+
+Python
+运行
+protected = base_final[:10]
+
+tail_pool = base_final[10:200] ∪ dense_union
+tail_scored = current_ltr_score_or_base_rrf(tail_pool) + tiny_dense_bonus(tail_pool)
+
+final = protected + sorted(tail_pool excluding protected)[:10]
+
+Dense candidates can only enter positions:
+
+rank >= 11
+
+For exact-title, quoted-title, or strong artist-specific turns:
+
+protected = base_final[:20]
+
+So dense retrieval cannot affect the submitted top20 for those turns.
+
+Tiny dense bonus:
+
+dense_bonus =
+    0.005 * attr_rank_rrf
+  + 0.003 * meta_rank_rrf
+  + 0.001 * lyrics_rank_rrf
+
+where:
+
+rank_rrf = 1 / (60 + dense_rank)
+
+This is intentionally too small to beat strong LTR/BM25 evidence.
+
+Better version: LTR feature-only, with rank freeze
+
+Add dense features to the LTR candidate table, but enforce post-ranking freeze:
+
+dense_attr_cos
+dense_attr_rank
+dense_attr_rrf
+dense_meta_cos
+dense_meta_rank
+dense_meta_rrf
+dense_lyrics_cos
+dense_lyrics_rank
+dense_lyrics_rrf
+dense_source_count
+dense_best_rank
+dense_best_channel
+dense_candidate_only_flag
+base_rank
+base_score
+
+Then after LTR prediction:
+
+Python
+运行
+if turn_has_exact_title_or_quoted_title:
+    freeze_top_k = 20
+elif turn_has_strong_artist_constraint:
+    freeze_top_k = 10
+else:
+    freeze_top_k = 5
+
+final = base[:freeze_top_k] + reranked_tail(base[freeze_top_k:] ∪ dense_candidates)
+
+This lets dense help only where it is least dangerous.
+
+The evaluator requires ordered, unique predicted_track_ids up to 20, and nDCG is computed at k = 1, 10, and 20, so protecting the head is essential. 
+GitHub
+
+6. Candidate insertion policy
+
+Use dense as recall expansion, not head promotion.
+
+Recommended first setting:
+
+base candidates: current top500 from your pipeline
+attributes_qwen3: top200
+metadata_qwen3: top200
+lyrics_qwen3: top100 only if query has lyric/theme triggers
+
+union cap before LTR: 800–1,000
+protected head: base top5 globally
+protected exact/artist head: base top10 or top20
+
+Lyrics trigger examples:
+
+lyrics
+words
+meaning
+about heartbreak
+about loss
+storytelling
+political lyrics
+sad lyrics
+song about
+
+No lyrics trigger:
+
+do not retrieve lyrics_qwen3
+
+Do not use dense candidates when the query is obviously exact lookup:
+
+quoted title
+explicit "by {artist}"
+"play the song {title}"
+"find {track}"
+
+For those, BM25/LTR should dominate.
+
+7. Score normalization
+
+Use rank-based features first. Avoid raw cosine as a direct score.
+
+For each channel:
+
+Python
+运行
+dense_rrf = 1.0 / (60 + dense_rank)
+dense_rank01 = 1.0 - min(rank - 1, K - 1) / (K - 1)
+
+For cosine, use only robust per-turn normalization:
+
+Python
+运行
+cos_norm = clip((cos - p10_topK) / (p90_topK - p10_topK + 1e-8), 0, 1)
+
+Feature set:
+
+attr_rank_rrf
+attr_rank01
+attr_cos_norm
+
+meta_rank_rrf
+meta_rank01
+meta_cos_norm
+
+lyrics_rank_rrf
+lyrics_rank01
+lyrics_cos_norm
+
+dense_source_count
+dense_best_rank
+dense_candidate_only
+dense_agrees_with_bm25_artist
+dense_agrees_with_bm25_title
+dense_agrees_with_query_genre
+
+Do not use:
+
+raw cosine directly in final_score
+global min-max cosine
+unbounded dense + LTR blending
+8. Exact supervised acceptance bars
+
+After the no-label gates pass, run one OOF experiment.
+
+Given your current system is already strong and seed/user embedding features hurt validation, dense query retrieval should clear a high bar.
+
+Accept for continued use only if:
+
+OOF nDCG@20 improvement >= +0.0015
+OOF nDCG@10 improvement >= +0.0010
+OOF nDCG@1  improvement >= -0.0003
+
+For final submission consideration:
+
+OOF nDCG@20 improvement >= +0.0020
+OOF nDCG@10 improvement >= +0.0015
+OOF nDCG@1  improvement >=  0.0000
+
+Fold robustness:
+
+at least 3 / 4 folds improve nDCG@20
+worst fold nDCG@20 delta >= -0.0007
+no single fold contributes > 60% of total gain
+
+Turn robustness:
+
+at least 6 / 8 turn numbers non-negative at nDCG@20
+no turn number delta < -0.0030
+turns 1–2 must not lose nDCG@1
+
+Slice protection:
+
+exact-title slice:      nDCG@1 delta >= 0
+quoted-title slice:     nDCG@1 delta >= 0
+artist-specific slice:  nDCG@10 delta >= -0.0005
+genre/mood slice:       nDCG@20 delta >= +0.0015
+no-seed slice:          nDCG@20 delta >= +0.0010
+
+The most important slice is no-seed current-query turns. If direct query embeddings do not help there, they are not solving the problem seed/user embeddings failed to solve.
+
+9. When to abandon it
+
+Abandon immediately before supervised validation if any of these fail:
+
+Qwen query embedding dimension != 1024
+synthetic exact title+artist recall@20 < 60% on metadata_qwen3
+BM25 exact-title top1 appears in metadata_qwen3 top100 < 60%
+random-query top tracks are dominated by a small popularity set
+paraphrases are unstable but constraint flips do not change results
+manual dense-only plausibility < 70%
+protected head ranks cannot be guaranteed unchanged
+
+Abandon after OOF if any of these happen:
+
+OOF nDCG@20 gain < +0.0015
+OOF nDCG@10 gain < +0.0010
+OOF nDCG@1 drops below -0.0003
+fewer than 3 / 4 folds improve
+turns 1–2 lose head accuracy
+exact-title or quoted-title slices regress at nDCG@1
+dense helps only by adding a few memorized/popular tracks
+
+Abandon as a submission feature unless it clears the final bar:
+
+OOF nDCG@20 >= current + 0.0020
+OOF nDCG@10 >= current + 0.0015
+OOF nDCG@1  >= current
+Recommended minimal experiment
+
+Run exactly this:
+
+Experiment D0:
+    base system unchanged
+
+Experiment D1:
+    query → Qwen3 → attributes_qwen3 top200
+    add features only
+    freeze base top10
+    dense candidates may enter ranks 11–20 only
+
+Experiment D2:
+    D1 + metadata_qwen3 top200
+    freeze base top5 normally
+    freeze base top20 for exact-title/quoted-title turns
+
+Experiment D3:
+    D2 + lyrics_qwen3 top100 only for lyric/theme-triggered turns
+
+Do not try audio CLAP, image SigLIP2, or CF-BPR direct query retrieval until D1/D2 prove positive. If D2 cannot beat the current system with protected head ranks, the dense query path is not worth more challenge-time.

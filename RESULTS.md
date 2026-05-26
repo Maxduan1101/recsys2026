@@ -168,6 +168,17 @@ CF-tail blind-like follow-up:
 - Applying a batch-level repeat repair to the current weighted four-model ensemble is also rejected. The safest `head_k=19` repair improves dev catalog diversity by `+0.01476` but lowers OOF nDCG@20 from `0.183924` to `0.183497`; more aggressive `head_k=15-18` variants lose more nDCG for a small extra catalog gain.
 - A narrower RRF grid around the current weighted package found `rrf_k=28`, weights `[1.0, 0.45, 1.45, 1.05]`, but official OOF only reached `0.183966` and Blind-A-shaped 1000-panel mean delta was `-0.000096`; reject it as dev-fold noise.
 - `scripts/apply_consensus_fallback.py` implements a conservative top-1 support fallback. The first rule (`support_top_k=1`, `base_max_support=0`, `fallback_min_support=2`) raises official OOF to `0.183986` and Blind-A-shaped 5000-panel mean delta to `+0.000278` with p10 `0.0`, but it changes `0 / 80` Blind A rows. Keep it as a Blind-B/future-split tool rather than a replacement for the current Blind A package.
+- `scripts/probe_cross_encoder_zero_shot.py` implements a protected zero-shot cross-encoder probe. On the 160-turn dev cache with `cross-encoder/ms-marco-MiniLM-L-6-v2` over top-50 candidates, the current weighted RRF base scored `0.29136` nDCG@20 on that slice, while CE-only/lock0 scored `0.14385`, lock5 `0.24440`, lock10 `0.27000`, and lock15 `0.28224`. Even top-15 protection is `-0.00912` nDCG@20 with only `3` better rows versus `11` worse rows. Round 10 Pro follow-up recommends stopping CE reranking as a submission path, so no full-dev CE run is planned.
+
+## Response Text Audit
+
+Script: `scripts/audit_response_text.py`
+
+Gold-free Blind A checks:
+
+- Primary `judge_clean_mix`: 80 rows, audit Distinct-2 `0.56394` with this script's tokenizer, word counts `41-112` with average `75.88`, no noisy phrase hits, no long/short rows.
+- Lexplus backup: 80 rows, audit Distinct-2 `0.58673`, word counts `41-120` with average `72.05`, no noisy phrase hits, one long row at 120 words.
+- This audit is a response QA guard, not an official metric replacement. It catches banned/noisy tag leaks, overly long/short responses, and repeated opening phrases before spending a public submission.
 
 ## Retrieval Source Diagnostics
 
@@ -418,6 +429,13 @@ Saved answers:
 - `research/pro_answers/round9/tab1_response_lexplus_decision.txt`
 - `research/pro_answers/round9/tab5_final_submission_sequence.txt`
 - `research/pro_answers/round9/README.md`
+- `research/pro_answers/round10/tab1_cross_encoder_audition.txt`
+- `research/pro_answers/round10/tab1_ce_negative_stop_decision.txt`
+- `research/pro_answers/round10/tab2_direct_query_embedding_path.txt`
+- `research/pro_answers/round10/tab3_direct_embedding_guardrails.txt`
+- `research/pro_answers/round10/tab4_consensus_fallback_calibration.txt`
+- `research/pro_answers/round10/tab5_final_iteration_decision_tree.txt`
+- `research/pro_answers/round10/README.md`
 
 Operational takeaways:
 
@@ -431,3 +449,4 @@ Operational takeaways:
 - Round 7 Pro answers support `judge_clean_mix` over compact-broad for the next real submission, recommend anchored global weighted RRF as the lowest-risk ranking improvement, and warn that train/embedding signals should enter as gated/tail evidence until they pass strict blind-like uncertainty checks.
 - Round 8 Pro answers still favor the weighted RRF ranking and warn against ranking-diversity tweaks on the tiny Blind A ceiling. They suggest response-only `judge_clean_mix_plus` as a possible judge-quality backup, but the local artifact check keeps plain `judge_clean_mix` first.
 - Round 9 final-submission guidance still favors submitting the weighted RRF + `judge_clean_mix` package first. The response-style retry also keeps `judge_clean_mix` ahead of `lexplus` for the first submission because a small Distinct-2 gain is easier to lose through Gemini judge naturalness. Other round 9 browser questions are still pending or failed with empty ChatGPT responses, so they are recorded for retry rather than treated as research evidence.
+- Round 10 Pro answers keep the current primary package unchanged, demote cross-encoder work to a strict offline-only audition, recommend any direct dense query retrieval go through Qwen3-compatible text channels with protected-head gates, and keep the consensus fallback only as a rare future-split repair.

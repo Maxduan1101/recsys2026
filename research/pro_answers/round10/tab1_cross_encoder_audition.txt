@@ -1,0 +1,765 @@
+# Source-Gating Algorithm Design
+
+URL: https://chatgpt.com/c/6a1464da-5f6c-8323-9f11-46c673a4d8ec
+
+## Question
+
+Please answer in final visible text only. Do not use hidden reasoning. If the web app cannot answer because of limits, write exactly LIMIT. You are advising RecSys Challenge 2026 Music-CRS. Current ranking is strong: weighted four-model LightGBM LambdaRank RRF with dev OOF nDCG@20=0.1839239. Failed or tiny ranking tweaks: position-band RRF, anchored RRF, quoted-title promotion, seed/user embedding LTR features, RRF fine-grid. Is a cross-encoder or small neural reranker over top-50/top-100 still worth trying under submission limits? Give compute-minimal model choices, leakage-safe train/eval recipe, acceptance bars, and stop criteria.
+
+## Answer
+
+主人，worth trying only as an offline last ranking experiment, not as the next blind-submission bet by default.
+
+Given current ranking is already strong:
+
+OOF nDCG@20=0.1839239
+
+and multiple cheap ranking tweaks have failed or produced tiny gains, a cross-encoder / neural reranker is now in the “high effort, possible but risky upside” bucket. I would try it only if you can freeze the current candidate generator and evaluate leakage-safely. Do not replace the current four-model LTR RRF unless the neural reranker clears strict acceptance bars.
+
+My recommendation:
+
+Try a compute-minimal cross-encoder as a protected feature/reranker over top-50, not as an unconstrained top-100 reranker.
+	​
+
+1. Is it worth trying?
+Yes, but only under this framing
+
+A cross-encoder may still help because LightGBM features probably capture:
+
+source ranks
+
+BM25 score
+
+RRF score
+
+entity flags
+
+seed/user embedding features
+
+popularity
+
+intent/category features
+
+but may not fully capture:
+
+nuanced query-track semantic fit
+
+multi-turn conversational constraints
+
+“similar vibe” phrasing
+
+fine-grained title/artist/album/context matching
+
+whether a candidate actually answers the current user request
+
+So the upside is plausible.
+
+But the risk is high because:
+
+Music metadata can be sparse/noisy.
+
+Cross-encoders trained on small relevance labels can overfit.
+
+Blind distribution may not match your dev folds.
+
+Neural rerankers can destroy head precision.
+
+If top-50 already contains the gold, your current LTR may already be near the useful ceiling.
+
+So the right answer is:
+
+Try it offline, but submit only if it beats strong protected acceptance bars.
+	​
+
+2. Compute-minimal model choices
+
+Use small cross-encoders only. Do not start with large generative rerankers.
+
+Option A: MiniLM cross-encoder, frozen or lightly fine-tuned
+
+Best first choice.
+
+Model family:
+
+cross-encoder/ms-marco-MiniLM-L-6-v2
+cross-encoder/ms-marco-MiniLM-L-12-v2
+
+Use as:
+
+score
+ce
+	​
+
+(q,d)
+
+where:
+
+q = current user turn + compact dialogue state + explicit constraints + seed/history summary
+d = track title + artist + album + genre/tags + short metadata context
+
+Why first:
+
+cheap
+
+fast
+
+good enough for reranking
+
+easy to batch over top-50
+
+less likely to overfit than a large local LLM reranker
+
+Use L-6 first. L-12 only if L-6 gives a clear signal.
+
+Option B: bge-reranker-small/base
+
+Good second choice if available locally.
+
+Model family:
+
+BAAI/bge-reranker-v2-m3
+BAAI/bge-reranker-base
+
+But be careful: multilingual/general rerankers may behave oddly on music metadata unless your query-track text is well formatted.
+
+Use only as zero-shot or lightly fine-tuned.
+
+Option C: DeBERTa-v3-small classifier
+
+Train your own binary relevance classifier:
+
+microsoft/deberta-v3-small
+
+Input:
+
+[CLS] conversation_state [SEP] track_document [SEP]
+
+Output:
+
+P(rel=1∣q,d)
+
+This is more controllable than a generic reranker, but more overfit-prone.
+
+Only try after MiniLM zero-shot/fine-tune shows promise.
+
+Option D: bi-encoder / embedding reranker
+
+Not recommended as the main experiment because you already tried seed/user embedding LTR features. It is less likely to add new signal than a cross-encoder.
+
+3. Candidate scope: top-50 first, not top-100
+
+Start with:
+
+C=current ensemble top-50
+
+not top-100.
+
+Reason:
+
+top-50 is cheaper
+
+fewer noisy negatives
+
+less chance of wild external candidates entering top-20
+
+better aligned with preserving current head
+
+Only test top-100 if top-50 shows a real OOF gain.
+
+Recommended stages:
+
+Stage	Candidate set	Use
+S1	top-20 only	diagnostic: can CE improve ordering?
+S2	top-50	main experiment
+S3	top-100	only if S2 improves recall-sensitive cases
+S4	full catalog	do not do this now
+4. Input formatting
+
+Use very structured text. Do not feed giant conversation history blindly.
+
+Query side
+User request:
+{current_user_turn}
+
+Conversation goal:
+{goal_summary}
+
+Positive context:
+{liked_or_accepted_tracks_or_artists}
+
+Negative context:
+{rejected_tracks_or_artists_or_constraints}
+
+Intent:
+{intent_label}
+
+Need:
+{short generated query summary}
+
+Keep this under 256 tokens.
+
+Track side
+Title: {title}
+Artist: {artist}
+Album: {album}
+Genres/tags: {clean_tags}
+Year: {year}
+Known context: {short train-context snippet if allowed}
+
+Keep this under 128–192 tokens.
+
+Avoid noisy tags. Do not include huge lyrics fields at first.
+
+5. Training recipe
+Primary safe setup
+
+Use session-grouped or user/session-grouped folds.
+
+Do not split by candidate row.
+
+Recommended:
+
+\text{GroupKFold by session_id}
+
+or stricter:
+
+\text{GroupKFold by user_id/session_id}
+
+For each fold:
+
+Train neural reranker only on training sessions.
+
+Score validation sessions with a model that never saw those sessions.
+
+Produce OOF cross-encoder scores.
+
+Evaluate final top-20 on honest validation candidate sets.
+
+This is critical.
+
+Candidate generation for training
+
+For each training state:
+
+candidate_pool = current ensemble top-50 or top-100
+
+Labels:
+
+y=1if candidate is gold track
+y=0otherwise
+
+If the gold track is not in the candidate pool, handle carefully:
+
+For classifier training
+
+You may add the gold as an extra positive for training only:
+
+train_pool = retrieved_candidates + missing_gold_positive
+
+But for evaluation, never inject missing gold.
+
+Report both:
+
+honest_eval: no positive injection
+oracle_eval: positive injection
+
+Only honest_eval matters for submission.
+
+Negative sampling
+
+Use hard negatives, not random catalog negatives.
+
+For each positive state, sample:
+
+top-5 false candidates from current LTR
+
+top-20 false candidates from BM25/RRF
+
+candidates with exact entity overlap but wrong track
+
+candidates from same artist/album/genre but wrong gold
+
+a few lower-ranked top-50 candidates
+
+Example:
+
+1 positive
+8 hard negatives from ranks 1-20
+8 medium negatives from ranks 21-50
+4 entity-confusable negatives
+
+Do not overuse easy random negatives.
+
+6. Loss functions
+
+Start simple.
+
+Best first loss: pairwise margin loss
+
+For each query state q, positive d
++
+, negative d
+−
+:
+
+L=max(0,m−s(q,d
++
+)+s(q,d
+−
+))
+
+Use:
+
+m=0.2 or 0.5
+
+This directly teaches ranking.
+
+Simpler alternative: binary cross-entropy
+L=−ylogp−(1−y)log(1−p)
+
+Works fine if you balance positives and negatives.
+
+But raw probabilities may be poorly calibrated, so use the CE score mostly as a feature or rerank delta.
+
+7. How to combine with current LTR
+
+Do not directly sort by cross-encoder score.
+
+Use one of these safe combinations.
+
+Option 1: CE as extra feature into existing LTR
+
+Best if you can retrain the four-model LightGBM.
+
+Add features:
+
+ce_score
+ce_rank_in_top50
+ce_score_gap_to_best
+ce_score_gap_to_current_candidate
+ce_top1_flag
+ce_top3_flag
+ce_minus_ltr_score
+ce_bm25_disagreement
+
+Then retrain OOF.
+
+This is safest because LightGBM can learn when CE is useful.
+
+Option 2: protected CE rerank inside bands
+
+Do not let CE reorder the whole list.
+
+Use position bands:
+
+1-5: almost locked
+6-10: small CE influence
+11-20: larger CE influence
+21-50: only candidates may enter 11-20
+
+Score:
+
+S(d)=S
+LTR
+	​
+
+(d)+λ
+b
+	​
+
+⋅z(score
+CE
+	​
+
+(d))
+
+where b is the current rank band.
+
+Suggested:
+
+Current rank band	λ
+b
+	​
+
+
+1–5	0.00–0.03
+6–10	0.03–0.08
+11–20	0.08–0.18
+21–50	0.10–0.25, but admission-gated
+Option 3: CE admission gate
+
+A candidate outside current top-20 may enter top-20 only if:
+
+rank
+CE
+	​
+
+(d)≤5
+
+and:
+
+score
+CE
+	​
+
+(d)−score
+CE
+	​
+
+(v
+20
+	​
+
+)>δ
+
+and:
+
+rank
+LTR
+	​
+
+(d)≤50
+
+and:
+
+hard constraints satisfied
+
+This is good if the CE is noisy but occasionally identifies obvious misses.
+
+8. Protected reranking rules
+
+Use strict head protection.
+
+Rule A: preserve top-5 unless CE evidence is overwhelming
+
+Default:
+
+O
+1:5
+	​
+
+=LTR
+1:5
+	​
+
+
+Allow a change only if:
+
+d∈LTR
+1:20
+	​
+
+
+and:
+
+rank
+CE
+	​
+
+(d)≤3
+
+and:
+
+score
+CE
+	​
+
+(d)−score
+CE
+	​
+
+(v)>δ
+5
+	​
+
+
+Do not let a rank-40 candidate jump into top-5.
+
+Rule B: external candidates can enter only 11–20 first
+
+For candidates from ranks 21–50:
+
+d∈O
+11:20
+	​
+
+
+not top-10, unless later ablations prove otherwise.
+
+Rule C: cap total changes
+
+For first deployable version:
+
+#changed positions in top-20≤4
+#new candidates entering top-20≤2
+
+This protects the strong current ensemble.
+
+9. Acceptance bars
+
+Because submissions are limited, the bar must be high.
+
+I would require all of these on OOF / blind-like validation.
+
+Main nDCG bar
+
+Minimum:
+
+ΔnDCG@20≥+0.0025
+
+Better submission-worthy:
+
+ΔnDCG@20≥+0.0040
+
+Strong:
+
+ΔnDCG@20≥+0.0060
+
+Given your current:
+
+0.1839239
+
+I would not submit unless OOF reaches at least:
+
+0.1879
+
+Preferably:
+
+0.1899+
+Head safety bars
+
+Require:
+
+ΔnDCG@5≥0
+
+or at worst:
+
+ΔnDCG@5>−0.0005
+
+Require:
+
+ΔnDCG@10≥+0.001
+
+If nDCG@20 improves only by moving tail but nDCG@5 drops, do not submit.
+
+Fold consistency bar
+
+Across folds:
+
+\text{gain in at least 70% of folds}
+
+or:
+
+gain in all major intent buckets except one small bucket
+
+Do not trust a gain caused by one fold or one query type.
+
+Damage bar
+
+Reject if:
+
+lost top-20 hits>gained top-20 hits
+
+Reject if:
+
+mean rank of known positives worsens in top-10
+
+Reject if:
+
+changed top-5 positions per query>0.3 average
+
+Reject if many exact-entity queries get worse.
+
+Submission bar
+
+Given limited submissions, I would submit only if:
+
+ΔOOF nDCG@20≥+0.004
+
+and:
+
+ΔOOF nDCG@10≥+0.001
+
+and:
+
+ΔOOF nDCG@5≥−0.0005
+
+and:
+
+fold win rate≥70%
+
+and:
+
+manual audit shows no obvious entity/constraint regressions
+
+Otherwise keep current ranking.
+
+10. Stop criteria
+
+Stop the neural reranker branch if any of these happen.
+
+Stop after zero-shot if no signal
+
+Run zero-shot CE over top-50.
+
+If:
+
+ΔnDCG@20<+0.001
+
+and CE rank of gold is not better than current LTR rank in most cases, stop.
+
+No fine-tuning.
+
+Stop after first fine-tune if gain is tiny
+
+If fine-tuned MiniLM-L6 gives:
+
+ΔnDCG@20<+0.002
+
+or improves only oracle-injected evaluation but not honest evaluation, stop.
+
+Stop if head damage appears
+
+If:
+
+ΔnDCG@5<−0.001
+
+stop or restrict to ranks 11–20 only.
+
+Stop if unstable across folds
+
+If one fold gives large gain and others are flat/negative, stop.
+
+This usually means overfit.
+
+Stop if improvement is only from train-context memorization
+
+If gains concentrate on tracks whose augmented training contexts are very similar to validation queries, and session/user split is weak, stop.
+
+That is likely leakage-like behavior.
+
+11. Recommended experiment order
+
+Do this exact order.
+
+Experiment 1: zero-shot CE diagnostic
+
+Model:
+
+cross-encoder/ms-marco-MiniLM-L-6-v2
+
+Candidate set:
+
+current top-50
+
+Do not fine-tune.
+
+Evaluate:
+
+CE-only top-20
+
+LTR + small CE score
+
+LTR top-5 locked + CE rerank 6–20
+
+LTR top-10 locked + CE rerank 11–20
+
+If none improves, stop.
+
+Experiment 2: CE as LightGBM feature
+
+Generate OOF CE scores using fold-safe models or zero-shot scores.
+
+Add:
+
+ce_score
+ce_rank
+ce_score_percentile
+ce_score_gap
+
+Retrain current four-model LTR.
+
+This is the most submission-plausible variant.
+
+Experiment 3: fine-tuned MiniLM-L6
+
+Train with pairwise or BCE loss on hard negatives.
+
+Only over:
+
+top-50 candidates
+
+Training epochs:
+
+1 to 2
+
+Batch size:
+
+16 to 64 depending on GPU
+
+Max length:
+
+384
+
+Learning rate:
+
+1e-5 to 2e-5
+
+Use early stopping by OOF nDCG@20, not validation loss.
+
+Experiment 4: protected insertion
+
+Use CE only to insert at ranks 11–20.
+
+Keep:
+
+O
+1:10
+	​
+
+=LTR
+1:10
+	​
+
+
+Rerank:
+
+O
+11:20
+	​
+
+
+from:
+
+LTR
+11:50
+	​
+
+
+Submit only if this beats current ranking with no head loss.
+
+12. Final recommendation
+
+Do not make a cross-encoder the main next submission unless it clearly wins offline.
+
+The best use is:
+
+MiniLM cross-encoder over top-50 as an OOF feature + protected tail reranker.
+	​
+
+
+Submission-worthy only if:
+
+ΔOOF nDCG@20≥+0.004
+	​
+
+
+with no meaningful nDCG@5/10 damage and fold-consistent gains.
+
+Otherwise stop and keep the current package:
+
+weighted four-model LightGBM LambdaRank RRF + best response variant
+	​
+
+
+In practical terms: try MiniLM-L6 for one short offline branch; if it does not produce a clean +0.004 OOF nDCG@20 under top-5/top-10 protection, abandon it and spend the remaining effort on response judge quality and submission packaging.

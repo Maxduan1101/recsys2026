@@ -1,0 +1,488 @@
+# RecSys Challenge 2026 Plan
+
+URL: https://chatgpt.com/c/6a146189-a79c-839d-8fd2-ed4f953d1bbe
+
+## Question
+
+Please answer in final visible text only, not hidden thinking. If you cannot answer because of limits, write LIMIT. You are advising RecSys Challenge 2026 Music-CRS. Official track embeddings include metadata-qwen3, attributes-qwen3, lyrics-qwen3, image-siglip2, audio CLAP, cf-bpr. Seed/user embedding features hurt validation. What is the safest path for direct current-query-to-track dense retrieval: encoder compatibility checks, no-label gates, and how to add without hurting BM25/LTR head ranks?
+
+## Answer
+
+Use dense retrieval as a guarded recall source, not as a new head-ranker. Your current BM25/RRF/LTR stack is already strong, and seed/user embedding features hurting validation is a warning that embedding similarity is not automatically aligned with the task objective. The Music-CRS task is explicitly multi-turn conversational recommendation with both ranked tracks and response text, and the baseline stack is also two-stage: retrieval first, response generation second. So the safest change is to add dense channels in a way that can increase candidate recall while letting the existing LTR decide whether they deserve promotion. 
+RecSys
+ 
+GitHub
+
+1. Direct current-query-to-track dense retrieval
+A. First check encoder compatibility
+
+Treat each official embedding family as a separate retrieval space. Do not compare a current query embedding to a track embedding unless the query was encoded by the matching text tower or a proven compatible encoder.
+
+Recommended compatibility matrix:
+
+Track embedding	Direct text query usable?	Safe use
+metadata-qwen3	likely yes, only with same Qwen embedding setup	primary dense candidate source
+attributes-qwen3	likely yes, only with same Qwen embedding setup	secondary dense source for mood/genre/activity queries
+lyrics-qwen3	maybe, but risky	gated source for lyric/theme requests only
+image-siglip2	only if matching SigLIP text tower is available	low-weight exploratory source
+audio CLAP	only if matching CLAP text tower is available	gated source for sonic descriptions
+cf-bpr	no direct text compatibility	no direct query retrieval; use only as item-item or candidate feature
+
+Run these checks before enabling any dense source:
+
+1. Same dimension?
+2. Same model family and projection head?
+3. Same pooling and normalization?
+4. Cosine similarity distribution sane?
+5. Query-to-track sanity tests pass?
+6. Validation recall improves without head metric loss?
+
+The key sanity tests should be label-free or nearly label-free:
+
+Exact entity test:
+  Query: "recommend songs by Taylor Swift"
+  Expected: top results contain Taylor Swift metadata, not just semantically pop-ish tracks.
+
+Title/artist test:
+  Query: "something like [known track title] by [artist]"
+  Expected: exact or near-exact metadata hits are high.
+
+Attribute test:
+  Query: "upbeat 2010s dance pop"
+  Expected: metadata/attribute tags match.
+
+Negative test:
+  Query: "not country, more electronic"
+  Expected: dense source does not blindly retrieve country tracks because of generic similarity.
+
+Score-shape test:
+  top1 - top10 margin, top1 z-score, and entropy should distinguish confident from flat queries.
+
+A dense channel that fails these tests should not enter retrieval. Keep it offline as a diagnostic feature only.
+
+B. Use no-label gates
+
+A no-label gate means the decision to use a dense channel depends only on information available at inference: current user utterance, dialogue history, parsed intent, catalog metadata, and source confidence. It must not depend on whether the validation gold appears.
+
+Use BM25/rules as default. Enable dense only when the query type justifies it.
+
+Safe gates:
+
+Python
+运行
+dense_allowed = (
+    not has_exact_track_title_query
+    and not has_strong_artist_or_album_constraint
+    and query_has_descriptive_terms
+    and dense_confidence_ok
+)
+
+More specific gates:
+
+metadata-qwen3:
+  Allow for general natural-language requests.
+  Block from head promotion when exact artist/title constraints are present.
+
+attributes-qwen3:
+  Allow for mood, genre, activity, era, instrumentation, language, vibe.
+
+lyrics-qwen3:
+  Allow only when query explicitly mentions lyrics, theme, words, story, meaning, emotion in lyrics.
+
+audio CLAP:
+  Allow only for sonic/audio descriptors: acoustic, distorted, heavy drums, mellow vocals, instrumental, danceable, energetic.
+
+image-siglip2:
+  Usually tail-only. Cover art is weakly related to recommendation relevance.
+
+cf-bpr:
+  Do not use as current-query retrieval.
+  Use only for item-item expansion from seed tracks or as LTR features, and disable if validation says seed/user embedding features hurt.
+
+Dense confidence checks:
+
+Python
+运行
+dense_confidence_ok = (
+    top1_score >= source_min_score
+    and (top1_score - top10_score) >= source_min_margin
+    and top1_zscore >= source_min_z
+)
+
+Add a lexical/entity support check for head promotion:
+
+Python
+运行
+can_promote_above_head = (
+    candidate_has_artist_or_tag_overlap
+    or candidate_seen_by_bm25
+    or candidate_seen_by_rules
+    or candidate_seen_by_multiple_dense_sources
+)
+
+This prevents a pure embedding artifact from jumping above exact BM25 matches.
+
+C. Add dense retrieval without hurting BM25/LTR head ranks
+
+Start with this policy:
+
+Dense retrieval may add candidates.
+Dense retrieval may add features.
+Dense retrieval may not directly reorder the top 20.
+
+Implementation:
+
+1. Retrieve BM25/rule/RRF candidates as today.
+2. Retrieve dense top K per enabled source, e.g. K=50 or K=100.
+3. Add dense-only candidates to the pool, capped.
+4. Compute per-source dense features.
+5. Let LTR rerank.
+6. Apply final guardrails to preserve high-confidence BM25/rule head results.
+
+Candidate caps:
+
+max_dense_only_candidates_per_turn = 50
+max_dense_only_from_one_source = 20
+max_lyrics_only_candidates = 10
+max_image_only_candidates = 5
+
+RRF integration should be conservative:
+
+Python
+运行
+rrf += dense_weight[source] / (rank + rrf_k)
+
+Initial weights:
+
+metadata-qwen3:   0.20
+attributes-qwen3: 0.15
+lyrics-qwen3:     0.05
+audio CLAP:       0.05
+image-siglip2:    0.02
+cf-bpr direct:    0.00
+
+Use a large rrf_k, for example 100, so dense rank does not dominate early positions.
+
+LTR features to add:
+
+dense_metadata_rank
+dense_metadata_score
+dense_metadata_present
+dense_metadata_score_z
+dense_metadata_margin_top10
+
+dense_attributes_rank
+dense_attributes_score
+dense_attributes_present
+
+dense_lyrics_rank
+dense_lyrics_score
+dense_lyrics_present
+
+dense_audio_clap_rank
+dense_audio_clap_score
+dense_audio_clap_present
+
+dense_image_siglip_rank
+dense_image_siglip_score
+dense_image_siglip_present
+
+num_dense_sources_present
+best_dense_rank
+best_dense_score_z
+dense_only_candidate
+dense_allowed_for_turn
+dense_can_promote
+
+Do not feed raw cross-source cosine scores as comparable values. Normalize per source, per query:
+
+Python
+运行
+score_z = (score - mean(topK_scores)) / (std(topK_scores) + 1e-6)
+score_pct = rank_percentile_within_source
+
+Head-protection rule:
+
+Python
+运行
+if candidate in bm25_top_10 and has_exact_entity_support:
+    protect_from_dense_demotion = True
+
+Better: implement this as LTR features first, then only add a hard rule if LTR causes consistent nDCG@1 loss.
+
+Final rollout order:
+
+Phase 0: Shadow evaluation only.
+Phase 1: Dense as tail candidates only, no RRF score.
+Phase 2: Dense rank/score features in LTR.
+Phase 3: Tiny RRF dense weight.
+Phase 4: Allow dense promotion only when no-label gates pass.
+2. Case-based train-turn distillation
+
+Yes, it can still help, but it is high-risk. Since you already use train-context item augmentation and have a strong RRF/LTR, the likely benefit is not “nearest train turn gives the answer.” The safer benefit is:
+
+nearest train turns provide soft intent/context features,
+candidate-neighbor affinity features,
+and response style examples.
+
+Do not let nearest train cases become an unguarded memorization shortcut.
+
+A. Leakage-safe case index
+
+Build the case index from training turns only, using input-visible fields only.
+
+Allowed case text:
+
+dialogue history up to current user turn
+current user utterance
+parsed intent/category/specificity
+mentioned artists/tracks/genres/moods
+seed tracks mentioned before the current recommendation
+
+Forbidden case text/features:
+
+validation/dev/blind gold tracks
+future turns from the same conversation
+assistant response after the target recommendation, if it names the gold
+gold label as a query feature
+candidate label
+is_gold
+rank of gold in candidate set
+any official dev/blind answer
+
+For each training case, store:
+
+JSON
+{
+  "case_id": "...",
+  "split": "train_fold_0",
+  "session_id": "...",
+  "user_id": "...",
+  "turn_number": 3,
+  "case_query_text": "...input-visible text only...",
+  "intent": "...",
+  "category": "...",
+  "specificity": "...",
+  "gold_track_id": "...training label only, used as case target...",
+  "gold_artist_id": "...",
+  "gold_genres": ["..."],
+  "case_embedding": [...]
+}
+
+Using gold_track_id from training cases is allowed for training-fold retrieval augmentation, but it must be handled as a train-only memory source. It must never include validation labels or same-fold validation examples.
+
+B. Candidate features from nearest cases
+
+For each validation or inference turn:
+
+1. Encode current input-visible query.
+2. Retrieve top K train cases, e.g. K=20.
+3. Attach case-derived features to each candidate.
+4. Optionally add a few case-gold tracks as tail candidates.
+5. Let LTR decide.
+
+Group-level features repeated for all candidates:
+
+case_sim_top1
+case_sim_top3_mean
+case_sim_top10_mean
+case_sim_gap_1_5
+case_intent_match_top1
+case_category_match_top1
+case_retrieval_confidence
+
+Candidate-level features:
+
+candidate_is_case_gold_top1
+candidate_is_case_gold_top3
+candidate_is_case_gold_top10
+candidate_case_gold_min_rank
+candidate_case_gold_max_sim
+candidate_artist_in_case_gold_topK_count
+candidate_album_in_case_gold_topK_count
+candidate_genre_overlap_case_gold_topK
+candidate_tag_overlap_case_gold_topK
+candidate_metadata_sim_to_case_gold_max
+candidate_attributes_sim_to_case_gold_max
+candidate_cf_sim_to_case_gold_max
+candidate_added_by_case_source
+candidate_case_source_only
+
+Use sparse rank handling exactly like your other sources:
+
+case_gold_rank = NaN if not retrieved from cases
+case_gold_present = 0/1
+case_gold_recip = 1 / log2(rank + 1)
+
+Do not add nearest_case_id as a categorical feature. That invites memorization and will not generalize.
+
+C. Case-based candidate augmentation
+
+Add only a small number of tracks from nearest train cases:
+
+top_cases = 20
+add_case_gold_tracks = at most 5 unique tracks
+add_case_artist_neighbors = at most 10, optional
+case-only candidates enter below BM25/RRF head
+
+Recommended first setting:
+
+case_gold_topK = 10
+max_case_gold_candidates = 5
+case_rrf_weight = 0.03
+case_rrf_k = 100
+
+A case candidate should not enter top 20 unless LTR supports it. Mark it with:
+
+candidate_added_by_case_source = 1
+candidate_case_source_only = 1 if no BM25/rule/dense source retrieved it
+D. Response explanations
+
+Use case responses only for style, not as ranking evidence.
+
+Safe response method:
+
+1. Retrieve nearest train response examples.
+2. Mask all track names, artist names, and gold-specific details.
+3. Use them as style examples only.
+4. Generate final explanation from the actually selected top tracks.
+
+Unsafe:
+
+"Nearest training case recommended track X for a similar query, so recommend X."
+
+Safe:
+
+"The nearest cases suggest this intent usually needs a concise mood/genre explanation. Use that style, but explain the selected candidates from their own metadata."
+
+Response features should not feed back into ranking unless the text was generated without seeing the gold and without seeing validation answers.
+
+3. Exact validation protocol
+
+Use an outer split before building any case index or fitting any gate.
+
+Preferred:
+
+5-fold user-level split
+
+Fallback:
+
+session-level split
+
+Never use row-level or turn-level random split.
+
+For each fold:
+
+1. Split users/sessions into train_fold and valid_fold.
+2. Build BM25 statistics from train/catalog only as currently allowed.
+3. Build LTR training rows from train_fold only.
+4. Build dense calibration thresholds from train_fold only.
+5. Build case index from train_fold only.
+6. Run full honest retrieval on valid_fold.
+7. Train LTR on train_fold.
+8. Evaluate valid_fold with no gold injection.
+
+Report the challenge-relevant ranking metrics at @1, @10, and @20; the public evaluator reports nDCG@1, nDCG@10, and nDCG@20. 
+Codabench
+
+Run these ablations:
+
+Run	Dense?	Cases?	Purpose
+base_bm25_rrf_ltr	no	no	current baseline
+dense_tail_only	yes	no	recall gain without head risk
+dense_ltr_features	yes	no	LTR usefulness
+case_features_only	no	yes	distillation signal without candidate injection
+case_tail_candidates	no	yes	candidate recall effect
+dense_plus_case_features	yes	yes	combined value
+dense_plus_case_full_guarded	yes	yes	final candidate
+
+Also run these anti-leak tests:
+
+Near-duplicate removal:
+  Remove train cases whose input text is near-duplicate of validation input.
+  Example thresholds: MinHash/Jaccard > 0.85 or embedding cosine > 0.95.
+
+Same-user removal:
+  Required if doing session-level split.
+  Prefer user-level split so this is automatic.
+
+Same-session removal:
+  Always required.
+
+Same-gold diagnostic:
+  Re-evaluate after removing nearest cases whose gold_track_id equals validation gold_track_id.
+  This is not necessarily required for final training, but it reveals memorization.
+
+Label-shuffle control:
+  Shuffle case gold_track_id within intent/category buckets.
+  Case gains should mostly disappear.
+  If gains remain, the feature is probably just popularity/category prior.
+
+Case-only candidate diagnostic:
+  Measure nDCG of only case-gold candidates.
+  If it is high only on duplicate-heavy validation, be suspicious.
+
+Bootstrap the validation difference by session:
+
+sample sessions with replacement
+compute macro nDCG@1/10/20 delta
+repeat 1,000 times
+require positive lower confidence bound or at least no material head loss
+4. Stop criteria
+
+Adopt dense retrieval only if all are true:
+
+candidate_recall@100 or @200 improves
+honest nDCG@20 improves
+nDCG@1 does not materially drop
+BM25 exact-entity queries do not regress
+gain survives at least one strict split
+dense source is not dominating through accidental score scale
+
+Concrete thresholds:
+
+nDCG@20: +0.003 absolute minimum, preferably +0.005
+nDCG@1: no worse than -0.001 to -0.002 absolute
+candidate_recall@200: positive gain
+exact artist/title subset: no degradation
+
+Adopt case-based distillation only if all are true:
+
+case_features_only improves honest validation
+gain survives near-duplicate removal
+gain survives user-level split
+label-shuffle control destroys most of the gain
+case features do not dominate feature importance suspiciously
+case-only candidates do not flood the top 20
+
+Stop immediately if:
+
+oracle validation improves but honest validation does not
+nDCG@20 improves only by pushing down nDCG@1
+gain disappears under strict no-near-duplicate validation
+candidate_is_case_gold_top1 dominates LTR importance
+public/dev improvement cannot be reproduced locally
+case augmentation increases invalid/repeated/off-intent tracks
+5. Safest final architecture
+
+Use this as the final guarded stack:
+
+BM25/rules/current RRF
+  → dense retrieval only through no-label gates
+  → case retrieval only from train-fold/train-set case index
+  → append dense/case candidates with strict caps
+  → compute source rank/presence/confidence features
+  → LightGBM LambdaRank rerank
+  → optional head-protection for exact BM25/rule matches
+  → top 20 unique track IDs
+  → response generated from selected tracks, with case examples only as masked style references
+
+The practical recommendation is:
+
+First ship: dense metadata-qwen3 + attributes-qwen3 as gated tail candidates and LTR features.
+
+Second ship only if validated: case features, not case promotion.
+
+Last ship only if robust: case-gold tail candidate injection with tiny weight and strict caps.
+
+That path gives you upside on recall and semantic matching while minimizing the main failure mode: dense or case memory displacing the BM25/LTR head that already works.

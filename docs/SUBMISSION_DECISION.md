@@ -25,6 +25,11 @@ experiments/goalflow_ens_ltr120_140_200_col1_lambda2_w140half_w20013_rrf26_judge
 
 This keeps the exact same weighted RRF ranking and uses only cleaned `judge_v2`, `judge_brief`, and compact metadata-grounded templates. It raises official dev lexical diversity to `0.20460` and local Blind A Distinct-2 to `0.63192`, with the same local Blind A catalog diversity `0.03174`. Keep it as a response-only backup rather than the default first submission because it is more compact-template-heavy than `judge_clean_mix`, so Gemini may or may not prefer it.
 
+Gold-free response audit:
+
+- Primary `judge_clean_mix` has no banned/noisy phrase hits, word counts `41-112`, and no long/short rows under `scripts/audit_response_text.py`.
+- Lexplus also has no banned/noisy phrase hits, but one Blind A response reaches 120 words; keep it as a backup unless public feedback shows lexical diversity is still the binding constraint.
+
 Response-only judge-quality backup:
 
 ```text
@@ -209,6 +214,7 @@ Rejected near-misses:
 - Optional embedding LTR features are implemented but rejected for promotion. Fold-0 probes scored `0.18341` for `track_cf + user_cf`, `0.18301` for metadata seed cosine, and `0.17892` for attributes seed cosine, all below the accepted baseline path.
 - Ultra-conservative batch-level repeat repair is rejected. Even the safest variant, which freezes ranks 1-19 and repairs only rank 20, lowers OOF nDCG@20 to `0.183497` while buying catalog diversity that has little Blind A headroom left.
 - `judge_clean_mix_safeplus` is rejected for promotion: removing broad/noisy tags was safe, but the style mix lowered official dev lexical diversity to `0.19188` and Blind A Distinct-2 to `0.60487`, both below the primary `judge_clean_mix` package.
+- Zero-shot cross-encoder reranking is rejected for now. A MiniLM CE probe over 160 dev turns and top-50 candidates scored far below the current weighted RRF base: lock15 protection still lost `0.00912` nDCG@20 on the slice, with only `3` better rows and `11` worse rows.
 
 Key correction:
 

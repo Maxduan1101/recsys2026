@@ -1,0 +1,476 @@
+# RecSys 2026 Report Outline
+
+URL: https://chatgpt.com/c/6a146195-b808-8321-b5de-994a93b54184
+
+## Question
+
+Please answer in final visible text only. Do not use hidden reasoning. If the web app cannot answer because of limits, write exactly LIMIT. You are advising final iteration for RecSys Challenge 2026 Music-CRS. Current primary: weighted four-model RRF + judge_clean_mix. Response backup lexplus has same ranking, dev lexical 0.20460 vs 0.19958, Blind-A Distinct-2 0.63192 vs 0.60604, but more compact-template-heavy. Consensus fallback helps dev but changes 0/80 Blind A. List the remaining optimization directions worth doing now, directions to stop, and an exact public-feedback decision tree.
+
+## Answer
+
+Final recommendation
+
+Keep weighted four-model RRF + judge_clean_mix as the primary final candidate unless the next public-feedback run shows a clear response-score win for lexplus with no ranking regression. The lexplus backup is attractive because ranking is identical, dev lexical improves from 0.19958 → 0.20460, and Blind-A Distinct-2 improves from 0.60604 → 0.63192; however, its compact-template heaviness is a real risk if response quality is judged for naturalness, helpfulness, or repetition rather than only n-gram diversity.
+
+The safest current posture is:
+
+Primary submission: weighted four-model RRF + judge_clean_mix
+Response-only challenger: same ranking + lexplus
+Do not spend more effort on consensus fallback for Blind A, because it changes 0/80 Blind-A cases and therefore cannot explain any Blind-A public-feedback movement.
+
+The official baseline framing confirms that the task evaluates both ranked track recommendations and natural-language responses, and the baseline repository emphasizes strict submission format and full-catalog inference via all_tracks, so final changes should be conservative, measurable, and submission-validity-safe. 
+GitHub
+
+Remaining optimization directions worth doing now
+1. Response-only A/B between judge_clean_mix and lexplus
+
+This is the highest-value remaining test because the ranking is identical. You can isolate the response effect cleanly.
+
+Run exactly these two variants:
+
+Variant	Ranking	Response	Why test
+A	weighted four-model RRF	judge_clean_mix	current primary, less template-heavy
+B	same as A	lexplus	higher dev lexical and higher Blind-A Distinct-2
+
+Decision basis should not be “Distinct-2 only.” Use Distinct-2 as a positive signal, but penalize visible compact-template repetition. A response system can look diverse by n-gram count while still sounding formulaic across sessions.
+
+Worth doing now: make a minimal lexplus-polish variant only if it is cheap. Do not rebuild the response system. The useful edit is to keep lexplus ranking/output content but add a small anti-template rule:
+
+avoid repeating the same opening phrase across many turns;
+
+vary connector phrases;
+
+keep recommendations grounded in the user’s stated mood/artist/genre;
+
+avoid overly short “template capsule” responses when the dialogue context is rich;
+
+preserve exact track IDs and ranking.
+
+Call this variant:
+
+lexplus_softened
+
+Only submit it if it changes responses without changing ranking or JSON validity.
+
+2. Final ranking stability and tie-break audit
+
+Do not add new retrieval sources. Instead, audit the existing weighted four-model RRF stack.
+
+Check:
+
+deterministic sorting after RRF;
+
+stable tie-break order;
+
+no accidental dependence on dictionary order, multiprocessing order, or cache order;
+
+no duplicate track IDs within a turn;
+
+no invalid track IDs;
+
+all required turns present;
+
+all inference uses the full all_tracks catalog, not a filtered catalog. The official baseline README explicitly warns that filtering the catalog during inference may invalidate evaluation. 
+GitHub
+
+This is worth doing because final leaderboard losses often come from mechanical drift, not model quality.
+
+3. Very small RRF weight perturbation only around the current winner
+
+A final micro-sweep is worth doing only if it is bounded.
+
+Allowed:
+
+current weights;
+
+±5% and ±10% relative perturbations around each of the four model weights;
+
+one leave-weakest-model-downweighted variant;
+
+one “sharpen top source” variant if one model dominates top-1 dev wins.
+
+Not allowed:
+
+adding a new model;
+
+re-indexing the corpus;
+
+adding unvalidated embeddings;
+
+changing candidate generation depth unless you already know the failure mode.
+
+The goal is not discovery. The goal is to confirm the current weighted RRF is not sitting on a brittle local accident.
+
+4. Position-sensitive top-k audit
+
+Because recommendation metrics usually reward top positions most strongly, inspect cases where your candidate appears in positions 2–20 but not position 1.
+
+Worth doing now:
+
+compare top-1 source agreement;
+
+identify cases where RRF promotes a “safe consensus” track over a more specific but single-source track;
+
+test a tiny top-rank override only when one source has a very confident exact title/artist match.
+
+Do not change the whole ranking. Only consider a guarded rule like:
+
+If exact artist/title/album evidence exists in the user turn or state, and the candidate appears in at least one model’s top 1–3, allow it to move above generic consensus tracks.
+
+This is only worth doing if your dev errors show exact-match misses.
+
+5. Blind-A changed-row accounting
+
+For every candidate, produce this table before using public feedback:
+
+Candidate	Ranking changed rows	Response changed rows	Total changed Blind-A rows	Expected feedback signal
+primary	baseline	baseline	baseline	reference
+lexplus	0	nonzero	response only	
+consensus fallback	0	maybe 0 or tiny	0/80 known	no expected signal
+RRF micro-sweep	nonzero	0 or same	ranking signal	
+lexplus_softened	0	nonzero	response only	
+
+This prevents false interpretation. If a variant changes 0/80 Blind-A cases, do not spend a public submission on it.
+
+6. Final response quality spot-check
+
+Sample 20 Blind-A responses from judge_clean_mix and lexplus side by side.
+
+Score each manually with four binary columns:
+
+Check	Pass condition
+Grounded	Mentions user’s actual stated preference or context
+Non-template	Does not look like the same compact sentence reused
+Specific	Refers to track/artist/mood/genre rather than generic “these picks”
+Safe length	Not too terse, not bloated
+
+If lexplus wins diversity but loses obvious naturalness, keep judge_clean_mix.
+
+Directions to stop
+Stop 1. Consensus fallback for Blind A
+
+Stop working on it for the current public-feedback loop.
+
+Reason: it helps dev but changes 0/80 Blind-A cases. That means it cannot improve Blind-A public feedback unless Blind-A preprocessing or gating changes. Keep the code only if it might affect Blind B later, but do not count it as a current optimization.
+
+Decision:
+
+Disable it as a claimed final improvement unless it changes Blind-B rows or a local blind simulation.
+
+Stop 2. Chasing dev lexical diversity alone
+
+The lexplus gain is real numerically:
+
+dev lexical: +0.00502 absolute
+
+Blind-A Distinct-2: +0.02588 absolute
+
+But lexical diversity is not the same as response quality. Compact-template-heavy output can be penalized if the judge rewards conversational usefulness, grounding, or naturalness.
+
+Decision:
+
+Use lexical/Distinct-2 as a tie-breaker, not the sole selector.
+
+Stop 3. Large new rerankers, LTR, embeddings, or learned models
+
+At final-iteration stage, stop adding infrastructure that is not already validated end-to-end.
+
+Stop:
+
+new LTR training;
+
+new embedding retrieval;
+
+new neural reranker;
+
+new LLM judge reranking;
+
+new feature families;
+
+large prompt rewrites;
+
+new augmentation sources.
+
+Reason: these can improve dev while creating hidden Blind-A/B distribution risk, invalid IDs, latency/caching failures, or irreproducibility.
+
+Stop 4. Broad corpus/index changes
+
+Do not change the BM25 corpus construction now unless you found a deterministic bug.
+
+Stop:
+
+adding/removing metadata fields globally;
+
+changing tokenization;
+
+changing normalization;
+
+changing stopword handling;
+
+changing train-context augmentation rules;
+
+changing candidate pool size broadly.
+
+Reason: corpus changes can shift many rankings at once and are hard to diagnose with limited public feedback.
+
+Stop 5. Optimizing components that do not affect the submitted file
+
+Do not optimize logs, diagnostics, consensus fallback, feature export, or embedding scaffolding unless they change final predictions or final responses.
+
+A simple rule:
+
+If it does not change the final JSON, it is not a final-iteration optimization.
+
+Stop 6. Blind-A overfitting by repeated tiny submissions
+
+Public feedback is useful, but it is also a trap. If you repeatedly tune to Blind A, you risk selecting a variant that wins Blind A but loses Blind B or final hidden scoring.
+
+Use public feedback only to choose between pre-declared candidates, not to invent new ones after seeing every result.
+
+Exact public-feedback decision tree
+
+Use this as the final submission-selection protocol.
+
+Definitions
+
+Let:
+
+P = current primary: weighted four-model RRF + judge_clean_mix.
+
+L = same ranking as P + lexplus response.
+
+LS = same ranking as P + lexplus_softened, only if you create it with response-only anti-template edits.
+
+R = best bounded RRF micro-sweep, only if it passes dev and validity.
+
+C = consensus fallback variant.
+
+Metrics to record from public feedback:
+
+public_total
+
+public_ranking if available
+
+public_response if available
+
+Distinct-2 or lexical diversity if available
+
+changed Blind-A rows
+
+validity status
+
+If the public system reports only one combined score, use public_total.
+
+Step 0 — hard validity gate
+
+For every candidate:
+
+If JSON invalid → reject.
+
+If any invalid track ID → reject.
+
+If duplicate track IDs within a turn → reject.
+
+If missing session/turn → reject.
+
+If not using all_tracks for retrieval → reject.
+
+If candidate changes 0/80 Blind-A rows → do not submit for public feedback unless it is a final packaging sanity check.
+
+Result:
+
+C is rejected for Blind-A public-feedback optimization because it changes 0/80 Blind-A cases.
+
+Step 1 — submit P as anchor if not already anchored
+
+Submit P if you do not already have a current public-feedback score for exactly this artifact.
+
+Record:
+
+score;
+
+timestamp;
+
+exact file hash;
+
+ranking hash;
+
+response hash.
+
+This becomes the anchor.
+
+Step 2 — submit L as the response-only challenger
+
+Submit L only if ranking hash equals P and response hash differs.
+
+Then decide:
+
+If public feedback has separate response score
+
+Choose L over P only if:
+
+L_public_ranking == P_public_ranking, or the ranking metric is unchanged because ranking is identical;
+
+L_public_response > P_public_response;
+
+no visible response-quality regression in the 20-case manual spot-check;
+
+no major compact-template repetition.
+
+If L improves response score but looks visibly template-heavy, create LS and go to Step 3.
+
+If L does not improve public response score:
+
+Keep P.
+
+If public feedback has only combined score
+
+Choose L over P only if:
+
+L_public_total > P_public_total by a nontrivial margin;
+
+ranking hash is identical;
+
+manual spot-check does not show worse template repetition.
+
+Suggested margin:
+
+If scores are stable to 4 decimals: require at least +0.0010.
+
+If scores are noisy or rounded: require at least +0.0020.
+
+If the gain is smaller than that: keep P, because P is less template-heavy.
+
+Step 3 — submit LS only if L wins numerically but looks template-heavy
+
+Create LS only when all are true:
+
+L beats P on public feedback;
+
+L is visibly more compact-template-heavy;
+
+LS changes responses but not rankings;
+
+LS preserves or improves local lexical diversity relative to P;
+
+LS passes manual grounding/naturalness checks.
+
+Submit LS.
+
+Decision:
+
+If LS_public_total >= L_public_total - 0.0005 and LS looks more natural → choose LS.
+
+If LS_public_total > L_public_total → choose LS.
+
+If LS_public_total < L_public_total - 0.0005 → choose L only if template risk is acceptable; otherwise choose P.
+
+If LS has any validity or formatting issue → reject LS.
+
+Step 4 — test one RRF micro-sweep only if you have budget
+
+Submit R only if it changes rankings and satisfies all local gates:
+
+dev retrieval improves over P;
+
+no response changes unless intentional;
+
+no validity failures;
+
+no large diversity collapse;
+
+change set is explainable.
+
+Decision:
+
+If public feedback separates ranking and response
+
+Choose R over P only if:
+
+R_public_ranking > P_public_ranking by at least +0.0010, and
+
+response score is unchanged or not worse by more than 0.0005.
+
+If ranking improves but response drops more than 0.0005, combine:
+
+R ranking + best response variant among P/L/LS.
+
+If public feedback has only combined score
+
+Choose R only if:
+
+R_public_total > best_current_public_total by at least +0.0015.
+
+If improvement is smaller:
+
+keep the current best, because RRF changes are more likely to overfit than response-only swaps.
+
+Step 5 — ignore C unless Blind B changes
+
+For C, the consensus fallback:
+
+If it changes 0/80 Blind-A rows → do not use Blind-A public feedback on it.
+
+If it changes Blind-B rows later → evaluate it as a new candidate.
+
+If it still changes 0 rows on Blind B → remove it from final claims.
+
+If it changes rows but only on dev, treat it as dev-overfit until blind evidence supports it.
+
+Decision:
+
+C is not part of the current final-selection path.
+
+Final selection rules
+
+Use these rules after the public-feedback runs.
+
+Case 1: L beats P clearly and manual quality is acceptable
+
+Final:
+
+weighted four-model RRF + lexplus
+
+Use this if response diversity is rewarded and compact-template heaviness is not visibly harmful.
+
+Case 2: L beats P slightly but looks template-heavy
+
+Final:
+
+weighted four-model RRF + judge_clean_mix
+
+Unless LS preserves the public gain while reducing template feel.
+
+Reason: a tiny diversity gain is not worth a naturalness risk.
+
+Case 3: LS matches L and reads better
+
+Final:
+
+weighted four-model RRF + lexplus_softened
+
+This is the ideal response-only upgrade if available.
+
+Case 4: R improves public ranking clearly
+
+Final:
+
+R ranking + best response among judge_clean_mix / lexplus / lexplus_softened
+
+Do not let the response choice force the ranking choice. Since P and L share ranking, response can be selected independently unless the public metric is combined and non-decomposable.
+
+Case 5: all public differences are tiny
+
+Final:
+
+weighted four-model RRF + judge_clean_mix
+
+Reason: it is the current primary, less template-heavy, and less likely to be a response-quality overfit.
+
+Practical final answer
+
+My current pick is:
+
+Submit weighted four-model RRF + judge_clean_mix as the safe final.
+
+Use lexplus only if one more public-feedback run confirms a clear response or combined-score win with no visible naturalness penalty. Treat consensus fallback as stopped for Blind A because it changes 0/80 rows. Keep any remaining work to response-only A/B, validity checks, deterministic ranking audit, and at most one bounded RRF micro-sweep.
