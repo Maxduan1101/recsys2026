@@ -59,9 +59,9 @@ def weighted_sum(df: pd.DataFrame, weights: dict[str, float], suffix: str) -> np
     return out
 
 
-def main() -> None:
-    args = parse_args()
-    df = pd.read_pickle(args.input_pkl)
+def augment_features(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+    """Add v3 semantic interaction features to an in-memory rerank feature frame."""
+    df = df.copy()
     before_cols = set(df.columns)
 
     pos_mean_cols = [f"emb_{channel}_pos_mean" for channel in CHANNELS]
@@ -166,10 +166,18 @@ def main() -> None:
         if pd.api.types.is_float_dtype(df[name]):
             df[name] = df[name].astype(np.float32)
 
+    added = sorted(set(df.columns) - before_cols)
+    return df, added
+
+
+def main() -> None:
+    args = parse_args()
+    df = pd.read_pickle(args.input_pkl)
+    df, added = augment_features(df)
+
     output = Path(args.output_pkl)
     output.parent.mkdir(parents=True, exist_ok=True)
     df.to_pickle(output)
-    added = sorted(set(df.columns) - before_cols)
     if args.meta_json:
         Path(args.meta_json).write_text(
             json.dumps(
