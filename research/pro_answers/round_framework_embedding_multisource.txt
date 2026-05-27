@@ -1,0 +1,1137 @@
+主人，先给结论：embedding 在这个任务里不应该被理解成“替代 BM25 的一个大 dense retrieval”，而应该被拆成多类 source：
+
+query-to-track source：直接根据当前用户请求召回候选。
+
+seed-to-track source：根据历史喜欢/接受/提到的歌曲找相似歌。
+
+user-to-track source：根据 user cf-bpr 做个性化召回。
+
+track-to-track multimodal source：audio/image/lyrics 等不能直接吃文本 query 的通道，用作“从可信 seed 扩展”的召回。
+
+candidate feature source：不强行召回，只给 rerank 提供相似度、source rank、source agreement 特征。
+
+你现在 seed/user embedding features 伤分，不说明 embedding 没用，更可能说明两件事：
+
+召回 source 的使用方式不对，比如把 attributes seed cosine 当成强排序信号。
+
+rerank 候选集里 dense 噪声太多，模型在 300/500 candidates 下吃不稳。
+
+所以框架上应该先评估 embedding 的 incremental recall，再决定它能不能进入候选池，而不是直接看最终 nDCG。
+
+1. 如何系统性使用这些 embedding 做 candidate generation
+
+我建议把每个 embedding source 定义成一个独立的“候选召回器”：
+
+Source = {
+    name,
+    trigger condition,
+    query/seed/user vector construction,
+    track embedding channel,
+    similarity function,
+    topK,
+    confidence score,
+    candidate tags/features
+}
+
+然后所有 source 的输出进入一个统一的 candidate union：
+
+BM25 candidates
++ query dense candidates
++ seed similarity candidates
++ user personalized candidates
++ multimodal expansion candidates
+= unordered candidate pool
+→ LightGBM rerank
+
+重要原则：
+
+粗排阶段只负责“把可能对的歌放进池子”
+不要在粗排阶段假设某个 embedding source 的排序就是最终排序
+
+也就是说，每个 source 输出的 rank 只是一种 feature：
+
+source_rank
+source_score
+source_rrf
+source_top20_flag
+source_top50_flag
+source_top100_flag
+source_count
+best_source
+
+最终排序仍交给 LightGBM。
+
+2. 哪些 embedding 应该做 query-to-track dense retrieval
+
+适合直接做 query-to-track 的只有文本兼容通道。
+
+优先级：
+
+第一优先：metadata-qwen3
+第二优先：lyrics-qwen3，必须有触发条件
+第三优先：attributes-qwen3，谨慎使用
+不建议直接 query-to-track：cf-bpr, audio CLAP, image SigLIP2
+metadata-qwen3
+
+这是最适合直接 query-to-track 的通道。
+
+适合查询：
+
+“推荐一些像 Taylor Swift 的歌”
+“我想听 90 年代 alternative rock”
+“有没有类似 Billie Eilish 的暗黑流行”
+“找一些韩国女团风格”
+“想听老派 hip hop”
+
+metadata 通道通常更接近：
+
+artist
+title
+album
+genre
+era
+metadata description
+
+它和 BM25 有重叠，但不是完全重复。BM25 擅长精确词匹配，metadata dense 更适合语义近似。
+
+lyrics-qwen3
+
+lyrics 不能无脑开。
+
+适合触发词：
+
+lyrics
+歌词
+讲述
+storytelling
+about heartbreak
+about loss
+关于失恋
+关于成长
+有诗意
+有叙事感
+政治歌词
+emo lyrics
+
+如果用户只是说：
+
+“想听适合跑步的”
+“推荐一些 upbeat pop”
+“来点 jazz”
+
+lyrics dense 很可能漂，因为歌词语义和听感需求不是一回事。
+
+所以 lyrics-qwen3 应该是 gated source：
+
+if query has lyric/theme/story trigger:
+    use lyrics-qwen3 topK
+else:
+    skip
+attributes-qwen3
+
+attributes 本应适合 mood/genre/vibe，但你实验里 attributes seed cosine 明显伤分，说明它要谨慎。
+
+它可能适合 query-to-track，而不适合 seed-to-track。原因是：
+
+seed attributes centroid 会把一个具体歌曲扩散成过宽的 vibe
+current query attributes 可以直接表达 mood/activity/genre
+
+例如：
+
+“chill late night R&B”
+“high energy workout EDM”
+“warm acoustic folk”
+“sad piano ballad”
+
+这些 query 可以试 attributes-qwen3 retrieval。
+
+但是它需要严格控制：
+
+只做候选召回
+低 topK
+低 source weight
+强 rerank 过滤
+不让它单独支配 top20
+3. 哪些 embedding 只能做 seed similarity
+
+适合 seed similarity 的通道：
+
+track cf-bpr
+audio-laion_clap
+image-siglip2
+lyrics-qwen3
+metadata-qwen3
+attributes-qwen3 谨慎
+
+这里的 seed 指：
+
+用户明确喜欢的歌
+历史 turn 中接受的推荐
+用户说“像这首”的歌
+对话中明确提到的正向 track
+track cf-bpr
+
+这是典型的 seed-to-track item CF source。
+
+用法：
+
+liked/accepted seed tracks
+→ track cf-bpr vectors
+→ centroid or max similarity
+→ nearest tracks
+
+注意：
+
+cf-bpr 不适合直接文本 query-to-track
+
+因为文本 query 和 cf-bpr 不在同一空间。
+
+推荐相似度：
+
+seed_cf_score(track) =
+    max cosine(track_cf, seed_cf_i)
+    或 0.7 * centroid_cos + 0.3 * max_seed_cos
+
+不要只用 centroid。音乐 taste 可能多峰：
+
+用户喜欢 A，又喜欢 B
+centroid 可能落在一个谁都不像的中间区域
+audio-laion_clap
+
+如果你没有明确兼容的 CLAP text encoder，就不要直接 query-to-audio。
+
+但它很适合：
+
+seed track → audio embedding → similar-sounding tracks
+
+适合场景：
+
+“来点和上一首感觉差不多的”
+“more like this”
+“保持这个氛围”
+“类似刚才那首，但更轻一点”
+
+audio source 的优势是能捕捉：
+
+音色
+节奏
+能量
+编曲密度
+听感相似性
+
+劣势是可能忽略：
+
+歌词主题
+语义要求
+具体 artist/title
+用户明确排除项
+
+所以 audio source 要靠 seed，不要靠文本 query。
+
+image-siglip2
+
+image embedding 对音乐推荐的直接意义最弱，但也不是没用。
+
+它可能捕捉：
+
+专辑封面视觉风格
+年代感
+流派视觉符号
+scene/genre aesthetics
+
+适合作为 seed expansion：
+
+seed track album cover / image embedding
+→ visually/aesthetically similar tracks
+
+但它的候选权重要最低。
+
+它更适合做：
+
+diversity source
+long-tail expansion source
+auxiliary feature
+
+而不是主召回。
+
+metadata/lyrics/attributes 也可以 seed similarity
+
+即使 metadata/lyrics/attributes 可以做 query-to-track，它们也可以做 seed-to-track：
+
+metadata seed sim：找 artist/genre/era/metadata 近的歌
+lyrics seed sim：找歌词主题近的歌
+attributes seed sim：找 mood/vibe 近的歌
+
+但你的实验显示 attributes seed cosine 伤分，所以 attributes seed source 要暂时降级：
+
+先只用于 recall diagnostic
+不要进入默认候选池
+或者只在 1000 档打开
+4. 哪些适合做 user-personalized recall
+
+适合 user-personalized recall 的主要是：
+
+user cf-bpr → track cf-bpr
+
+这是官方 user embedding 最自然的用途。
+
+计算：
+
+user_cf_score(track) = dot(user_cf_vector, track_cf_vector)
+
+或者如果 raw dot 太偏热门，可以同时记录：
+
+raw dot
+cosine
+track norm
+user-track rank
+
+但候选召回一般用 raw dot 更符合 BPR 训练目标。
+
+适合场景：
+
+用户请求很宽泛：
+“推荐点我会喜欢的”
+“来点新歌”
+“随便放点”
+“继续推荐”
+“more music for me”
+
+不适合场景：
+
+用户有明确 artist/title/genre/negative constraint
+
+比如：
+
+“不要 Taylor Swift”
+“我想听老派 jazz”
+“给我找 Beyoncé 的 Halo”
+
+这时 user_cf 很容易把用户平时喜欢的东西推回来，违背当前意图。
+
+所以 user_cf source 应该有 gate：
+
+if current query is broad / continuation / preference-based:
+    user_cf topK high
+else:
+    user_cf topK low or feature-only
+
+user_cf 不是“永远召回”，而是“当前请求弱约束时补个性化”。
+
+5. audio/image 没有明确兼容 query encoder 时怎么用
+
+核心原则：
+
+没有兼容文本 encoder，就不要做 text query → audio/image dense retrieval
+
+否则你不知道：
+
+query vector 是否在同一空间
+projection head 是否一致
+pooling 是否一致
+normalization 是否一致
+训练 checkpoint 是否一致
+
+audio/image 的正确用法是：
+
+A. seed-to-track expansion
+positive seed tracks
+→ audio/image nearest neighbors
+
+例如：
+
+用户喜欢上一首歌
+用户说“more like this”
+用户接受了某首推荐
+
+这时 audio/image 不需要文本兼容，只需要 track-to-track 同空间相似。
+
+B. candidate feature
+
+对于已经进入候选池的 track，计算它和 seed tracks 的 audio/image 相似度：
+
+audio_seed_max_cos
+audio_seed_centroid_cos
+image_seed_max_cos
+image_seed_centroid_cos
+
+让 LightGBM 自己决定是否使用。
+
+C. cluster/diversity source
+
+可以先离线对 audio/image 做聚类：
+
+audio cluster id
+image cluster id
+
+候选池里保留少量来自不同 cluster 的 candidates，尤其在 1000 档里探索 long-tail。
+
+但不要让 cluster source 直接进 top20。
+
+D. source agreement
+
+如果某首歌同时被：
+
+BM25
+metadata dense
+audio seed sim
+cf seed sim
+
+召回，那么它比单独 audio 召回更可信。
+
+因此 audio/image 最好作为 agreement signal：
+
+source_count += 1
+has_audio_seed_hit = 1
+has_image_seed_hit = 1
+
+而不是单独主导排序。
+
+6. 每个 source topK 和 300/500/1000 三档候选池设计
+
+这里要明确一点：你不是简单把所有 source topK 相加。因为会有 overlap，而且最终要 de-dup、按 source priority 截断。
+
+我建议候选池分三档：
+
+300 档：稳定打分池
+500 档：增强召回池
+1000 档：研究/诊断池
+300 candidates 档：安全主线
+
+目标：
+
+尽量不扰乱 rerank
+只加入最可能有用的 embedding source
+
+建议：
+
+BM25/multi-index 主线：220
+metadata-qwen3 query dense：40
+user_cf：20
+seed_cf：20
+
+候选组成：
+
+base_BM25_LTR_candidates top220
++ query_metadata_dense top40
++ user_cf top20, only if broad query or warm user
++ seed_cf top20, only if positive seed exists
+= de-dup 后约 250–300
+
+不建议默认加入：
+
+attributes seed
+lyrics
+audio
+image
+
+300 档的目的不是探索所有 source，而是验证最稳 embedding 能不能增加 gold 覆盖。
+
+500 candidates 档：平衡召回和噪声
+
+目标：
+
+提高 gold coverage，但保持 rerank 可控
+
+建议：
+
+BM25/multi-index 主线：300
+metadata-qwen3 query dense：80
+attributes-qwen3 query dense：50
+user_cf：40
+seed_cf：40
+lyrics-qwen3 gated：30
+audio seed：30
+
+实际 union：
+
+BM25 top300
++ metadata query top80
++ attributes query top50
++ user_cf top40
++ seed_cf top40
++ lyrics top30 if lyric trigger
++ audio seed top30 if seed and “more like this”
+= de-dup 后约 400–550
+
+如果超过 500，用 source quota 截断：
+
+先保 BM25
+再保 metadata query
+再保 seed_cf/user_cf
+再保 gated lyrics/audio
+最后 attributes/image
+1000 candidates 档：研究完整召回上限
+
+目标：
+
+看 embedding 到底有没有 recall 潜力
+不是直接用于最终 rerank
+
+建议：
+
+BM25/multi-index 主线：500
+metadata-qwen3 query dense：150
+attributes-qwen3 query dense：100
+lyrics-qwen3 gated/general diagnostic：100
+user_cf：100
+seed_cf：100
+metadata seed：80
+audio seed：80
+image seed：50
+
+候选组成：
+
+BM25 top500
++ metadata query top150
++ attributes query top100
++ lyrics top100, gated or diagnostic
++ user_cf top100
++ seed_cf top100
++ metadata seed top80
++ audio seed top80
++ image seed top50
+= de-dup 后通常 800–1200
+
+1000 档的关键用途是：
+
+测 oracle recall
+测 source incremental recall
+测 rerank 是否吃不下
+
+而不是直接相信它会提升最终 nDCG。
+
+7. 如何用 dev gold 评估 embedding source 的 incremental recall
+
+不要只看最终 nDCG。先看候选池有没有把 gold 放进来。
+
+对每个 source 单独计算：
+
+source_hit@K
+source_mrr
+source_gold_rank
+source_ndcg_oracle
+
+例如：
+
+metadata_query_top100_hit
+attributes_query_top100_hit
+user_cf_top100_hit
+seed_cf_top100_hit
+audio_seed_top100_hit
+
+然后更重要的是 incremental recall：
+
+base_hit = gold in BM25_candidate_pool
+source_hit = gold in source_candidate_pool
+
+incremental_hit = source_hit and not base_hit
+overlap_hit = source_hit and base_hit
+miss = not source_hit
+
+核心表：
+
+Source                  topK   hit@K   incremental_hit@K   overlap_with_base   unique_candidates
+metadata_query           100   ...     ...                 ...                 ...
+attributes_query         100   ...     ...                 ...                 ...
+lyrics_query_gated       100   ...     ...                 ...                 ...
+user_cf                  100   ...     ...                 ...                 ...
+seed_cf                  100   ...     ...                 ...                 ...
+audio_seed               100   ...     ...                 ...                 ...
+image_seed                50   ...     ...                 ...                 ...
+
+你真正关心的是：
+
+incremental_hit@K
+
+因为如果 source 只是找到了 BM25 已经找到的 gold，它对 candidate generation 没有新增价值，最多作为 feature 有价值。
+
+source incremental recall 的几个关键指标
+1. Incremental gold coverage
+incremental_recall(source, K | base_pool) =
+    count(gold in source_topK and gold not in base_pool) / total_turns
+
+例如：
+
+BM25 top300 已覆盖 60%
+metadata top100 总覆盖 25%
+metadata top100 incremental 覆盖 5%
+
+这说明 metadata 给 BM25 多补了 5% 的 turn。
+
+2. Conditional recall
+
+分场景看：
+
+seed 存在 vs seed 不存在
+warm user vs cold user
+turn 1-2 vs turn 3-8
+exact artist/title query vs mood/genre query
+lyric/theme query vs non-lyric query
+
+比如 user_cf 总体不强，但可能在：
+
+broad query + warm user
+
+这个 slice 很强。
+
+3. Gold rank distribution
+
+看 gold 在 source 里的 rank：
+
+gold rank <= 20
+gold rank <= 50
+gold rank <= 100
+gold rank <= 300
+
+如果一个 source 的 gold 经常在 rank 500 以后，那它作为候选召回不实用。
+
+4. Candidate pollution ratio
+
+看 source 带来的候选有多少是“dense-only 且最终明显无关”。
+
+可以用近似指标：
+
+dense_only_count
+dense_only_ratio
+dense_only_gold_hit
+dense_only_artist_match
+dense_only_tag_match
+
+如果：
+
+incremental gold 很少
+dense-only candidate 很多
+
+那就是噪声 source。
+
+5. Oracle union recall
+
+比较不同 union：
+
+BM25 top300
+BM25 top300 + metadata top100
+BM25 top300 + user_cf top100
+BM25 top300 + metadata + user_cf + seed_cf
+
+看：
+
+oracle_hit@20 if perfect rerank
+oracle_nDCG@20 if gold placed first when present
+
+如果 union recall 明显上升但最终 nDCG 不升，说明：
+
+召回有用，rerank 没吃好
+
+如果 union recall 都不升，说明：
+
+embedding source 本身没召回价值，或者 query/seed 构造错了
+8. 如何设计 ablation 表，判断问题在哪里
+
+你需要三类 ablation，而不是只做最终 nDCG 表。
+
+表 A：单 source 召回能力
+Source              K     hit@K   incr_hit@K vs BM25-300   median_gold_rank   unique/turn
+BM25 main           300   ...
+metadata_query      50    ...
+metadata_query      100   ...
+attributes_query    50    ...
+attributes_query    100   ...
+lyrics_query_gated  50    ...
+user_cf             50    ...
+seed_cf             50    ...
+audio_seed          50    ...
+image_seed          50    ...
+
+判断：
+
+如果 hit@K 高，incr_hit 低：
+    source 和 BM25 重叠，适合做 feature，不适合扩候选。
+
+如果 hit@K 低，incr_hit 低：
+    source 暂时没用，或者构造错。
+
+如果 hit@K 中等，incr_hit 高：
+    好的候选 source。
+
+如果 hit@K 高但 median_gold_rank 很后：
+    需要更大 K 或更好的 source 内排序。
+表 B：union 召回上限
+Candidate Pool                         size   gold_coverage   incr_vs_base   oracle_nDCG@20
+BM25-300                               300    ...
+BM25-300 + metadata-50                 350    ...
+BM25-300 + metadata-100                400    ...
+BM25-300 + user_cf-50                  350    ...
+BM25-300 + seed_cf-50                  350    ...
+BM25-300 + metadata + user_cf + seed   500    ...
+Full embedding union                   1000   ...
+
+判断：
+
+如果 1000 union gold coverage 大涨：
+    embedding 有召回潜力。
+
+如果 1000 union coverage 不涨：
+    embedding 接入方式或 source 选择有问题。
+
+如果 coverage 涨但 final nDCG 掉：
+    rerank 抗噪能力不够，需要 source gates/features/caps。
+表 C：最终 rerank 消化能力
+
+固定候选池，比较 rerank：
+
+Pool                         Rerank features         nDCG@20   hit@20   gold_coverage
+BM25-300                     old features            ...
+BM25+emb-500                 old features            ...
+BM25+emb-500                 + source rank features  ...
+BM25+emb-500                 + source score features ...
+BM25+emb-500                 + source agreement      ...
+BM25+emb-1000                + all features          ...
+
+判断：
+
+候选 coverage 提高，但 old features nDCG 掉：
+    rerank 不知道 dense candidate 为什么进来。
+
+加 source features 后恢复/提高：
+    embedding 有用，之前是特征不足。
+
+加 source features 仍掉：
+    dense source 噪声太大，应该降 topK 或加 gate。
+
+300 稳，500 掉，1000 大掉：
+    候选池上限不是越大越好，rerank 容量有限。
+9. 如何避免 dense source 带来大量噪声
+
+这是关键。embedding source 进入候选池时必须受控。
+
+A. 每个 source 有 trigger
+
+不要所有 turn 都开所有 source。
+
+例如：
+
+metadata_query:
+    always on, but topK moderate
+
+attributes_query:
+    only if query has mood/genre/activity/vibe terms
+
+lyrics_query:
+    only if query has lyrics/theme/story terms
+
+user_cf:
+    only if warm user and query broad/continuation
+
+seed_cf:
+    only if positive seed exists
+
+audio_seed:
+    only if positive seed exists and query asks similarity/continuation
+
+image_seed:
+    only in 1000 diagnostic pool or low weight expansion
+B. Source quota
+
+不要让某个 dense source 塞满候选池。
+
+例如 500 档：
+
+BM25 minimum quota: 300
+metadata max quota: 80
+attributes max quota: 50
+user_cf max quota: 40
+seed_cf max quota: 40
+lyrics/audio/image combined max quota: 60
+C. Dense-only candidate 限制
+
+对只被一个 dense source 召回、没有 BM25 支持的 candidate 限制数量：
+
+dense_only_max = 100 for 500 pool
+dense_only_max = 250 for 1000 pool
+
+并且可以要求：
+
+dense candidate must satisfy one of:
+    source rank <= 30
+    source_count >= 2
+    artist/tag overlap with query
+    not globally over-popular
+    not violating negative constraints
+D. Negative constraint filter
+
+如果用户说：
+
+not Taylor Swift
+不要 country
+no rap
+not sad
+
+dense source 很容易无视这些。
+
+所以候选 union 前要做 hard filter 或 penalty：
+
+if candidate violates explicit negative artist/genre/title:
+    remove or mark hard_negative
+
+粗排最好直接移除明显违背的。
+
+E. Source agreement bonus
+
+单 source 命中不一定可信，多 source 命中更可信。
+
+记录：
+
+source_count
+source_agreement
+best_dense_rank
+bm25_dense_overlap
+
+如果某个 track 同时出现在：
+
+BM25 top300
+metadata top100
+user_cf top100
+
+它比单独 attributes top100 更可靠。
+
+F. 分层注入
+
+不要把 dense source 直接和 BM25 混成同等候选。
+
+可以分层：
+
+Core candidates:
+    BM25 + metadata query + exact matches
+
+Expansion candidates:
+    user_cf + seed_cf + attributes
+
+Exploration candidates:
+    lyrics/audio/image
+
+在 300/500/1000 档中逐渐打开。
+
+G. 对 rerank 暴露 source 信息
+
+如果 dense candidate 进入候选池，却不给 rerank source 信息，模型很难判断它为什么出现。
+
+必须加：
+
+candidate_from_metadata_query
+metadata_query_rank
+metadata_query_score_norm
+candidate_from_user_cf
+user_cf_rank
+candidate_from_seed_cf
+seed_cf_rank
+candidate_from_audio_seed
+audio_seed_rank
+source_count
+dense_only_flag
+10. 从最小可行到完整多模态候选池的路线
+
+我建议分 6 个阶段。
+
+Phase 0：建立统一 source 诊断框架
+
+先不要改最终系统。
+
+为每个 turn、每个 source 记录：
+
+source candidates
+source rank
+source score
+whether gold in source topK
+whether gold already in BM25 pool
+incremental hit
+overlap with BM25
+candidate count
+
+输出诊断表：
+
+source_recall.csv
+source_incremental_recall.csv
+union_oracle.csv
+slice_recall.csv
+
+如果没有这一步，后面 embedding 失败时你不知道是：
+
+source 没召回
+source 召回了但 rerank 没吃好
+source 噪声太大
+topK 设置错
+trigger 错
+Phase 1：metadata-qwen3 query dense
+
+这是最小可行 dense retrieval。
+
+做法：
+
+current query text
++ active constraints
+→ Qwen3 query embedding
+→ metadata-qwen3 track embedding
+→ top50/top100/top200
+
+候选池：
+
+BM25 top300
++ metadata top50
+
+评估：
+
+metadata source hit@50/100
+incremental hit vs BM25
+BM25+metadata union coverage
+final nDCG
+
+如果 metadata query dense 没有 incremental recall，先别碰更复杂的。
+
+Phase 2：user_cf personalized recall
+
+只在 warm user + broad query 打开。
+
+做法：
+
+user cf-bpr vector
+→ dot with track cf-bpr
+→ top50/top100
+
+trigger：
+
+query broad
+or continuation
+or “recommend me”
+or weak constraints
+
+评估 slice：
+
+warm-user broad query
+cold/missing user
+exact artist/title query
+turn 1 vs later turns
+
+如果 user_cf 总体伤，但 broad-query slice 有效，就保留 gated user_cf。
+
+Phase 3：seed_cf recall
+
+只用高置信 positive seed。
+
+做法：
+
+accepted/liked/explicit seed tracks
+→ track cf-bpr neighbors
+→ top50/top100
+
+不要用所有历史推荐当 seed。必须区分：
+
+positive seed
+neutral seed
+negative seed
+
+评估：
+
+seed-present turns only
+more-like-this turns
+later turns
+
+如果 seed_cf 只在部分 slice 有效，就 slice-gated。
+
+Phase 4：attributes/lyrics query dense
+
+这一步要非常谨慎。
+
+attributes：
+
+只对 mood/genre/activity/vibe query 打开
+topK 30/50/100
+
+lyrics：
+
+只对 lyric/theme/story query 打开
+topK 30/50/100
+
+目标不是让它们大幅提升全局，而是看它们是否在特定 slice 增加 incremental recall。
+
+例如：
+
+lyrics_query 在 lyric-theme slice incremental hit +3%
+但全局 +0.2%
+
+这也是有价值的，因为可以 gated 使用。
+
+Phase 5：audio seed expansion
+
+做法：
+
+positive seed track
+→ audio-laion_clap nearest tracks
+→ top30/top50
+
+trigger：
+
+more like this
+similar vibe
+keep this energy
+上一首这种感觉
+继续这个风格
+
+它不应该全局打开。
+
+评估：
+
+seed-present + similarity-request turns
+
+如果 audio 召回的 gold 少，但人工看候选很合理，它也可以作为 1000 档 exploration source，而不进 300/500 主线。
+
+Phase 6：image seed / multimodal agreement
+
+image 最后做。
+
+用法：
+
+seed track → image-siglip2 neighbors
+
+或者：
+
+candidate has image agreement with seed
+
+更推荐作为 feature：
+
+image_seed_rank
+image_seed_cos
+image_cluster_match
+
+不要一开始让 image source 加很多候选。
+
+推荐的完整 source 分层
+
+最终你可以形成这样的多源候选框架：
+
+Core lexical:
+    BM25 title index
+    BM25 artist index
+    BM25 metadata index
+    BM25 train-context augmentation
+    quoted entity query
+
+Core dense:
+    metadata-qwen3 query dense
+
+Personalization:
+    user_cf-bpr, gated by broad query
+    seed_cf-bpr, gated by positive seed
+
+Semantic special:
+    attributes-qwen3 query, gated by mood/activity
+    lyrics-qwen3 query, gated by lyric/theme
+
+Multimodal seed expansion:
+    audio CLAP seed neighbors
+    image SigLIP2 seed neighbors
+
+Agreement/features:
+    source_count
+    source ranks
+    source scores
+    dense_only flag
+    source-specific triggers
+一个实用的 300/500/1000 配置总结
+300 档
+BM25 multi-source: 220
+metadata query dense: 50
+user_cf gated: 15
+seed_cf gated: 15
+
+用途：
+
+主线稳健候选池
+500 档
+BM25 multi-source: 300
+metadata query dense: 80
+attributes query gated: 40
+lyrics query gated: 30
+user_cf gated: 40
+seed_cf gated: 40
+audio seed gated: 30
+
+用途：
+
+平衡召回和噪声
+1000 档
+BM25 multi-source: 500
+metadata query dense: 150
+attributes query gated: 100
+lyrics query gated: 100
+user_cf gated: 100
+seed_cf gated: 100
+metadata seed: 80
+audio seed: 80
+image seed: 50
+
+用途：
+
+研究 embedding 召回上限
+诊断 rerank 是否吃不下
+不一定直接提交
+最关键的判断逻辑
+
+你最后应该能回答这三个问题：
+
+1. embedding 有没有召回新 gold？
+
+看：
+
+incremental_hit@K vs BM25
+
+如果没有，说明 source 没候选价值。
+
+2. embedding 召回了新 gold，但 final nDCG 没涨？
+
+说明：
+
+rerank 没吃好
+source features 不够
+dense noise 太多
+candidate size 太大
+
+这时不该直接说 embedding 没用，而应该修：
+
+source features
+source gates
+topK quota
+dense-only cap
+LTR training
+3. embedding 既没增 recall，又增加噪声？
+
+说明：
+
+这个 source 当前接入方式应该停
+
+尤其是 attributes seed cosine 这种，已经显示伤分，就应该降级为 diagnostic，不要强行放主线。
+
+最终建议路线
+
+按优先级做：
+
+1. 建 source-level incremental recall 评估框架。
+2. 做 metadata-qwen3 current-query dense retrieval。
+3. 做 gated user_cf personalized recall。
+4. 做 gated seed_cf item-neighbor recall。
+5. 做 attributes-qwen3 query dense，但只在 mood/activity slice 打开。
+6. 做 lyrics-qwen3 query dense，但只在 lyric/theme slice 打开。
+7. 做 audio seed expansion，只用于 “more like this” 场景。
+8. image-siglip2 只做 feature/agreement/exploration，不做主召回。
+9. 用 300/500/1000 三档候选池分别测 union gold coverage 和 final nDCG。
+10. 如果 1000 档 union recall 大涨但 nDCG 掉，说明下一步不是加 source，而是改 rerank 对 dense source 的消化方式。
+
+一句话总结：
+
+BM25 负责精确语言匹配；
+metadata-qwen3 负责当前 query 的语义召回；
+user_cf 负责宽泛请求下的个性化；
+seed_cf/audio 负责“像这首”的相似歌；
+lyrics/attributes 只在对应意图下 gated 使用；
+image 只做弱扩展和 agreement；
+所有 embedding source 先用 incremental recall 证明候选价值，再交给 rerank。

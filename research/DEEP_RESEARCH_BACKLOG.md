@@ -217,6 +217,14 @@ This file tracks questions and optimization directions that deserve a dedicated 
    - Decision: freeze all changes that alter `predicted_track_ids`. Direct Qwen3 current-query dense retrieval, new retrieval sources, reranking rules, diversity repair, exact-match promotion, and neural/LTR changes are no-go for the final package unless public feedback explicitly forces a ranking rethink.
    - Round 13 Pro answer reinforces the freeze: the rational final move is validation/packaging QA, not another rank gate, response selector, embedding revival, or train-context distillation pass.
 
+23. **Nextgen rerank v3 and OOF ensemble portability**
+   - Implemented nextgen candidate pool with adaptive BM25 tail, seed `track_cf`, seed `attributes`, and seed `audio` sources. Best stable pool so far is cap1400: `gold_in_pool=5854/8000`, `avg_group_size=1372.22`, `p95=1400`.
+   - Implemented semantic interaction features in `scripts/augment_rerank_features_v3.py`. Single-model OOF improved from `nDCG@20=0.195668` to `0.196081`.
+   - Implemented rank-list ensemble in `scripts/ensemble_rank_predictions.py`. Best tested OOF combination is `v3 + v2_trunc400 + v2_leaves63` with weights `1.0 / 0.75 / 0.5`, reaching `nDCG@20=0.197823` and `hit20=3141`.
+   - Open research/engineering question: how should the nextgen v3 OOF improvement be ported to blind inference without label leakage? Current `run_rerank_v2.py` does not save final models or build blind nextgen pools.
+   - Open research question: is the OOF ensemble gain robust under blind-like panel sampling, or is it overfitting model-list idiosyncrasies on full dev?
+   - Open engineering task: add a blind-capable nextgen candidate builder and final-training/prediction path, or refactor `run_rerank_v2.py` to support saved LightGBM models and unlabeled apply sets.
+
 ## Engineering
 
 18. **FAISS/NumPy vector backend**

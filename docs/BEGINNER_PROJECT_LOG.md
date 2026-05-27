@@ -1,330 +1,661 @@
-# GoalFlow-MusicCRS 从 Baseline 到 0.1962 的完整阶段日志
+# GoalFlow-MusicCRS 小白版模块日志
 
-这份文档面向第一次参加推荐系统比赛的人。它不讲代码细节，而是讲清楚：我们为什么做某件事、做了什么实验、结果是好还是坏、因此改变了什么策略。
+这份文档是重新拆过的版本。
 
-当前项目目录：
+旧文档是按时间顺序写的：今天做了粗排，明天做回复，后天又回到 rerank。那种写法对做项目的人方便，但对第一次看推荐系统比赛的人很累。
 
-```text
-/Users/bytedance/generated_problems/recsys2026_music_crs/goalflow_musiccrs
-```
-
-最新 Blindset A 主提交包：
+所以这里改成按系统模块讲：
 
 ```text
-blindset_A_PRIMARY_submission.zip
+0. 先讲比赛怎么提交和怎么打分
+1. 再讲 baseline 到底是什么
+2. 单独讲粗排/召回从头到尾怎么迭代
+3. 单独讲 rerank 从头到尾怎么迭代
+4. 单独讲 response 和 diversity 怎么迭代
+5. 最后讲现在的提交包、结果、问题和下一步
 ```
 
-最新 Blindset A public 结果：
+原来的流水账没有删除，保存在：
 
 ```text
-nDCG@20            0.1898
-catalog_diversity  0.0317
-lexical_diversity  0.6060
-llm_judge_score    1.5000
-composite_score    0.1962
+docs/BEGINNER_PROJECT_LOG_CHRONOLOGY.md
 ```
 
-上一版 public 结果：
+## 0. 先把比赛流程讲清楚
+
+这个比赛不是让我们在线上服务器里实时跑模型。至少 Blind A 这个阶段，我们交的是一个结果文件。
+
+你可以把它理解成考试：
 
 ```text
-nDCG@20            0.1935
-catalog_diversity  0.0257
-lexical_diversity  0.0125
-llm_judge_score    1.0000
-composite_score    0.1006
+官方给题目：Blind A 输入数据
+官方藏答案：每一轮真正的 gold track
+我们写答题卡：prediction.json
+平台来阅卷：CodaBench 用隐藏答案打分
 ```
 
-一句话总结：这轮没有提升推荐排序，`nDCG@20` 从 `0.1935` 小降到 `0.1898`；但回复文本和多样性大幅提升，把总分从 `0.1006` 拉到 `0.1962`，接近翻倍。
+`Prediction` 在这里就是“预测结果”。它不是训练集，也不是官方答案，而是我们给隐藏测试输入做出来的答题卡。
 
-## 1. 先解释比赛到底在干什么
+每条预测长这样：
 
-RecSys Challenge 2026 Music-CRS 是一个对话式音乐推荐比赛。
+```json
+{
+  "session_id": "某个对话 ID",
+  "user_id": "某个用户 ID",
+  "turn_number": 3,
+  "predicted_track_ids": [
+    "第 1 个候选 track_id",
+    "第 2 个候选 track_id"
+  ],
+  "predicted_response": "给用户看的英文推荐回复"
+}
+```
 
-`RecSys` 是 recommender systems 的缩写，意思是推荐系统。比如音乐软件给你推荐歌、购物网站给你推荐商品，都是推荐系统。
-
-`CRS` 是 conversational recommender system 的缩写，意思是对话式推荐系统。它不是只看一个搜索词，而是要看多轮聊天。
-
-每条样本大概长这样：
+其中：
 
 ```text
-用户画像：这个用户来自哪里、喜欢哪类音乐文化
-对话目标：用户想找一首具体歌，或者想找某种风格的歌
-历史对话：前面用户怎么说，系统推荐过什么
-当前请求：用户这一轮说的话
+predicted_track_ids:
+  必须是官方曲库里的 track_id。
+  最多 20 个。
+  不能重复。
+  顺序很重要，第 1 个最重要。
+
+predicted_response:
+  给用户看的自然语言回复。
+  会影响 lexical diversity 和 LLM judge。
 ```
 
-系统要输出两样东西：
+最终提交包是：
 
 ```text
-1. predicted_track_ids
-   从官方曲库里选 20 首歌，按最可能正确到最不可能正确排序。
-
-2. predicted_response
-   给用户的一段英文回复，解释为什么推荐这些歌。
+submission.zip
+  └── prediction.json
 ```
 
-注意：20 首歌必须来自官方曲库，不能编歌名，不能重复 track_id。
+所以平台打分时做的是：
 
-## 2. 评测指标完整解释
+```text
+读取 prediction.json
+检查格式是否合法
+检查每个 session × turn 是否都有预测
+检查 track_id 是否都在官方曲库
+用隐藏 gold track 算 nDCG@20
+统计 catalog diversity
+统计 response 的 lexical diversity
+用 LLM judge 看回复质量
+```
+
+这也解释了为什么“没有线上推理时间限制”不等于“可以无脑让 GPT 看所有歌”。
+
+我们本地当然可以花很久生成 `prediction.json`，但是如果让大模型逐一判断：
+
+```text
+80 条 Blind A 样本 × 47071 首歌 ≈ 376 万个 query-track pair
+```
+
+这对 LLM 或 cross-encoder 来说成本极高，而且大模型也不一定知道官方 synthetic agent 当时会选哪首歌。
+
+## 1. 指标先讲清楚
 
 ### nDCG@20
 
-`nDCG@20` 是最重要的推荐排序指标。
+`nDCG@20` 是推荐排序主指标。
 
-可以把它理解成：
+白话：
 
 ```text
-正确答案排第 1 名：分数最高
-正确答案排第 2 名：分数低一点
-正确答案排第 20 名：还有一点分
-正确答案没进前 20：这一轮得 0
+正确歌排第 1：最好
+正确歌排第 2：少一点分
+正确歌排第 20：还有一点点分
+正确歌没进前 20：这一轮 0 分
 ```
 
-所以 top-1、top-5 非常重要。不能为了花哨的多样性，把最可能正确的歌挤到后面。
+所以推荐系统里最重要的是：
+
+```text
+不要只把正确歌找出来
+还要把它排到足够靠前
+```
+
+### hit@20
+
+`hit@20` 只是问：
+
+```text
+正确歌有没有出现在前 20？
+```
+
+它不关心第 1 还是第 20。
+
+这就是为什么有些 source 的 `hit@20` 很高，但最终 `nDCG@20` 不一定高。
+
+如果正确歌经常排第 18、第 19、第 20，那么：
+
+```text
+hit@20 看起来不错
+nDCG@20 仍然很低
+```
 
 ### Catalog Diversity
 
-`Catalog Diversity` 可以翻译成曲库覆盖多样性。
+`Catalog Diversity` 是曲库覆盖多样性。
 
-如果系统总是推荐同一批热门歌，分数低；如果推荐覆盖更多不同歌曲，分数高。
+如果系统总推荐那几首热门歌，分数低。如果 80 条提交里覆盖更多不同歌曲，分数高。
 
-Blindset A 只有 80 条，每条 20 首歌，所以最多只有：
+Blind A 只有：
 
 ```text
-80 * 20 = 1600 个推荐位置
+80 条 × 每条 20 首 = 1600 个推荐位置
 ```
 
-官方曲库大小是：
+官方曲库大约：
 
 ```text
 47071 首歌
 ```
 
-所以 Blindset A 的 catalog diversity 理论上限大约是：
+所以 Blind A 的 catalog diversity 理论上限大约是：
 
 ```text
-1600 / 47071 = 0.0340
+1600 / 47071 ≈ 0.0340
 ```
 
-这解释了为什么 `0.0317` 已经接近上限。
+我们这次 public 是：
+
+```text
+catalog_diversity = 0.0317
+```
+
+已经接近 Blind A 的上限，所以继续为 diversity 大幅牺牲 nDCG 不划算。
 
 ### Lexical Diversity / Distinct-2
 
-`Lexical Diversity` 是文本多样性。这里基本等价于 Distinct-2。
+`Lexical Diversity` 是文本多样性。
 
-`Distinct-2` 的意思是：把回复切成连续两个词的组合，看看有多少不同组合。
+这里可以理解成 Distinct-2：统计回复里连续两个词组成的短语，有多少是不重复的。
 
-如果所有回复都写：
+如果 80 条回复都写：
 
 ```text
 Here are some songs you might enjoy.
 ```
 
-那二元词组重复很多，分数会很低。
+那就非常重复，lexical diversity 很低。
 
-如果每条回复都具体提到不同歌名、艺人、年代、专辑、风格，分数会高很多。
-
-这次我们的 lexical diversity 从 `0.0125` 涨到 `0.6060`，这是总分翻倍的主要原因。
+如果每条回复都具体提到不同歌名、艺人、专辑、年代、标签、历史反馈，lexical diversity 会高很多。
 
 ### LLM-as-a-Judge
 
-`LLM-as-a-Judge` 是让大语言模型当评委。这里 public 显示的 judge 平均分是 `1.5000`。
+`LLM-as-a-Judge` 是让大语言模型当裁判，看回复质量。
 
-它主要看回复是不是：
-
-```text
-1. 个性化：有没有结合用户画像和历史反馈
-2. 解释具体：有没有说清楚为什么推荐
-3. 不胡编：有没有只引用 metadata 里能证明的信息
-4. 自然：是不是像一个音乐推荐助手，而不是死板模板
-```
-
-这个分数现在还是主要瓶颈。它从 `1.0` 到了 `1.5`，但还不高。
-
-### Composite Score
-
-`Composite Score` 是最终总分。我们根据 public 结果推断它大致是：
+它不是直接评价歌曲排序，而是看文字回复是不是：
 
 ```text
-0.5 * nDCG@20
-+ 0.1 * catalog_diversity
-+ 0.1 * lexical_diversity
-+ 0.3 * ((llm_judge_score - 1) / 4)
+个性化
+解释具体
+能承接历史反馈
+不胡编 metadata 里没有的信息
+像一个正常音乐推荐助手
 ```
 
-解释：
+我们现在 public judge 是：
 
 ```text
-nDCG 权重最大，占一半
-catalog 和 lexical 各占 0.1
-LLM judge 折算后占 0.3
+llm_judge_score = 1.5
 ```
 
-所以后面想继续涨分，最重要是：
+这仍然偏低。
+
+## 2. Baseline 到底是什么
+
+`Baseline` 是最基础的可运行方案。它的意义不是最强，而是：
 
 ```text
-1. 让 nDCG 回到 0.20+
-2. 让 judge 从 1.5 提到 2.0 或更高
+能读数据
+能搜曲库
+能输出 prediction.json
+能被 evaluator 正常打分
 ```
 
-## 3. 我们一开始的 Baseline
-
-`Baseline` 是官方或最初版本的基础方案。它的意义是：先跑通比赛流程，知道提交格式、数据读取、评测方式都没问题。
-
-最早强 baseline 是 BM25-history。
-
-`BM25` 是一种经典文本搜索算法。你可以把它理解成“关键词搜索增强版”。
-
-例如用户说：
+官方 baseline 的核心是：
 
 ```text
-I want a dreamy indie folk song.
+对话历史 -> BM25 文本搜索 -> top-20 歌曲 -> 生成回复
 ```
 
-BM25 会更偏向文档里包含 `dreamy`、`indie`、`folk` 的歌曲。
+`BM25` 是经典关键词搜索算法。你可以把它想成“比普通关键词匹配更聪明的搜索器”。
 
-Baseline 的大概流程：
+它会看：
 
 ```text
-对话历史
-  -> 把历史推荐过的 track_id 转成歌曲信息
-  -> 拼成搜索文本
-  -> 用 BM25 搜曲库
-  -> 输出 top-20
-  -> 用模板或小模型生成回复
+query 里有哪些词
+歌曲文档里有哪些词
+这些词是不是少见
+这些词在文档里出现得多不多
 ```
 
-最早 dev 结果大概是：
+### Baseline 搜的歌曲文档格式
+
+这个项目里的 baseline BM25 配置使用这些字段：
 
 ```text
-nDCG@20            0.085870
-catalog_diversity  0.388966
-lexical_diversity  0.000125
+track_name
+artist_name
+album_name
+release_date
 ```
 
-这说明：
+所以一首歌在索引里的文本固定类似：
 
 ```text
-推荐排序还算有用
-回复文本几乎完全不行
+track_name: Big Poppa
+artist_name: The Notorious B.I.G.
+album_name: Ready To Die
+release_date: 1994-09-13
 ```
 
-## 4. 项目独立化：先复制一份，不污染官方 baseline
+这里的 `Big Poppa` 只是例子。真正内容来自官方 track metadata。
 
-用户要求“如果需要 baseline 要复制一份，不要直接覆盖”。
+注意：这不是“或者”。格式是确定的。
 
-所以我们创建了独立项目：
+### Baseline 搜索 query 怎么来
+
+baseline 会把当前对话历史拼起来。
+
+如果历史里出现过系统推荐的 `track_id`，它会把这个 `track_id` 转回歌曲信息，再拼进对话。
+
+粗略像这样：
 
 ```text
-goalflow_musiccrs/
+user: I want something energetic.
+assistant: track_id: xxx, track_name: ..., artist_name: ..., album_name: ..., release_date: ...
+user: That's closer, but I want more punk.
 ```
 
-这样做的意义：
+然后把这整段作为 BM25 query，去搜刚才那种歌曲文档。
+
+baseline 的早期 dev 结果：
 
 ```text
-1. 官方 baseline 保持干净
-2. 我们可以大胆实验
-3. 出问题时能回退
-4. 后面文档、实验、提交包都在一个独立项目里
+nDCG@20 = 0.085870
 ```
 
-## 5. 总体系统设计
+它说明 baseline 有一定能力，但还远不够。
 
-我们给系统起名：
+## 3. 粗排/召回模块，从头到尾怎么迭代
+
+这一章只讲粗排，也叫召回。
+
+`Recall` 是召回。意思是：
 
 ```text
-GoalFlow-MusicCRS
+先从 47071 首歌里捞出一批可能相关的候选歌。
 ```
 
-核心想法：
+召回阶段不要求完美排序，但必须尽量别漏掉正确答案。
+
+推荐系统常见结构是：
 
 ```text
-先理解用户当前到底想找什么
-再用多种方式从曲库召回候选歌曲
-然后用学习型模型重新排序
-最后生成具体、有解释的回复
+全曲库 47071 首
+  -> 召回几百到几千首候选
+  -> rerank 再排出最终 top-20
 ```
 
-总流程图：
+如果召回阶段没把正确歌放进候选池，后面的 rerank 再强也没用。
+
+### 3.1 粗排的初始目标
+
+我们一开始想做的是：
 
 ```text
-用户画像 + 当前请求 + 历史对话
-        |
-        v
-ConversationState 当前会话状态
-        |
-        v
-多路召回：BM25 / metadata / tags / train-context / feedback seeds
-        |
-        v
-候选融合：RRF + 规则分数
-        |
-        v
-LTR 学习排序模型
-        |
-        v
-RRF 模型集成
-        |
-        v
-top-20 track_id
-        |
-        v
-metadata-grounded response
-        |
-        v
-prediction.json / submission.zip
+baseline 只用一个保守 BM25 搜索
+GoalFlow 用多个搜索视角
+希望多路搜索能覆盖更多正确歌
 ```
 
-下面解释几个词。
-
-`ConversationState` 是当前会话状态。它把用户画像、当前请求、历史推荐、历史反馈整理成一个结构化对象。
-
-`Recall` 是召回。意思是从 47071 首歌里先粗略捞出一批可能相关的候选，不追求排序完美，只追求别漏掉正确答案。
-
-`Candidate` 是候选歌曲。先召回几百或几千首，再从里面排 top-20。
-
-`Rerank` 是重排。召回之后再用更强的模型重新排序。
-
-`Metadata` 是歌曲元数据，比如歌名、艺人、专辑、标签、年份、流行度。
-
-## 6. 第一阶段：多路 BM25 和 RRF 融合
-
-我们先做了多种 BM25 索引。
-
-`Index` 是索引，可以理解成一种搜索目录。不同索引搜不同字段：
+这不是荒唐想法。因为比赛里的用户请求很复杂：
 
 ```text
-metadata_all: 歌名 + 艺人 + 专辑 + 标签 + 年份
-title_artist: 歌名 + 艺人
-album_artist: 专辑 + 艺人
-tags: 风格标签
-enriched: metadata + 训练对话增强文本
-legacy_metadata: 接近官方 baseline 的历史搜索方式
+有人按歌名找
+有人按艺人找
+有人按专辑找
+有人按年代找
+有人按 mood 找
+有人按历史反馈说“更像上一首，但别那么重”
+有人按 cover/image clue 找
 ```
 
-又做了多种 query。
+单一 BM25 很难同时覆盖这些情况。
 
-`Query` 是搜索输入。我们不只搜当前用户一句话，还搜：
+### 3.2 我们建立了哪些 index
+
+`Index` 是索引，也就是一种搜索目录。
+
+同一首歌可以被写成不同文档，放到不同 index 里。这样同一个 query 可以从不同角度搜。
+
+#### legacy_metadata
+
+用途：
 
 ```text
-当前用户请求
-conversation_goal
-当前请求 + 目标
-历史正反馈歌曲 + 当前请求
-legacy history query
+接近 baseline 的老格式，作为保守核心 source。
 ```
 
-然后用 `RRF` 融合。
-
-`RRF` 是 Reciprocal Rank Fusion，意思是倒数排名融合。简单说：
+格式：
 
 ```text
-多个搜索器都觉得某首歌靠前，那它整体分就高
-某个搜索器把它排第 1，会加很多分
-排第 100，也加一点分
+track_name: Big Poppa
+artist_name: The Notorious B.I.G.
+album_name: Ready To Die
+release_date: 1994-09-13
 ```
 
-实验结果：
+它适合：
+
+```text
+用户明确提到歌名
+用户明确提到艺人
+用户明确提到专辑
+用户明确提到年代
+```
+
+#### metadata_all
+
+用途：
+
+```text
+比 legacy 更宽，把 tag 和 popularity 也加进去。
+```
+
+格式：
+
+```text
+track_name: Big Poppa
+artist_name: The Notorious B.I.G.
+album_name: Ready To Die
+tag_list: hip hop, rap, east coast, 90s
+release_date: 1994-09-13
+popularity: 0.83
+```
+
+它适合：
+
+```text
+用户说 genre、mood、年代、风格标签
+```
+
+风险：
+
+```text
+tag 里有噪声，可能把不专业的标签也算进去。
+```
+
+#### title_artist
+
+用途：
+
+```text
+专门强化歌名和艺人匹配。
+```
+
+格式：
+
+```text
+track_name: Big Poppa
+artist_name: The Notorious B.I.G.
+```
+
+它适合：
+
+```text
+specific track
+也就是用户想找一首具体歌
+```
+
+#### album_artist
+
+用途：
+
+```text
+专门强化专辑和艺人。
+```
+
+格式：
+
+```text
+album_name: Ready To Die
+artist_name: The Notorious B.I.G.
+release_date: 1994-09-13
+```
+
+它适合：
+
+```text
+用户围绕某张专辑、某个时期、某个艺人作品找歌
+```
+
+#### tags
+
+用途：
+
+```text
+只看标签。
+```
+
+格式：
+
+```text
+tag_list: hip hop, rap, east coast, 90s
+```
+
+它适合：
+
+```text
+用户说 dreamy、energetic、punk、jazz、sad、danceable 等风格或情绪
+```
+
+风险：
+
+```text
+只看 tag 容易变宽，可能找来很多同风格但不是正确答案的歌。
+```
+
+#### enriched
+
+用途：
+
+```text
+metadata + 训练对话增强文本。
+```
+
+格式类似：
+
+```text
+track_name: Big Poppa
+artist_name: The Notorious B.I.G.
+album_name: Ready To Die
+tag_list: hip hop, rap, east coast, 90s
+release_date: 1994-09-13
+popularity: 0.83
+
+training_user_query: I'm looking for a classic 90s East Coast rap track...
+training_goal: find one specific song with a smooth hip-hop feel...
+training_goal_category: ...
+music_selection_reason: ...
+assistant_explanation: ...
+```
+
+`Document augmentation` 就是这个。
+
+它的目的：
+
+```text
+不是只让歌靠 metadata 被搜到，
+而是让歌也能靠训练集中用户曾经怎么描述它而被搜到。
+```
+
+### 3.3 我们用了哪些 query
+
+`Query` 是搜索输入。
+
+baseline 主要用历史对话拼起来的 query。
+
+GoalFlow 增加了多个 query variant。
+
+#### legacy_history
+
+用途：
+
+```text
+复刻 baseline 风格。
+```
+
+格式类似：
+
+```text
+user: I want something energetic.
+assistant: track_id: xxx, track_name: ..., artist_name: ..., album_name: ..., release_date: ...
+user: That's closer, but more punk.
+```
+
+#### current
+
+只搜当前用户这一句话：
+
+```text
+That's closer, but more punk.
+```
+
+优点：
+
+```text
+不被长历史干扰。
+```
+
+缺点：
+
+```text
+可能丢掉前文目标。
+```
+
+#### goal
+
+只搜 `conversation_goal`。
+
+`conversation_goal` 是官方数据里对整段对话目标的描述。
+
+优点：
+
+```text
+通常比用户某一句话更完整。
+```
+
+风险：
+
+```text
+如果 goal 太笼统，可能带来宽泛候选。
+```
+
+#### current_goal
+
+把当前用户请求和 conversation_goal 拼在一起。
+
+目的：
+
+```text
+既保留当前微调，又保留全局目标。
+```
+
+#### seed_current
+
+把历史正反馈/负反馈歌曲也拼进去。
+
+`Positive seed` 是之前被判断为接近目标的歌。
+
+`Negative seed` 是之前不接近目标的歌。
+
+目的：
+
+```text
+用户说“上一首更接近了”时，继续沿着那首歌附近搜。
+用户说“不对”时，尽量避开那个方向。
+```
+
+#### quoted_entities
+
+如果用户话里有引号内容，就单独拿出来搜。
+
+例如：
+
+```text
+I'm looking for "The Lock Down Denial"
+```
+
+那 quoted query 就是：
+
+```text
+The Lock Down Denial
+```
+
+### 3.4 什么叫 source
+
+前面你问过 `source` 是什么。
+
+在我们这里：
+
+```text
+source = 某个 index + 某个 query variant 的组合
+```
+
+例如：
+
+```text
+legacy_metadata:legacy_history
+metadata_all:current
+metadata_all:goal
+title_artist:quoted_entities
+enriched:current_goal
+tags:seed_current
+```
+
+它们都是不同 source。
+
+每个 source 都会返回一串候选歌排名。
+
+### 3.5 第一版融合：裸 RRF
+
+多个 source 各自返回排名后，需要合并。
+
+我们一开始用 RRF。
+
+`RRF` 是 Reciprocal Rank Fusion，倒数排名融合。
+
+公式：
+
+```text
+某首歌在某个 source 的贡献 = weight / (rrf_k + rank)
+```
+
+总分：
+
+```text
+某首歌总分 = 所有 source 贡献相加
+```
+
+比如 `rrf_k = 60` 且 `weight = 1`：
+
+```text
+rank 1:   1 / 61  = 0.01639
+rank 20:  1 / 80  = 0.01250
+rank 100: 1 / 160 = 0.00625
+```
+
+`rrf_k` 越大，曲线越平，后面的排名也还有一定分。
+
+`rrf_k` 越小，曲线越陡，前几名更值钱。
+
+早期粗排结果：
 
 ```text
 goalflow_bm25_aug_v1 nDCG@20 = 0.067874
@@ -332,15 +663,31 @@ goalflow_bm25_aug_v2 nDCG@20 = 0.074497
 baseline              nDCG@20 = 0.085870
 ```
 
-只看这三行，严格来说只能得出一个结论：
+严格说，只看这三行只能证明：
 
 ```text
-多路 BM25 + RRF 的最终 top-20 排序，比 baseline 差。
+裸 RRF 最终 top-20 排序变差。
 ```
 
-不能只凭这三行就说“找到了更多候选”，也不能只凭这三行就说“一定是 RRF 冲散了 baseline”。这两个判断来自后面专门做的 `Source Diagnostics`，也就是把每一个召回源单独拆开看。
+不能只凭这三行说“召回一定变好了”。
 
-后续诊断发现：
+“召回有潜力”这个判断来自后面的 source diagnostics。
+
+### 3.6 Source diagnostics 以后才看清楚问题
+
+`Source diagnostics` 是把每个 source 单独拆开看。
+
+它回答三个问题：
+
+```text
+1. 每个 source 单独能不能找到 gold track？
+2. gold track 在每个 source 排第几？
+3. RRF 融合后 gold track 排第几？
+```
+
+`Gold track` 是隐藏答案里的正确歌。devset 上我们知道 gold，所以可以诊断。
+
+诊断结果：
 
 ```text
 legacy source hit@20      = 0.2303
@@ -348,59 +695,82 @@ best single source hit@20 = 0.4715
 RRF fused hit@20          = 0.2595
 ```
 
-这里的 `hit@20` 意思是：正确歌曲有没有出现在某个 source 的前 20 名里。
-
-`hit@20` 和 `nDCG@20` 不一样：
+解释：
 
 ```text
-hit@20 只问：正确歌有没有进前 20。
-nDCG@20 还问：正确歌排第几。
+legacy source:
+  接近 baseline 的 source。
+  它有 23.03% 的轮次能把正确歌放进前 20。
+
+best single source:
+  事后看，每一轮从所有 source 里挑那个最会找 gold 的 source。
+  它能到 47.15%。
+  这不是可提交模型，因为真实 blind 没有 gold，不知道该挑哪个 source。
+
+RRF fused:
+  实际融合后只有 25.95%。
 ```
 
-如果正确歌排第 20，`hit@20` 算命中，但 `nDCG@20` 分数很低。这个区别很重要，因为我们的很多新 source 是“能找到”，但“不一定排得足够靠前”。
-
-`legacy source` 是接近 baseline 的旧搜索源。
-
-`best single source` 是诊断用的“事后最佳 source”。它不是一个可提交模型，而是问：如果我们事后知道每一轮哪个 source 最会找正确歌，那么所有 source 里最好的那个能不能把正确歌放进前 20。
-
-这组数说明：
+这说明：
 
 ```text
-旧 source 自己只能在 23.03% 的轮次把正确歌放进前 20。
-但多路 source 里，确实有一些 source 能覆盖更多正确歌，事后最佳能到 47.15%。
-实际 RRF 融合后只有 25.95%，远低于事后最佳。
+新 source 里确实有人能找到更多正确歌。
+但是裸 RRF 没学会该相信哪个 source。
 ```
 
-所以更准确的结论是：
+这才是“多路召回有潜力，但融合方式不够聪明”的证据。
+
+### 3.7 为什么 RRF 会把头部冲散
+
+一个例子：
 
 ```text
-新增 source 让候选池里出现了更多正确答案。
-但简单 RRF 没有学会什么时候该相信哪个 source。
-它一边带进了一些新命中，一边也把 baseline 原本靠前的正确答案挤下去了。
+legacy source:
+1. Gold Song
+2. Song A
+3. Song B
+
+tags source:
+1. Song X
+2. Song Y
+3. Song Z
+
+enriched source:
+1. Song X
+2. Song M
+3. Song N
+
+metadata_all source:
+1. Song X
+2. Song P
+3. Song Q
 ```
 
-这才叫 head-rank dilution。意思是：头部排名被稀释了。
+Gold Song 只被 legacy 强力支持。
 
-白话说，baseline 像一个保守但靠谱的老搜索器；多路 RRF 像让很多搜索器一起投票。新搜索器确实知道一些老搜索器不知道的歌，但投票规则太粗糙，于是有些老搜索器本来排第 1、第 2 的正确答案，被一堆“也有点相关”的候选挤到了后面。
+Song X 被三个新 source 都排第 1。
 
-策略改变：
+RRF 会让 Song X 总分超过 Gold Song。
+
+这就叫：
 
 ```text
-不能直接相信所有新召回源
-要保护 baseline 的头部排序
+head-rank dilution
 ```
 
-## 7. 第二阶段：Legacy Head Protection
+意思是：
 
-`Legacy` 是旧系统，也就是官方 BM25-history baseline。
+```text
+原来头部正确答案被多个弱相关 source 的投票稀释了。
+```
 
-`Head Protection` 是保护前几名。
+### 3.8 Legacy Head Protection 和 response-only 对照
 
-我们做了：
+裸 RRF 伤了排序后，我们做了：
 
 ```text
 head10: 前 10 名沿用 legacy，后面用 GoalFlow
-head20: 前 20 名都沿用 legacy，只改回复
+head20: 前 20 名沿用 legacy，只改 response
 ```
 
 结果：
@@ -410,44 +780,58 @@ head10 nDCG@20 = 0.083776
 head20 nDCG@20 = 0.085870
 ```
 
-解释：
+这里要特别小心。
+
+`head20` 不是一个真正的粗排优化实验。
+
+因为比赛最终只提交 top-20。如果 top-20 全部沿用 baseline，那么推荐排序就等于 baseline。
+
+所以：
 
 ```text
-head20 完全保住 baseline 排名
-同时让回复变好
+head20 nDCG@20 = baseline nDCG@20
 ```
 
-策略改变：
+这不是发现了新排序方法，只是一个 response-only 对照组。
+
+它的作用是隔离变量：
 
 ```text
-早期提交应优先安全
-先不冒险改 ranking，先修 response
+ranking 不动
+只看 response 改造会不会涨总分
 ```
 
-## 8. 第三阶段：Tail Diversity
+真正有一点粗排信息量的是 `head10`。
 
-`Tail` 是排序后半段，比如第 16 到第 20 名。
-
-`Tail Diversity` 是只改后几名，让推荐更丰富，尽量不伤前几名。
-
-我们试了：
+`head10` 的意思是：
 
 ```text
-taildiv_head10: 保护前 10，后 10 做多样性
-taildiv_head15: 保护前 15，后 5 做多样性
-taildiv_head18: 保护前 18，后 2 做多样性
-taildiv_head19: 只改第 20 名
+前 10 名保护 baseline
+后 10 名换成 GoalFlow
 ```
+
+结果它从 `0.085870` 降到 `0.083776`。
+
+这说明：
+
+```text
+当时的 GoalFlow 粗排即使只替换后 10 个位置，也没有带来推荐排序收益。
+```
+
+所以这节的准确结论不是“head20 保住 baseline 很厉害”，而是：
+
+```text
+head20 = baseline ranking freeze，用来测 response。
+head10 = 粗排替换后半段，结果仍然伤 nDCG。
+```
+
+### 3.9 Tail Diversity 也是安全边界，不是召回突破
+
+`Tail` 是后半段，比如第 16 到第 20 名。
+
+我们试过只改尾部来换 diversity。
 
 结果：
-
-```text
-head10 diversity 很高，但 nDCG 掉太多
-head15 diversity 高，但 nDCG 仍损失明显
-head18 / head19 更安全
-```
-
-典型结果：
 
 ```text
 taildiv_head10 nDCG@20 = 0.072093
@@ -459,268 +843,49 @@ taildiv_head19 nDCG@20 = 0.085758
 结论：
 
 ```text
-catalog diversity 有用
-但 Blindset A 上限只有 0.034
-为了 catalog 多样性牺牲 nDCG 不划算
+动得越多，nDCG 越容易掉。
+只动第 20 名相对安全。
 ```
 
-策略改变：
+这说明 diversity 只能保守做，不能拿它替代召回能力。
 
-```text
-多样性只能很保守地做
-后面不再把 catalog diversity 当主攻方向
-```
-
-## 9. 第四阶段：回复生成大改
-
-第一次 public 结果暴露了最大问题：
-
-```text
-nDCG@20            0.1935
-catalog_diversity  0.0257
-lexical_diversity  0.0125
-llm_judge_score    1.0000
-composite_score    0.1006
-```
-
-这说明：
-
-```text
-推荐排序其实还不错
-回复文本非常弱
-LLM judge 也只给最低档
-```
-
-这里也要注意证据边界：`nDCG@20=0.1935` 只能说明这个旧包在 public Blind A 的推荐排序不差，不能说明它在所有 split 都强；`lexical_diversity=0.0125` 和 `llm_judge_score=1.0` 才直接说明回复文本是当时最大的短板。
-
-于是重点转到 response。
-
-我们做了多种回复风格。
-
-### compact response
-
-`compact` 是短而信息密集的回复。
-
-它会写：
-
-```text
-推荐第一首是什么
-为什么匹配当前请求
-使用了哪些标签、年代、专辑信息
-历史正反馈或负反馈如何影响排序
-后面两首备选是什么
-```
-
-效果：
-
-```text
-lexical diversity 从约 0.083 提到约 0.175+
-```
-
-### compact_broad
-
-`broad` 是允许更宽的标签来源，但后来发现风险：某些 last.fm 风格标签很脏或很私人。
-
-比如：
-
-```text
-albums i own
-seen live
-lastfm
-songsof2011
-lobpreis
-```
-
-这些写进回复会显得不专业，甚至像泄漏用户私有标签。
-
-策略改变：
-
-```text
-要过滤 noisy tags
-```
-
-`Noisy tag` 是噪声标签，意思是曲库里有但不适合写给用户看的标签。
-
-### judge_v2
-
-`judge_v2` 是面向 LLM judge 的回复。
-
-它更强调：
-
-```text
-1. 我为什么选第一首
-2. 我引用了哪些 metadata
-3. 我如何使用历史反馈
-4. 我如何使用用户画像作为 tie-breaker
-```
-
-`Tie-breaker` 是打破平局的辅助依据。比如两首歌都像，用户画像可以帮助决定谁排前。
-
-### judge_clean_mix
-
-后来我们发现：
-
-```text
-太自然的回复 lexical diversity 低
-太模板的回复 LLM judge 可能不喜欢
-```
-
-于是做了混合风格 `judge_clean_mix`。
-
-它混合：
-
-```text
-judge_v2
-judge_brief
-compact
-```
-
-并且清理：
-
-```text
-重复标题
-list-valued artist name
-专辑 remaster 噪声
-坏标签
-过长回复
-```
-
-最终主包使用这个风格。
-
-效果：
-
-```text
-Blind A local Distinct-2 约 0.606
-Public LexDiv = 0.6060
-Judge 从 1.0 提到 1.5
-```
-
-结论：
-
-```text
-这一阶段是总分提升的核心
-```
-
-这个判断来自 public 指标对比，而不是主观感觉：
-
-```text
-nDCG@20            0.1935 -> 0.1898   小降
-catalog_diversity  0.0257 -> 0.0317   小幅上升
-lexical_diversity  0.0125 -> 0.6060   巨幅上升
-llm_judge_score    1.0000 -> 1.5000   上升
-composite_score    0.1006 -> 0.1962   接近翻倍
-```
-
-所以这轮总分上涨不是因为 ranking 变强，而是因为 response 和 diversity 修复成功。
-
-## 10. 第五阶段：Source Diagnostics
-
-`Source Diagnostics` 是分析每个召回源到底有没有用。
-
-我们问的问题是：
-
-```text
-哪个搜索源能找到 gold track？
-哪个源能把 gold track 排得靠前？
-为什么融合后反而变差？
-```
-
-`Gold track` 是官方正确答案歌曲。
-
-诊断发现：
-
-```text
-best single source hit@20 = 0.4715
-legacy source hit@20      = 0.2303
-RRF fused hit@20          = 0.2595
-```
-
-解释：
-
-```text
-某些新 source 单独看能找到很多正确歌
-但 RRF 融合没有把它们正确排到前面
-```
-
-策略改变：
-
-```text
-问题不是召回完全没用
-问题是融合和排序不够聪明
-下一步应该做学习排序 LTR
-```
-
-## 11. 第六阶段：Progress Label 语义审计
+### 3.10 Progress label 审计修正了 seed 用法
 
 数据里有 `goal_progress_assessments`。
 
-它表示前一轮推荐是否让用户更接近目标。
+它描述前一次推荐是否让用户更接近目标。
 
 我们一开始不确定：
 
 ```text
-label t 是评价第 t 轮推荐？
-还是评价第 t-1 轮推荐？
+turn t 的 label 是评价 turn t？
+还是评价 turn t-1？
 ```
 
-通过审计样例发现：
+审计后发现：
 
 ```text
 turn 1 没有 label
 turn 2 的 label 是用户对 turn 1 推荐的反馈
 ```
 
-也就是说 label 要后移使用。
-
-策略改变：
+所以应该后移使用：
 
 ```text
-历史推荐 m 的反馈应该用 progress[m + 1]
+历史推荐 m 的反馈 = progress[m + 1]
 ```
 
-这个修正让 positive seed / negative seed 更合理。
+这个修正让 positive seed 和 negative seed 更可信。
 
-`Positive seed` 是历史上被用户认可的歌曲。
+### 3.11 Train-context augmentation 的结论
 
-`Negative seed` 是历史上用户不满意的歌曲。
-
-## 12. 第七阶段：Train-context Document Augmentation
-
-`Document Augmentation` 是文档增强。
-
-普通歌曲文档只有：
+文档增强的想法是对的：
 
 ```text
-歌名
-艺人
-专辑
-标签
-年份
+把训练集中导致某首歌被推荐的用户说法，追加到这首歌的文档里。
 ```
 
-我们增加了训练集中与这首歌相关的对话上下文：
-
-```text
-用户当时怎么描述这首歌
-conversation_goal 怎么写
-assistant 当时怎么解释
-前面哪些歌曲是正反馈
-```
-
-目的：
-
-```text
-让系统学会“用户自然语言表达 -> 某首歌”
-```
-
-结果：
-
-```text
-enriched source 的召回有帮助
-但直接 RRF 融合仍会稀释头部排名
-```
-
-这里的证据也来自 source diagnostics：
+诊断结果里：
 
 ```text
 legacy source hit@20       = 0.2303
@@ -729,223 +894,569 @@ index_any=metadata hit@20  = 0.3635
 RRF fused hit@20           = 0.2595
 ```
 
-意思是：
+这说明：
 
 ```text
-enriched 文档单独看，比 legacy source 更容易把正确歌放进前 20。
-但混合到 RRF 后，最终 fused 排序没有接近 enriched 的单源潜力。
+enriched source 单独看，比 legacy 更容易把正确歌放进前 20。
+但 RRF 没有把这个潜力转化成最终 top-20。
 ```
 
-所以准确说法不是“augmentation 直接让最终系统变强”，而是“augmentation 提高了候选覆盖潜力，但需要更聪明的重排模型才能兑现”。
-
-策略改变：
+所以准确结论是：
 
 ```text
-文档增强保留为召回源和 LTR 特征来源
-但不直接主导最终排名
+augmentation 增加了候选覆盖潜力。
+但需要更强的 rerank 或 source gating 才能兑现。
 ```
 
-## 13. 第八阶段：官方 Embeddings 探索
+### 3.12 Embedding 探索
 
-`Embedding` 是向量表示。可以理解成把文字、音频、图片、用户偏好变成一串数字，让相似的东西距离更近。
+`Embedding` 是向量表示。
 
-官方提供了多种 embedding：
+可以把它理解成：
 
 ```text
-metadata-qwen3       歌曲元数据文本向量
-lyrics-qwen3         歌词向量
-attributes-qwen3     风格、情绪、属性向量
-audio-laion_clap     音频向量
-image-siglip2        封面图像向量
-cf-bpr               协同过滤向量
+把一首歌、一段歌词、一张封面、一个用户，变成一串数字。
+如果两串数字方向接近，就表示它们在某种意义上相似。
 ```
 
-`CF` 是 collaborative filtering，协同过滤。意思是根据“相似用户喜欢什么”来推荐。
-
-`BPR` 是 Bayesian Personalized Ranking，一种常见协同过滤训练方式。
-
-`CLAP` 是音频和文本对齐的模型，常用于音乐/声音检索。
-
-`SigLIP` 是图像和文本对齐的模型，类似 CLIP。
-
-我们先做了 embedding schema 检查，发现：
+官方提供了很多 embedding：
 
 ```text
-必须用 Challenge 版本 embeddings
-旧版 embedding 和当前 track UUID 不匹配
+metadata-qwen3
+lyrics-qwen3
+attributes-qwen3
+audio-laion_clap
+image-siglip2
+cf-bpr
 ```
 
-后续尝试：
+解释：
 
 ```text
-seed-CF tail rescue
-embedding LTR features
-metadata seed cosine
-attributes seed cosine
-user_cf / track_cf
+metadata-qwen3:
+  歌名、艺人、专辑等文本的语义向量。
+
+lyrics-qwen3:
+  歌词语义向量。
+
+attributes-qwen3:
+  风格、情绪、乐器等属性向量。
+
+audio-laion_clap:
+  音频向量。
+
+image-siglip2:
+  封面图像向量。
+
+cf-bpr:
+  协同过滤向量，根据用户行为学习“谁可能喜欢什么”。
 ```
 
-`Cosine` 是余弦相似度，衡量两个向量方向是否相似。
+这里要说清楚：我们不是把所有 embedding 方向都完整做透了。我们做的是几种低风险接入方式，看看它们能不能稳定超过当时主线。
+
+#### embedding schema 检查
+
+`Schema` 是数据结构。
+
+这一步不是推荐实验，而是确认：
+
+```text
+官方 embedding 文件里有哪些列
+每种向量是多少维
+track_id 是否和当前官方曲库对得上
+有没有用错旧版本 embedding
+```
+
+检查结果：
+
+```text
+all_tracks embedding 有 47071 行
+和官方曲库 47071 首歌能对齐
+cf-bpr 是 128 维
+audio 是 512 维
+image 是 768 维
+metadata / lyrics / attributes 是 1024 维
+```
+
+这一步的作用是修地基：保证后面不会拿错向量。
+
+#### seed-CF tail rescue
+
+这个名字拆开看：
+
+```text
+seed:
+  历史里用户反馈过的参考歌。
+
+CF:
+  collaborative filtering，协同过滤。
+  大概意思是“喜欢这首歌的人，还喜欢哪些歌”。
+
+tail rescue:
+  只救尾部，不动前面高价值位置。
+```
+
+具体做法：
+
+```text
+1. 保护原 top19 不动。
+2. 找最近的 positive seed。
+3. 用 track_cf 向量找和这个 seed 相似的歌。
+4. 如果找到一个没出现过、也不是 negative seed 的候选，就插到第 20 位附近。
+```
+
+为什么这么保守？
+
+```text
+因为 nDCG 很看重前几名。
+直接让 embedding 改 top1/top5 风险太大。
+先只试它能不能在尾部捞一点收益。
+```
 
 结果：
 
 ```text
-seed-CF tail rescue 只带来极小提升或不稳定
-embedding LTR features 在 fold 0 反而更差
-attributes seed cosine 明显伤分
+收益极小或不稳定。
 ```
 
-结论：
+这说明：
 
 ```text
-embedding 很有研究价值
-但在最终 Blind A 阶段不是低风险提分点
+CF embedding 可能有信号，
+但只靠“拿 seed 的相似歌插尾部”这个简单策略，不足以稳定涨分。
 ```
 
-策略改变：
+#### embedding LTR features
+
+这一步不是直接把 embedding 搜出来的歌塞进提交。
+
+它是把 embedding 做成 LTR 的特征，让 LightGBM 自己判断要不要用。
+
+比如每个候选歌会多几个数字：
 
 ```text
-不把 embedding 直接用于最终 ranking
-保留为未来 Blind B 或长期研究方向
+这个候选和 positive seed 的 embedding 相似度有多高
+这个候选和 negative seed 的 embedding 相似度有多高
+positive 相似度 - negative 相似度是多少
+这个用户的 user_cf 向量和这首歌的 track_cf 向量有多匹配
 ```
 
-## 14. 第九阶段：LTR 学习排序
+也就是说：
 
-这是项目最大的 ranking 升级。
+```text
+embedding 没有直接决定排序。
+它只是给 rerank 模型多提供几列信息。
+```
+
+我们试了几组：
+
+```text
+track_cf + user_cf:
+  用协同过滤向量描述“用户可能喜欢什么”和“歌曲之间谁像谁”。
+
+metadata seed cosine:
+  用 metadata-qwen3 向量算候选歌和 positive/negative seed 的语义相似度。
+
+attributes seed cosine:
+  用 attributes-qwen3 向量算候选歌和 seed 在风格、情绪、属性上的相似度。
+```
+
+`Cosine` 是余弦相似度，可以理解成两个向量方向像不像。
+
+验证结果：
+
+```text
+track_cf + user_cf      nDCG@20 = 0.183415
+metadata seed cosine    nDCG@20 = 0.183013
+attributes seed cosine  nDCG@20 = 0.178924
+```
+
+对比当时最终主 ranking：
+
+```text
+weighted four-model RRF nDCG@20 = 0.183924
+```
+
+所以结论不是“embedding 没用”。
+
+更准确是：
+
+```text
+我们试过的这些低风险 embedding 接法，没有超过最终主线。
+```
+
+其中：
+
+```text
+track_cf + user_cf:
+  有一点信号，但没有超过 ensemble 主包。
+
+metadata seed cosine:
+  基本接近单模型主线，但没有新增明显收益。
+
+attributes seed cosine:
+  明显伤分，说明这个属性相似度直接喂给当前 LTR 可能会误导模型。
+```
+
+#### 这里没有做透的 embedding 方向
+
+还没有系统做完的包括：
+
+```text
+用 embedding 做真正的候选召回 source
+按题型选择不同 embedding，例如 cover_art 用 image，mood 用 attributes/audio
+给 query 本身编码，再和 track embedding 做 dense retrieval
+把 lyrics / audio / image 多模态信号做成独立 source diagnostics
+专门训练一个 embedding-aware reranker
+```
+
+所以这部分的真实结论应该是：
+
+```text
+embedding 方向有价值，但我们只做了保守接入和少量验证。
+当前几种接法没有稳定超过主线，所以没有进 Blind A 主包。
+它不是被证明“没用”，而是还没有被充分开发。
+```
+
+这也是为什么下一步如果继续冲 nDCG，embedding 应该回到“召回诊断”里重新做，而不是只当尾部补丁或几列 LTR 特征。
+
+### 3.13 粗排模块当前真实评价
+
+这部分要说实话。
+
+我们不是没有做粗排，但粗排还没有被做到“成熟系统”的程度。
+
+已经做了：
+
+```text
+多 index
+多 query variant
+RRF 融合
+source diagnostics
+train-context augmentation
+progress feedback seeds
+embedding 试探
+legacy head protection
+tail diversity 安全边界
+```
+
+发现了：
+
+```text
+新增 source 有候选覆盖潜力
+裸 RRF 会伤头部排序
+enriched source 有价值
+embedding 直接上不稳
+```
+
+还没有完全补上的关键表：
+
+```text
+候选池 recall@20 / recall@100 / recall@300 / recall@1200
+按 turn_number 分组
+按 conversation_goal.category 分组
+按 specificity 分组
+按 query 类型分组
+```
+
+这就是下一轮真正应该优先做的粗排诊断。
+
+## 4. Rerank 模块，从头到尾怎么迭代
+
+`Rerank` 是重排。
+
+召回阶段先拿到候选池，rerank 再决定最终顺序。
+
+一句话：
+
+```text
+召回负责“别漏掉”
+rerank 负责“排前面”
+```
+
+### 4.1 为什么需要 rerank
+
+裸 RRF 暴露了一个问题：
+
+```text
+不同 source 的可信度不是固定的。
+```
+
+比如：
+
+```text
+specific track 题：
+  title_artist 和 quoted_entities 更可信。
+
+mood playlist 题：
+  tags、attributes、history seed 可能更可信。
+
+album/artist 题：
+  album_artist、legacy_metadata 更可信。
+```
+
+RRF 不懂这些，它只会加排名分。
+
+所以我们需要一个模型学习：
+
+```text
+在什么情况下应该相信哪个 source？
+什么样的候选更像 gold track？
+```
+
+这就是 LTR。
+
+### 4.2 LTR 是什么
 
 `LTR` 是 Learning to Rank，学习排序。
 
-普通 BM25 是手写规则；LTR 是让模型从数据里学习：
+我们用的是：
 
 ```text
-什么样的候选歌曲应该排前面
-什么样的候选歌曲应该排后面
+LightGBM LambdaRank
 ```
 
-我们用的是 LightGBM LambdaRank。
-
-`LightGBM` 是一个树模型库，适合表格特征。
-
-`LambdaRank` 是一种专门优化排序的训练目标。
-
-它不是简单判断一首歌“相关/不相关”，而是学习如何让正确歌曲在一个候选列表里排得更靠前。
-
-### 特征
-
-模型看到的特征包括：
+解释：
 
 ```text
-各召回源排名
-RRF 分数
-歌名/艺人/专辑匹配
-标签重叠
-年份
-流行度
-历史正反馈相似度
-历史负反馈相似度
-conversation_goal 类别
-turn_number
-user profile
+LightGBM:
+  一个树模型库。
+  很适合表格特征。
+
+LambdaRank:
+  一种专门为排序问题设计的训练目标。
+  它不是只学“是不是正确”，而是学“应该排第几”。
 ```
 
-`Feature` 是特征，也就是模型用来判断的输入数字或类别。
+### 4.3 LTR 的候选从哪里来
 
-### OOF
+LTR 不是全曲库直接排。
+
+它先拿粗排候选：
+
+```text
+多个 BM25 source -> RRF 合并 -> 最多保留 rerank_pool_size=1200
+```
+
+训练时每轮最多取：
+
+```text
+max_candidates_per_group = 300
+```
+
+也就是说：
+
+```text
+每个 session × turn 是一个 group。
+这个 group 里有若干候选歌。
+模型学会把 gold track 排到这些候选歌前面。
+```
+
+如果 gold track 不在候选池里，这个 group 对 rerank 来说就是无解的。
+
+所以 rerank 的上限仍然受召回约束。
+
+### 4.4 LTR 用了哪些特征
+
+`Feature` 是特征，也就是模型看到的输入信息。
+
+LTR 特征大致分几类。
+
+#### 召回排名特征
+
+```text
+某首歌在 legacy_metadata:legacy_history 里排第几
+在 title_artist:current 里排第几
+在 enriched:current_goal 里排第几
+RRF 总分是多少
+有多少 source 支持它
+最好的 source rank 是多少
+```
+
+这些特征告诉模型：
+
+```text
+哪些 source 支持这首歌
+支持得有多强
+```
+
+#### 实体匹配特征
+
+`Entity` 是实体，比如歌名、艺人、专辑、年份。
+
+特征包括：
+
+```text
+歌名是否和 query 匹配
+艺人是否匹配
+专辑是否匹配
+年份是否匹配
+标签词是否重叠
+```
+
+#### 对话反馈特征
+
+```text
+候选歌是否接近 positive seed
+是否接近 negative seed
+是否同艺人
+是否同专辑
+当前 turn_number 是多少
+```
+
+#### 用户和目标特征
+
+```text
+conversation_goal.category
+specificity
+用户画像
+当前请求长度
+历史长度
+```
+
+### 4.5 OOF 验证
 
 `OOF` 是 out-of-fold。
 
-意思是：
+做法：
 
 ```text
 把 dev 切成 5 份
 每次用 4 份训练
 用剩下 1 份预测
-最后拼起来评估
+最后把 5 份预测拼起来算 nDCG
 ```
 
-这样每条 dev 预测都来自“没有见过这条数据”的模型，比直接训练再测自己更可信。
+为什么要这样？
 
-### 结果
+因为如果模型训练完又在训练数据上评估，分数会虚高。
 
-LTR 从 baseline 的：
+OOF 保证：
 
 ```text
-nDCG@20 = 0.085870
+每条 dev 预测都来自没见过它的模型。
 ```
 
-大幅提升到：
+### 4.6 LTR 第一轮效果
+
+LTR 让 dev OOF 排序大幅提升：
 
 ```text
-nDCG@20 = 0.180947
+legacy head20 baseline nDCG@20 = 0.085870
+早期 LTR                 nDCG@20 = 0.180947
 ```
 
-再调参后：
+这说明：
+
+```text
+学习排序方向是有效的。
+```
+
+但注意：
+
+```text
+这是 dev OOF。
+不等于 Blind A 一定涨。
+```
+
+### 4.7 LTR 调参
+
+`Hyperparameter` 是超参数，也就是训练前设置的模型参数。
+
+我们调过：
+
+```text
+n_estimators
+num_leaves
+learning_rate
+reg_lambda
+reg_alpha
+min_child_samples
+subsample
+colsample_bytree
+lambdarank_truncation_level
+max_candidates_per_group
+```
+
+解释几个关键的：
+
+```text
+n_estimators:
+  树的数量。
+
+num_leaves:
+  每棵树的复杂度。
+
+learning_rate:
+  每次学习迈多大步。
+
+reg_lambda:
+  L2 正则，防止模型过度记住训练数据。
+
+overfit:
+  过拟合。本地看起来好，换到新数据变差。
+```
+
+最终较稳设置：
+
+```text
+120 trees
+reg_lambda=2
+31 leaves
+learning_rate=0.04
+max_candidates_per_group=300
+```
+
+结果：
 
 ```text
 120 trees + reg_lambda=2
 nDCG@20 = 0.183021
 ```
 
-这说明：
+一些被拒绝的尝试：
 
 ```text
-学习排序是真正有效的 ranking 方向
+num_leaves=63:
+  单折赢，五折 OOF 掉到 0.18124。
+
+max_candidates_per_group=200:
+  候选太少，正样本丢得更多。
+
+max_candidates_per_group=500:
+  候选更多，但噪声更多。
+
+reg_lambda=0.1:
+  单折看着好，五折 OOF 不如 2。
+
+L1 regularization:
+  没赢。
+
+subsample:
+  没赢。
+
+lambdarank_truncation_level=100:
+  没赢。
 ```
 
-## 15. 第十阶段：LTR 调参
-
-`Hyperparameter` 是超参数，也就是模型训练前设置的参数。
-
-我们试了很多：
+重要经验：
 
 ```text
-n_estimators       树的数量
-num_leaves         每棵树的复杂度
-learning_rate      学习率
-reg_lambda         L2 正则
-reg_alpha          L1 正则
-min_child_samples  叶子节点最少样本
-subsample          行采样
-colsample_bytree   列采样
-lambdarank_truncation_level 排序优化关注前多少名
-max_candidates_per_group 每轮候选数量
+单 fold 涨不能信。
+五折 OOF 才比较可信。
 ```
 
-术语解释：
+### 4.8 模型集成
 
-`Regularization / 正则化` 是防止模型过度记住训练数据。
+`Ensemble` 是模型集成。
 
-`L2 正则` 会惩罚过大的模型权重，让模型更稳。
-
-`Learning rate` 是每次学习迈多大步。太大容易过拟合，太小可能学不够。
-
-`Overfit / 过拟合` 是在本地数据上好，在新数据上差。
-
-调参结论：
+意思是：
 
 ```text
-120 trees 最稳
-31 leaves 比 63 leaves 更稳
-learning_rate 0.04 比 0.06 更稳
-reg_lambda=2 有帮助
-candidate pool 300 比 200/500 更好
-row bagging 没帮助
-L1 没帮助
-truncation 100 没帮助
+训练多个相近但不完全一样的模型，
+把它们的排序结果合并，
+降低单个模型偶然犯错的风险。
 ```
-
-很多单折看起来好的设置，五折 OOF 会变差。
-
-策略改变：
-
-```text
-只相信五折 OOF
-不因为某一个 fold 小涨就升级提交包
-```
-
-## 16. 第十一阶段：模型集成
-
-`Ensemble` 是模型集成。意思是把多个模型的排序结果合起来，减少单个模型偶然犯错。
 
 我们用 RRF 合并多个 LTR 模型：
 
@@ -956,8 +1467,6 @@ truncation 100 没帮助
 120-tree colsample=1.0 L2
 ```
 
-`colsample_bytree=1.0` 是让树使用全部特征列。它单独不是最强，但和其他模型有互补。
-
 结果：
 
 ```text
@@ -967,39 +1476,24 @@ single 120-tree L2       nDCG@20 = 0.183021
 weighted 4-model RRF     nDCG@20 = 0.183924
 ```
 
-最后选择：
+最终主 ranking：
 
 ```text
-rrf_k=26
-weights=[1.0, 0.5, 1.3, 1.0]
+rrf_k = 26
+weights = [1.0, 0.5, 1.3, 1.0]
 ```
 
-`Weight` 是权重。权重大，说明更信任该模型。
+`weight` 是权重，权重大代表更信任该模型。
 
-策略改变：
+`rrf_k=26` 比 `60` 更重视模型前几名。
 
-```text
-主 ranking 使用 weighted four-model RRF
-```
+### 4.9 高风险 rerank 尝试
 
-## 17. 第十二阶段：高风险 ranking 尝试与拒绝
+我们还试过一些更冒险的 rerank。
 
-我们没有只保留成功实验，也记录了大量失败实验。
+#### Category segmented selection
 
-这些失败很重要，因为它们告诉我们不要继续浪费提交次数。
-
-### Category segmented selection
-
-`Segmented selection` 是按类别选不同模型。
-
-比如：
-
-```text
-category A 用 ensemble
-category C/H/I/J 用 140-tree
-category G/K 用 200-tree
-其他用 120-tree
-```
+按 `conversation_goal.category` 选择不同模型。
 
 表面结果：
 
@@ -1007,314 +1501,258 @@ category G/K 用 200-tree
 非嵌套 OOF nDCG@20 = 0.184069
 ```
 
-看起来超过主包。
-
-但更严格的 nested validation 降到：
+但严格 nested validation 降到：
 
 ```text
 约 0.18235
 ```
 
-`Nested validation` 是更严格的验证方式，模拟“你不能用测试结果来选策略”。
-
 结论：
 
 ```text
-这是 dev 过拟合
-拒绝升级
+过拟合，拒绝。
 ```
 
-### Consensus fallback
+#### Consensus fallback
 
-`Consensus fallback` 是共识回退。
-
-意思是：如果 ensemble 的 top1 没有任何单模型支持，就退回单模型。
+如果 ensemble top1 没有单模型支持，就回退。
 
 结果：
 
 ```text
-dev OOF 从 0.183924 到 0.183986
-但 Blind A 改 0 条
+dev OOF 小涨到 0.183986
+Blind A 改 0 条
 ```
 
 结论：
 
 ```text
-对 Blind A 没用
-保留给未来 Blind B
+对 Blind A 没实际影响，保留给未来 split。
 ```
 
-### Batch repeat repair
+#### Cross-encoder reranking
 
-`Batch repeat repair` 是全局去重复。想减少总是推荐同一首歌。
+`Cross-encoder` 是把 query 和 candidate 一起读的神经网络精排模型。
 
-结果：
-
-```text
-catalog diversity 上升
-nDCG 下降
-```
-
-结论：
-
-```text
-Blind A catalog 已接近上限，不值得牺牲 nDCG
-```
-
-### Quoted-title promotion
-
-`Quoted-title promotion` 是如果用户话里有引号歌名，就把同名候选往前提。
-
-结果：
-
-```text
-改动很多
-只改善少数
-伤害大量样本
-nDCG 明显下降
-```
-
-结论：
-
-```text
-规则太粗暴，拒绝
-```
-
-### Cross-encoder reranking
-
-`Cross-encoder` 是一种神经网络精排模型。它把 query 和 candidate 一起读，理论上更懂语义。
+理论上更懂语义。
 
 我们用 MiniLM 做零样本探测。
 
-`Zero-shot` 是不针对本比赛训练，直接拿现成模型用。
-
 结果：
 
 ```text
-CE-only 大幅下降
-lock15 仍下降 0.00912
+lock15 保护前 15 仍下降 0.00912 nDCG@20
+只有 3 行变好，11 行变差
 ```
-
-`lock15` 是保护前 15 名不动，只让模型改后面。
 
 结论：
 
 ```text
-零样本 cross-encoder 不适合直接上最终提交
+零样本 cross-encoder 不适合直接上最终包。
 ```
 
-### Case-neighbor
+#### Case-neighbor
 
-`Case-neighbor` 是找训练集中相似对话，把它们的答案搬过来当候选。
+找训练集中相似对话，把它们的答案当候选。
 
 结果：
 
 ```text
 gold exact coverage 只有 6.25%
-gold artist coverage 28.13%
-lock15 仍明显伤 nDCG
+lock15 仍下降 0.01788
 ```
 
 结论：
 
 ```text
-直接搬训练 case 不行
+直接搬训练 case 不行。
 ```
 
-## 18. 第十三阶段：最终 response 选择
+### 4.10 Rerank 模块当前真实评价
 
-最终几个 response 方案：
+已经做成的：
 
 ```text
-judge_clean_mix        主包，更自然
-lexplus_softened       备选，词汇更多，但更机械
-compact_clean          词汇更多，更像模板
-compact_broad          词汇最高，但可能有脏标签风险
-judge_clean_mix_plus   曾是备选，后来被审计淘汰
-judge_clean_smooth     自然化实验，失败
+LTR 从 0.085870 提升到 0.183021 dev OOF
+ensemble 提升到 0.183924 dev OOF
+高风险 rerank 大多被拒绝
+最终 ranking 选择 weighted four-model RRF
 ```
 
-主包本地：
+没有解决的：
 
 ```text
-Blind A local Distinct-2 = 0.60604
-noisy hits = 0
-long rows = 0
-short rows = 0
+Blind A public nDCG 没涨，反而从旧包 0.1935 到主包 0.1898。
 ```
 
-lexplus_softened 本地：
+可能原因：
 
 ```text
-Blind A local Distinct-2 = 0.63566
-noisy hits = 0
-long rows = 0
-short rows = 0
-```
-
-为什么没有先交 lexplus_softened？
-
-因为它更像 compact 模板。它可能提高 lexical，但也可能让 LLM judge 觉得不自然。
-
-这次主包 public：
-
-```text
-lexical_diversity = 0.6060
-llm_judge_score = 1.5
-```
-
-说明：
-
-```text
-主包 lexical 已经够高
-现在更该提升 judge，而不是继续堆 lexical
-```
-
-## 19. 第十四阶段：Final Freeze Audit
-
-`Final Freeze Audit` 是最终冻结审计。
-
-它不是为了涨分，而是为了避免提交事故。
-
-它检查：
-
-```text
-prediction.json 是否能解析
-是否正好 80 条
-每条是否 20 个 track_id
-track_id 是否都合法
-每条内部是否重复
-zip 里是否只有 prediction.json
-ranking hash 是否符合预期
-response hash 是否符合预期
-是否有 noisy tags
-是否有过长或过短回复
-top1 歌名和艺人是否出现在解释中
-```
-
-`Hash` 是文件或内容的指纹。只要内容变了，hash 就会变。
-
-最终审计结果：
-
-```text
-primary 通过
-lexplus_softened 通过
-judge_clean_mix_plus 不通过
-```
-
-`judge_clean_mix_plus` 不通过原因：
-
-```text
-1 个 noisy tag 泄漏
-2 个过长回复
-```
-
-策略改变：
-
-```text
-judge_clean_mix_plus 从备选列表删除
-最终只保留 primary 和 lexplus_softened
-```
-
-## 20. 最新 public 结果解释
-
-最新提交主包后得到：
-
-```text
-nDCG@20            0.1898
-catalog_diversity  0.0317
-lexical_diversity  0.6060
-llm_judge_score    1.5000
-composite_score    0.1962
-```
-
-与上一版对比：
-
-```text
-nDCG@20            0.1935 -> 0.1898   小降
-catalog_diversity  0.0257 -> 0.0317   上升
-lexical_diversity  0.0125 -> 0.6060   巨幅上升
-llm_judge_score    1.0000 -> 1.5000   上升
-composite_score    0.1006 -> 0.1962   接近翻倍
-```
-
-这说明：
-
-```text
-1. LTR ranking 在 Blind A 没有比旧 ranking 更好
-2. response 改造非常有效
-3. catalog diversity 已接近上限
-4. judge 仍然偏低，是下一阶段重点
-```
-
-## 21. 这一路踩过的主要坑
-
-### 坑 1：本地 dev 提升不一定等于 public 提升
-
-LTR 在 dev OOF 很强，但 Blind A nDCG 没涨。
-
-原因可能是：
-
-```text
-Blind A 分布和 dev 不完全一致
 Blind A 只有 80 条，波动很大
-LTR 学到的模式在 public 上没完全转移
+Blind A 分布和 dev 不完全一致
+LTR 依赖粗排候选池，召回缺口仍在
+dev OOF 最优不一定等于 public 最优
 ```
 
-### 坑 2：召回源越多不一定越好
+所以下一步不能只继续调 rerank。
 
-新召回源能找到更多正确歌，但简单融合会打乱原来正确的头部排序。
-
-### 坑 3：多样性不是越高越好
-
-Catalog diversity 在 Blind A 上限很低，过度追它会伤 nDCG。
-
-### 坑 4：回复越自然不一定 lexical 越高
-
-自然化 smooth probe 看起来更人话，但 lexical diversity 掉到 `0.16081`，还变长。
-
-### 坑 5：高 lexical 模板可能伤 judge
-
-compact_broad 词汇最高，但机械感更强，也可能带脏标签，所以不能盲交。
-
-### 坑 6：Pro 建议也要用本地实验验证
-
-很多 Pro 方向有启发，但最终是否采用，要看：
+更应该先判断：
 
 ```text
-dev OOF
-Blind-like panels
-final audit
-public feedback
+Blind A 这 80 条里，是候选没召回，还是召回了但 LTR 排错？
 ```
 
-## 22. 当前最重要结论
+## 5. Response 和 diversity 模块，从头到尾怎么迭代
 
-第一，response 问题已经大幅修复。
+这一章只讲文字回复和多样性。
+
+第一次 public 结果：
 
 ```text
-LexDiv 0.0125 -> 0.6060
-Judge 1.0 -> 1.5
+nDCG@20            0.1935
+catalog_diversity  0.0257
+lexical_diversity  0.0125
+llm_judge_score    1.0000
+composite_score    0.1006
 ```
 
-第二，catalog diversity 已接近 Blind A 上限。
+这告诉我们：
 
 ```text
-0.0317 / 0.0340
+当时推荐排序不差。
+最大短板是 response。
 ```
 
-第三，ranking 仍然是关键瓶颈。
+### 5.1 compact response
+
+`compact` 是短而具体的回复。
+
+它会包含：
 
 ```text
-最新 nDCG@20 = 0.1898
-上一版 nDCG@20 = 0.1935
+第一首推荐是什么
+为什么匹配
+引用哪些 metadata
+历史反馈如何影响
+后面几首备选是什么
 ```
 
-第四，下一阶段不能继续盲目堆 lexical。
+效果：
 
-因为 lexical 已经很高，继续提升 lexical 的边际收益小。真正大头是 judge 和 nDCG。
+```text
+lexical diversity 明显提高
+```
 
-## 23. 现在各提交包的意义
+### 5.2 compact_broad
+
+`broad` 是引用更多标签。
+
+优点：
+
+```text
+词汇更多，Distinct-2 更高。
+```
+
+问题：
+
+```text
+tag 里有噪声。
+```
+
+例如：
+
+```text
+albums i own
+seen live
+songsof2011
+lobpreis
+```
+
+这些写给用户会显得奇怪。
+
+### 5.3 judge_v2
+
+`judge_v2` 是面向 LLM judge 的回复。
+
+它更强调：
+
+```text
+我为什么选第一首
+我引用了哪些 metadata
+我如何使用历史反馈
+我如何使用用户画像作为 tie-breaker
+```
+
+`Tie-breaker` 是打破平局的辅助依据。
+
+### 5.4 judge_clean_mix
+
+后来做了混合风格：
+
+```text
+judge_v2
+judge_brief
+compact
+```
+
+并清理：
+
+```text
+脏标签
+重复标题
+list-valued artist name
+过长回复
+过短回复
+不自然拒答
+```
+
+最终主包使用：
+
+```text
+judge_clean_mix
+```
+
+public 结果：
+
+```text
+lexical_diversity 0.0125 -> 0.6060
+llm_judge_score   1.0    -> 1.5
+```
+
+这就是总分从 `0.1006` 到 `0.1962` 的最大原因。
+
+### 5.5 lexplus_softened
+
+`lexplus_softened` 是备选回复方案。
+
+特点：
+
+```text
+ranking 和主包完全一样
+response 更追求词汇多样性
+本地 Blind A Distinct-2 = 0.63566
+```
+
+为什么没先交它？
+
+```text
+它更像模板。
+可能 lexical 更高，但 judge 未必更喜欢。
+```
+
+### 5.6 Diversity 的结论
+
+我们做过多种 tail diversity 和 repeat repair。
+
+最终结论：
+
+```text
+Blind A catalog diversity 已接近上限。
+继续追 diversity 收益小。
+如果因此伤 nDCG，不值得。
+```
+
+## 6. 当前提交包和 public 结果
 
 主包：
 
@@ -1325,9 +1763,40 @@ blindset_A_PRIMARY_submission.zip
 特点：
 
 ```text
-ranking 使用 weighted four-model LTR RRF
-response 使用 judge_clean_mix
-public 总分 0.1962
+ranking:
+  weighted four-model LTR RRF
+
+response:
+  judge_clean_mix
+```
+
+public 结果：
+
+```text
+nDCG@20            0.1898
+catalog_diversity  0.0317
+lexical_diversity  0.6060
+llm_judge_score    1.5000
+composite_score    0.1962
+```
+
+上一版 public：
+
+```text
+nDCG@20            0.1935
+catalog_diversity  0.0257
+lexical_diversity  0.0125
+llm_judge_score    1.0000
+composite_score    0.1006
+```
+
+解释：
+
+```text
+ranking 没涨，nDCG 小降。
+diversity 小涨。
+response 大涨。
+最终总分接近翻倍。
 ```
 
 备选包：
@@ -1339,85 +1808,178 @@ blindset_A_BACKUP_lexplus_softened_submission.zip
 特点：
 
 ```text
-ranking 与主包完全一样
-response 更 compact
-lexical 本地更高
+ranking 和主包完全一样
+response 更高 lexical
 但可能更机械
 ```
 
-现在不建议盲交备选，因为：
+## 7. 现在最重要的真实结论
+
+### 结论 1：粗排没有被充分收口
+
+粗排做过很多探索，但还缺一个系统性的候选池诊断表。
+
+下一步应该先做：
 
 ```text
-主包 LexDiv 已经 0.6060
-备选最多可能小涨 lexical
-但如果 judge 降，损失更大
+候选池 recall@20 / @100 / @300 / @1200
+按 category 分组
+按 turn_number 分组
+按 specificity 分组
+按 source 分组
 ```
 
-## 24. 下一步建议
+否则很容易继续在 rerank 上空转。
 
-下一步重点不是继续冲 lexical，而是：
+### 结论 2：LTR 在 dev 上强，但 Blind A 没转化
+
+LTR dev OOF 从 `0.085870` 到 `0.183924`，说明学习排序是有效路线。
+
+但 public：
 
 ```text
-1. 分析 public nDCG 为什么没涨
-2. 做 judge-oriented response，但保持 LexDiv 不崩
-3. 找一种更稳的 Blind A/B ranking 策略
+旧包 nDCG@20 = 0.1935
+新主包 nDCG@20 = 0.1898
 ```
 
-具体方向：
+说明：
 
 ```text
-方向 A：基于旧 public nDCG 较强的 legacy ranking 做 response-only 新包
-方向 B：做 judge-focused response，不使用 compact-heavy 模板
-方向 C：对 LTR 和 legacy 的差异行做 public-like 诊断
-方向 D：重新研究哪些 session 类别 LTR 伤了 Blind A
-方向 E：不要再无脑尝试 cross-encoder、case-neighbor、embedding 直接上榜
+本地 dev 最优不等于 Blind A 最优。
 ```
 
-## 25. 给小白的最终复盘
-
-我们一开始的问题是：
+### 结论 3：response 修复是这轮最大收益
 
 ```text
-baseline 能推荐，但回复很烂
+lexical_diversity 0.0125 -> 0.6060
+judge             1.0    -> 1.5
+composite          0.1006 -> 0.1962
 ```
 
-我们先做了很多召回和融合，发现：
+这个模块是成功的。
+
+但 judge 仍低，后面还可以继续优化。
+
+### 结论 4：diversity 不是主攻方向
+
+Blind A 上限约 `0.0340`，我们已有 `0.0317`。
+
+继续为了 diversity 牺牲 nDCG，性价比低。
+
+## 8. 下一步应该怎么干
+
+如果继续优化，不应该再按“想到什么试什么”推进。
+
+应该按这个顺序：
 
 ```text
-多路召回有潜力，但简单融合会伤头部排序
+1. 先做粗排候选池诊断
+   看 gold 到底有没有进入候选池。
+
+2. 如果 gold 没进入候选池
+   继续加强召回 source。
+
+3. 如果 gold 进入候选池但排不上去
+   继续优化 LTR / source gating。
+
+4. 如果 nDCG 短期很难涨
+   再做 judge-oriented response。
+
+5. diversity 只做不伤头部的安全小修。
 ```
 
-然后做了 LTR，发现：
+最应该补的表：
 
 ```text
-学习排序在 dev 上非常强，但 public Blind A 没完全转移
+source_name
+hit@20
+hit@100
+hit@300
+hit@1200
+mean_gold_rank
+nDCG@20_if_this_source_alone
 ```
 
-接着 public 反馈显示：
+现在已经补了一个专门的粗排评测脚本：
 
 ```text
-response 才是第一轮最大短板
+scripts/evaluate_recall_pool.py
 ```
 
-于是集中修 response，结果：
+它不看 response，也不训练 LTR，只回答粗排问题：
 
 ```text
-总分 0.1006 -> 0.1962
+1. 各 source 单独能不能找到 gold
+2. 所有 source 的 candidate union 能不能包含 gold
+3. 不同 rrf_k 下，gold 在 RRF 粗排里排第几
+4. candidate pool 平均有多大
+5. 哪些样本 gold 完全没进候选池
 ```
 
-当前局面是：
+推荐先跑几组：
 
 ```text
-response 多样性已经打通
-catalog 已接近上限
-judge 还低
-ranking 需要重新诊断
+retrieval_top_k = 100
+retrieval_top_k = 260
+retrieval_top_k = 500
+retrieval_top_k = 1000
 ```
 
-所以 0.1962 不是终点，但这一轮不是白跑。它证明：
+每组都看：
 
 ```text
-我们的工程流程、提交格式、审计体系、response 生成和多样性控制已经有效
-下一阶段要从“能写多样回复”升级到“能写让 judge 更满意的回复”
-同时要解决 LTR 在 Blind A 上 nDCG 不增反降的问题
+candidate_union coverage
+RRF hit@20 / hit@100 / hit@300 / hit@1200
+pool_size
+miss list
+```
+
+如果 `candidate_union coverage` 不够高，说明召回还没做好。
+
+如果 `candidate_union coverage` 很高，但 RRF hit@100 很低，说明候选找到了，但是粗排融合很差。
+
+然后再按类型拆：
+
+```text
+specific_track
+artist_exploration
+mood_playlist
+cover_art
+era_genre
+turn_number 1-8
+specificity HH / HL / LH / LL
+```
+
+只有这张表出来，才能回答：
+
+```text
+到底应该继续做召回，还是继续做 rerank？
+```
+
+## 9. 一句话复盘
+
+从 baseline 到现在，真正发生的是：
+
+```text
+baseline:
+  一个保守 BM25 搜索器，排序有点用，但回复很烂。
+
+粗排阶段:
+  多 source 能带来更多候选覆盖潜力，
+  但裸 RRF 会冲散头部，
+  需要更系统的 recall@K 诊断。
+
+rerank 阶段:
+  LTR 在 dev OOF 上大幅提升，
+  ensemble 进一步小涨，
+  但 Blind A public 没转化成 nDCG 提升。
+
+response 阶段:
+  从模板废话升级到 metadata-grounded explanation，
+  lexical 和 judge 明显上涨，
+  这是 public 总分翻倍的主因。
+
+当前瓶颈:
+  ranking 仍然没被解决。
+  下一步应该先回到粗排候选池诊断，而不是盲目继续堆 rerank 或 diversity。
 ```

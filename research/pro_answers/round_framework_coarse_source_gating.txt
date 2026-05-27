@@ -1,0 +1,1480 @@
+主人，一个优秀的 Music-CRS 粗排 candidate pool，核心不是“找一个最强 source”，而是做成一个多意图、多字段、多证据、可诊断的候选集合生成器。它输出的应该是：
+
+candidate_set(turn) = union(source_1, source_2, ..., source_n)
+
+而不是：
+
+candidate_rank(turn) = RRF(source_1, source_2, ..., source_n)
+
+因为你已经观察到：早期 RRF top20 变差，但 best single source hit@20 更高。这说明 source 里有召回潜力，但融合排序策略会伤害头部。粗排阶段应该追求“把可能对的东西放进候选池”，最终排序交给 LightGBM LambdaRank。
+
+官方任务本身是给定 dialogue history 和 user context，输出 top-20 tracks 以及 response，所以粗排必须理解多轮上下文，而不是只对当前一句话做单查询检索。官方页面也明确推荐质量核心是 ranked retrieval / nDCG@20，这意味着 candidate pool 的第一目标是让 gold 出现在 reranker 可见范围内，而不是粗排顺序本身漂亮。
+Codabench
++2
+推荐系统挑战赛
++2
+
+0. 总体框架
+
+我建议把粗排系统拆成四层：
+
+Dialogue State Parser
+        ↓
+Intent Router
+        ↓
+Source Bank Retrieval
+        ↓
+Candidate Union + Diagnostics + Feature Attachment
+
+不要让某个 source 直接决定最终排名。每个 source 只贡献：
+
+track_id
+source_name
+source_rank
+source_score
+matched_query_variant
+matched_field
+matched_entity
+matched_intent
+
+然后统一交给 rerank。
+
+最终每个 candidate 应该带着一组 source features：
+
+bm25_title_rank
+bm25_artist_rank
+bm25_fullmeta_rank
+bm25_trainctx_rank
+quoted_entity_rank
+history_seed_rank
+album_rank
+lyrics_rank
+mood_tag_rank
+source_count
+best_source_rank
+best_source_score
+source_entropy
+entity_match_flags
+negative_violation_flags
+
+这样粗排和 rerank 是解耦的：粗排负责“拿到”，rerank 负责“排对”。
+
+1. 一个优秀 candidate pool 应包含哪些 source？
+
+建议保留这些大类 source。
+
+A. Exact lexical / entity sources
+
+用于 specific_track、artist、album、quoted title、明确实体请求。
+
+包括：
+
+title_exact
+title_artist_exact
+artist_exact_discography
+album_exact_tracks
+quoted_phrase_query
+normalized_entity_query
+
+这些 source 的特点是：topK 不需要很大，但 precision 应该很高。
+
+适合召回：
+
+“play something by Radiohead”
+“songs from In Rainbows”
+“recommend Bohemian Rhapsody”
+“more Taylor Swift”
+
+这类 source 不能被 mood / train-context 噪声覆盖。
+
+B. Metadata BM25 sources
+
+这是主干 source bank。
+
+建议分 index：
+
+title_index
+artist_index
+album_index
+genre_tag_index
+full_metadata_index
+title_artist_album_index
+clean_tag_description_index
+
+不要只建一个 full text index。音乐请求里 title、artist、album、genre、mood 的语义完全不同，混在一起会导致短字段被长字段稀释。
+
+C. Conversation-state lexical sources
+
+把对话状态转成不同查询。
+
+包括：
+
+current_user_query_source
+conversation_goal_source
+recent_context_source
+positive_seed_expansion_source
+negative_adjusted_query_source
+history_seed_query_source
+
+这类 source 处理多轮上下文。
+
+例如用户说：
+
+“not that, something more upbeat”
+
+当前 query 本身没有足够信息，必须结合前文和 negative seed。
+
+D. Train-context augmentation source
+
+你已经有 train-context item augmentation，但建议把它拆成单独 source，而不是直接混入主 metadata index。
+
+保留：
+
+train_context_bm25
+train_reason_bm25
+train_user_query_bm25
+train_goal_bm25
+
+它的角色是补自然语言到 track 的桥接，而不是替代 catalog metadata。
+
+E. Seed-neighbor sources
+
+用于 similar_to_seed、personalized continuation、positive feedback。
+
+非 embedding 版本也可以做：
+
+same_artist_as_positive_seed
+same_album_as_positive_seed
+same_genre_as_positive_seed
+same_tag_overlap_seed
+train_case_neighbor_seed
+co_occurrence_if_available
+
+embedding 可以作为另一条线研究，但不应是唯一方式。
+
+F. Lyrics / theme sources
+
+如果官方数据有 lyrics 或 lyrics-derived fields，可以建：
+
+lyrics_bm25
+lyrics_summary_bm25
+theme_tag_bm25
+emotion_word_bm25
+
+用于：
+
+“songs about heartbreak”
+“lyrics about leaving home”
+“something with hopeful words”
+
+但 lyrics source 必须受 intent gate 控制。否则它会把很多主题词相似但音乐风格不对的歌拉进池子。
+
+G. Visual / cover-art sources
+
+如果有 image caption、cover tags、visual embedding metadata，可以建轻量 source：
+
+cover_caption_bm25
+visual_theme_tag_source
+
+只用于用户明确提到视觉风格时：
+
+“album cover looks dark”
+“music with dreamy cover art”
+“something like that blue/purple cover”
+
+否则预算应该很小。
+
+H. Popularity / fallback source
+
+用于兜底。
+
+global_popular
+artist_popular
+genre_popular
+era_genre_popular
+
+它不是为了创新，而是防止 query 解析失败时候选池太空。
+
+但这类 source 要加频率惩罚，否则会污染候选池并伤害 catalog diversity。
+
+I. Randomized / diversity tail source
+
+只在 500/1000 档候选池里放少量。
+
+例如：
+
+genre_matched_longtail
+artist_matched_less_popular
+decade_genre_tail
+
+作用是给 rerank 学习和 batch diversity 留余地，不应该进入 300 档的核心池。
+
+2. 按 intent 设计 source
+
+建议先做一个 rule-based intent router，不需要复杂模型。每个 turn 可以多标签：
+
+specific_track
+artist_exploration
+album
+mood_playlist
+lyrics_theme
+cover_art
+similar_to_seed
+era_genre
+negative_adjustment
+personalized
+discovery
+Intent-source matrix
+Intent	主 source	辅 source	应避免的噪声
+specific_track	title_exact, title_artist_exact, quoted_phrase	title fuzzy, album/title disambiguation	train-context 大段文本、mood tags
+artist_exploration	artist_exact_discography, artist+genre, artist popular	same artist from seeds, train-context artist turns	unrelated title hits
+album	album_exact_tracks, album+artist	title/album disambiguation, album train-context	artist 全曲库过量
+mood_playlist	genre_tag, mood_tag, clean description, train-context query	audio/attribute/embedding later	title exact 误命中、noisy tags
+lyrics_theme	lyrics, lyrics summary, theme tags	train-context theme turns	metadata-only genre 噪声
+cover_art	cover caption, visual tags	image embedding later	文本 metadata 无关扩张
+similar_to_seed	positive seed expansion, same artist/album/genre/tag, case neighbors	embedding/CF later	只看当前短 query
+era_genre	year/decade filter + genre/tag index	artist/album constrained source	年代不匹配的热门歌
+specific_track
+
+目标：高精度找具体歌。
+
+Source：
+
+title_exact_topK=20
+title_artist_exact_topK=20
+quoted_entity_topK=20
+title_fuzzy_topK=30
+full_metadata_topK=20
+
+规则：
+
+如果 query 里有引号、明显 song title、title-like phrase，则启用。
+
+title + artist 同时匹配的候选优先进入池。
+
+不要让 train-context 或 mood source 大量进入，否则会把具体歌请求稀释。
+
+artist_exploration
+
+目标：用户想听某 artist 或相关 artist 的歌。
+
+Source：
+
+artist_exact_discography_topK=80
+artist_popular_topK=50
+artist_genre_filtered_topK=50
+same_artist_from_history_topK=30
+train_artist_context_topK=50
+
+规则：
+
+如果用户说 “by X”、“more X”、“X songs”，强 artist gate。
+
+如果用户说 “like X”，则不一定只要同 artist，还要 similar_to_seed source。
+
+artist discography 要有 budget cap，避免大 artist 把 300 候选池吃光。
+
+album
+
+目标：专辑内歌曲或 album-like 请求。
+
+Source：
+
+album_exact_tracks_topK=50
+album_artist_exact_topK=50
+title_album_disambiguation_topK=20
+
+规则：
+
+如果 album 明确，专辑内 tracks 应全部进入候选池，最多 cap 50。
+
+如果 album title 和 track title 冲突，用 artist/上下文 disambiguate。
+
+不要把 artist 全曲库无限展开。
+
+mood_playlist
+
+目标：情绪、场景、活动、风格 playlist。
+
+Source：
+
+genre_tag_topK=100
+mood_tag_topK=100
+activity_tag_topK=80
+clean_description_topK=80
+train_context_query_topK=80
+conversation_goal_topK=50
+
+规则：
+
+mood_playlist 是候选池最需要多 source 的 intent。
+
+这里 BM25 full metadata + clean tags + train-context 会有互补。
+
+需要 negative tag filter，例如 avoid sad / not too slow / no country。
+
+lyrics_theme
+
+目标：歌词主题、叙事主题。
+
+Source：
+
+lyrics_bm25_topK=120
+lyrics_summary_topK=80
+theme_tag_topK=60
+train_context_theme_topK=50
+
+规则：
+
+只有 query 明确提 lyrics / about / words / theme / story 时才给大预算。
+
+lyrics source 召回可能高但排序噪声大，所以只作为 candidate set，不要直接粗排 top20。
+
+rerank 需要 lyrics_source_rank、theme_match_score 特征。
+
+cover_art
+
+目标：视觉/封面相关请求。
+
+Source：
+
+cover_caption_topK=80
+visual_tag_topK=50
+image_embedding_topK=optional
+
+规则：
+
+只有明确视觉 cue 时启用。
+
+默认预算为 0 或很小。
+
+否则这个 source 很可能只加噪声。
+
+similar_to_seed
+
+目标：根据上一首/正反馈/历史 seed 延续。
+
+Source：
+
+seed_title_artist_metadata_query_topK=60
+same_artist_seed_topK=40
+same_album_seed_topK=30
+same_genre_tag_seed_topK=80
+train_case_neighbor_topK=50
+embedding_seed_topK=optional
+cf_seed_topK=optional
+
+规则：
+
+seed 信息比当前 query 更重要。
+
+如果用户说 “not like that”，positive seed 和 negative seed 要分开。
+
+negative seed 的 artist/genre/tag 不一定全过滤，只能作为 penalty/filter candidate feature，避免过杀。
+
+era_genre
+
+目标：年代 + 类型。
+
+Source：
+
+decade_filter + genre_tag_topK=100
+year_range + artist/genre_topK=80
+era_context_topK=50
+
+规则：
+
+年代必须变成 hard 或 soft filter。
+
+“90s hip-hop” 不应召回大量 2010s hip-hop。
+
+如果年份 metadata 缺失，不要直接丢弃，可标 unknown_year_penalty。
+
+3. 如何把 conversation_goal、当前 query、历史对话、positive/negative seeds 转成查询？
+
+每个 turn 不应该只有一个 query。建议生成 query variants。
+
+A. Current user query
+
+这是最高优先级查询。
+
+q_current = 当前用户最后一句
+
+适合：
+
+exact entity
+negative adjustment
+new constraint
+mood/genre update
+
+但如果当前 query 很短：
+
+“more like that”
+“not this”
+“something else”
+
+则不能单独用。
+
+B. Conversation goal
+q_goal = 对话全局目标 / 用户长期意图
+
+例如：
+
+“looking for chill indie songs for studying”
+
+用法：
+
+放入 goal index / full metadata / train-context source。
+
+权重低于 current query，但用于保持多轮一致性。
+
+如果 current query 是局部修正，goal 不应被完全覆盖。
+
+C. Recent dialogue summary
+
+保留最近 2-4 轮，做 compact summary：
+
+q_recent = recent accepted/rejected + last assistant recommendations + user corrections
+
+例如：
+
+User liked mellow indie but rejected songs that were too slow; now asks for something more upbeat.
+
+用法：
+
+mood_playlist
+
+similar_to_seed
+
+negative adjustment
+
+personalization
+
+D. Positive seeds
+
+Positive seeds 包括：
+
+accepted tracks
+liked artists
+clicked/approved recommendations
+explicit “more like X”
+
+转成多种 query：
+
+q_pos_title_artist = title + artist
+q_pos_artist_genre = artist + genre/tags
+q_pos_album = album
+q_pos_style = clean tags + genre + mood
+q_pos_context = “similar to {seed metadata}”
+
+用法：
+
+similar_to_seed source
+
+same artist / same album / same tag expansion
+
+embedding/CF source later
+
+E. Negative seeds
+
+Negative seeds 包括：
+
+rejected tracks
+disliked artists
+“not X”
+“avoid Y”
+“too slow”
+“too pop”
+
+负反馈不要简单当作反向 query 全删。建议分三类：
+
+hard negative
+avoid artist X
+not songs by X
+no country
+
+可以做 hard filter 或 strong penalty。
+
+soft negative
+too slow
+too sad
+too mainstream
+
+转成 rerank negative features，不要粗排阶段过度删除。
+
+contrastive negative
+not that, but more upbeat
+
+构造 query：
+
+q_adjusted = positive_goal + desired_change - negative_trait
+
+例如：
+
+“indie upbeat energetic, not slow acoustic”
+4. BM25 多 index 如何设计？
+
+不要只搞一个大 index。建议至少 10 个 index/source。
+
+必留 index
+1. title_index
+
+字段：
+
+title
+normalized_title
+alternate_title if available
+
+用途：
+
+specific_track
+quoted query
+
+特点：高精度，小 topK。
+
+2. artist_index
+
+字段：
+
+artist
+artist_alias
+featured_artist if available
+
+用途：
+
+artist_exploration
+specific artist request
+
+不要把 artist 和 lyrics 混一起。
+
+3. album_index
+
+字段：
+
+album
+album_artist
+album_year
+
+用途：
+
+album intent
+4. title_artist_album_index
+
+字段：
+
+title^3 artist^2 album^1
+
+用途：
+
+general entity matching
+
+这是最稳的 entity fallback。
+
+5. genre_tag_index
+
+字段：
+
+genre
+subgenre
+clean_tags
+mood tags
+activity tags
+
+用途：
+
+mood_playlist
+era_genre
+
+需要清洗 tag。保留音乐相关 tag，删除用户私有/噪声 tag。
+
+6. clean_description_index
+
+字段：
+
+short catalog description
+curated metadata
+safe generated summary if already built
+
+用途：
+
+natural language mood/style query
+7. train_context_index
+
+字段：
+
+train user query
+conversation goal
+assistant reason
+selection rationale
+
+用途：
+
+language-to-track bridge
+
+必须单独 index，不要直接和 official metadata 混成一个不可控大字段。
+
+8. lyrics_index
+
+字段：
+
+lyrics
+lyrics summary
+theme words
+
+用途：
+
+lyrics_theme
+
+只有 lyrics/theme intent 给预算。
+
+9. year_era_genre_index
+
+字段：
+
+year
+decade
+genre
+artist
+tags
+
+用途：
+
+90s rock
+early 2000s R&B
+
+最好支持 year filter，不只是 BM25 文本。
+
+10. seed_metadata_index
+
+字段：
+
+title artist album genre tags of seed-expanded query
+
+这个可以不是真 index，而是对 seed metadata 构造 query 后打 genre/tag/fullmeta indexes。
+
+会引入噪声的字段组合
+
+谨慎或不要混：
+
+title + lyrics + train-context + tags + user comments
+
+这种大杂烩会让 BM25 很难解释命中原因。
+
+高风险字段：
+
+noisy user tags
+private playlist names
+“sleep”, “cds I own”, “to live by” 这类非音乐语义 tag
+very long lyrics
+assistant response 全文
+训练集中冗长对话上下文
+
+长字段要么单独 index，要么降权。
+
+推荐原则：
+
+short precise fields -> high precision source
+long natural language fields -> recall source
+noisy fields -> gated source or not used
+5. train-context augmentation 如何安全使用？
+
+train-context augmentation 有价值，但必须把它当作一种 recall source，而不是把训练标签隐式灌进所有字段。
+
+安全使用方式
+A. 只用 official train
+
+不要用 dev gold，不要用 public/blind feedback，不要用任何 validation fold 的 labels 构建该 fold 的 train-context index。
+
+对于 OOF：
+
+fold f:
+  train_context_index = train folds excluding f
+  validation = fold f
+
+对于 final blind：
+
+train_context_index = official train only
+
+如果你最终允许用全部 labeled train+dev，那必须确认比赛规则允许；否则不要折入 dev labels。
+
+B. 单独 source
+
+不要这样：
+
+track_doc = official metadata + all train contexts
+
+然后只看一个 BM25 分数。
+
+更好：
+
+source_1 = official_metadata_bm25
+source_2 = train_context_bm25
+source_3 = train_goal_bm25
+source_4 = train_reason_bm25
+
+让 rerank 学会什么时候信 train-context。
+
+C. 限制每个 item 的 context 数量
+
+热门 track 可能有大量训练上下文，会造成 BM25 暴涨。
+
+可以：
+
+max_context_per_track = 20 或 50
+
+或者保留去重后的代表性 context。
+
+D. 降权和去模板
+
+训练 assistant explanation 可能包含模板化语言。要做：
+
+remove repeated boilerplate
+remove “I recommend”
+remove track title/artist repeated phrase
+keep user query / goal / reason keywords
+E. 防止 dev/blind 泄漏
+
+绝对禁止：
+
+dev gold track -> item doc
+public feedback -> source weight
+blind prediction outcome -> train context
+
+诊断上要跑：
+
+train-context source alone
+metadata source alone
+combined source
+without-train-context ablation
+
+如果 train-context 在 OOF 大涨但 group split 一换就消失，说明它偏 memorization。
+
+6. 是否应该做 entity parser？
+
+应该做。Music-CRS 粗排非常需要 entity parser。
+
+但不要做成复杂 NER 项目，先做 deterministic parser + catalog fuzzy matching。
+
+需要抽取的字段
+track_title
+artist_name
+album_name
+genre
+subgenre
+decade/year
+mood
+activity
+language
+lyrics/theme terms
+positive_seed_entities
+negative_seed_entities
+quoted_spans
+comparison_target
+实体来源
+A. Query text
+
+抽取：
+
+引号内文本
+大写/标题式 phrase
+by/from/like/with 后面的 span
+
+例如：
+
+songs by X
+tracks from Y
+like Z
+more X
+not X
+B. Catalog dictionary
+
+构建：
+
+title_alias_map
+artist_alias_map
+album_alias_map
+normalized_string -> candidate entities
+
+Normalization：
+
+lowercase
+strip punctuation
+remove feat./ft.
+remove remaster/live/acoustic parenthetical variants cautiously
+unicode normalize
+C. Dialogue history
+
+抽取之前系统推荐过的 top tracks、用户喜欢/拒绝的 tracks/artists。
+
+用法
+For recall
+specific_track -> title_exact source
+artist -> artist_discography source
+album -> album_tracks source
+seed -> same artist/album/tag source
+negative artist -> exclude/penalty
+For features
+candidate_title_exact_match
+candidate_artist_exact_match
+candidate_album_exact_match
+candidate_matches_positive_seed_artist
+candidate_violates_negative_artist
+candidate_matches_requested_decade
+For source routing
+
+如果 entity_confidence 高：
+
+increase entity source budget
+decrease train-context/mood budget
+
+如果 entity_confidence 低：
+
+fallback to full metadata + train-context + mood source
+7. Source budget allocation：300 / 500 / 1000 三档
+
+预算原则：
+
+高精度 source 小 topK，但必须覆盖；
+高召回 source 大 topK，但只能在候选池尾部；
+intent 相关 source 增预算，intent 无关 source 归零或极小。
+
+不要每个 source 固定 topK。应该按 intent 动态分配。
+
+300 档：训练 reranker 的稳定核心池
+
+目标：
+
+低噪声，高 rerank 稳定性
+
+适合当前已验证的 LightGBM 训练。
+
+通用 300 budget
+BM25 title_artist_album: 60
+BM25 full clean metadata: 80
+genre_tag/mood: 50
+conversation_goal/current_query: 40
+train_context: 40
+history/seed expansion: 30
+entity exact/quoted: 20 reserve
+
+去重后约 250-320。
+
+specific_track 300
+title_exact: 40
+title_artist: 40
+quoted_entity: 30
+full_metadata: 40
+artist/album disambiguation: 40
+train_context: 20
+fallback popular/entity: 20
+mood_playlist 300
+genre_tag: 80
+mood/activity_tag: 80
+full_metadata: 60
+train_context: 60
+conversation_goal: 40
+seed/history: 30
+entity exact: 10
+similar_to_seed 300
+seed same_artist/album: 60
+seed genre/tag: 80
+history_seed_query: 60
+full_metadata current+goal: 50
+train_context similar cases: 40
+entity exact: 10
+500 档：提高 gold coverage 的主实验池
+
+目标：
+
+更多 recall，但仍可控
+
+推荐：
+
+core 300
++ train_context extra 60
++ genre/tag extra 50
++ lyrics/theme if intent 60
++ seed expansion extra 50
++ era/album/artist extra 40
++ fallback/diversity 20
+
+对于你说的“500 有更多 gold 覆盖但排序噪声变大”，不要直接让 500 全进同样 rerank 训练。可以：
+
+train rerank on 300 core + hard negatives sampled from 500 extra
+predict candidate from 500 but use source features区分 core/extra
+
+也可以给 rerank 加：
+
+candidate_pool_tier = core300 / extra500 / extra1000
+1000 档：召回诊断池，不一定用于最终 rerank
+
+目标：
+
+研究 upper bound、miss taxonomy、source value
+
+推荐：
+
+core 300
++ extra lexical/meta 200
++ train-context/case 150
++ lyrics/theme 100
++ seed/artist/album expansion 100
++ era_genre 80
++ embedding/CF optional 100
++ diversity/longtail 50
+
+1000 档最好先做诊断：
+
+if gold in 1000 but rerank miss -> rerank problem
+if gold not in 1000 -> source problem
+
+不建议一上来就用 1000 训练最终 reranker，否则负样本噪声和 position bias 会变强。
+
+8. 粗排评测指标设计
+
+粗排不要看 nDCG top20 为主。应该看 candidate union 的覆盖和 source 贡献。
+
+A. candidate_union recall@K
+
+核心指标：
+
+Recall@300 = gold in union top300?
+Recall@500
+Recall@1000
+
+如果每 turn 只有一个 gold：
+
+recall@K = mean(1[gold_track in candidate_union_K])
+
+分 intent 看：
+
+recall@specific_track
+recall@artist_exploration
+recall@mood_playlist
+recall@similar_to_seed
+recall@lyrics_theme
+
+总体 recall 高但 specific_track 低，问题完全不同。
+
+B. source recall
+
+每个 source 单独算：
+
+source_recall@K_s = mean(1[gold in source topK_s])
+
+这能告诉你 best single source 为什么高。
+
+C. incremental recall
+
+按 source 加入顺序：
+
+union_recall(S_1)
+union_recall(S_1 ∪ S_2)
+...
+incremental_gain(S_i) = recall(union + S_i) - recall(union)
+
+更重要的是 conditional incremental recall：
+
+gain_on_missed_by_base(S_i)
+
+即：
+
+P(gold in S_i | gold not in current union)
+
+这比 source 自身 recall 更重要。
+
+D. source overlap
+
+计算 source 之间交集：
+
+Jaccard(source_i, source_j)
+overlap@K
+gold overlap
+unique gold hits per source
+
+一个 source 如果 recall 高但 95% gold hits 已被 BM25 覆盖，它不是粗排优先方向。
+
+E. oracle upper bound
+
+对一个 candidate pool，rerank 上限是：
+
+oracle_hit@20 = 1[gold in candidate_pool]
+
+如果只有一个 gold，则 candidate recall@K 就是 oracle hit upper bound。
+
+也可以算 oracle nDCG@20：
+
+if gold in candidate pool:
+    oracle nDCG@20 = 1.0
+else:
+    0
+
+如果多相关物品，则按相关度算理想排序。
+
+这个指标回答：
+
+候选池本身有没有可能赢？
+F. gold rank distribution inside source
+
+即使粗排是 unordered，也要看 source 中 gold 的 rank：
+
+gold_source_rank histogram
+gold_best_rank_across_sources
+gold_rank_bucket: 1-10 / 11-50 / 51-100 / 101-500
+
+如果 gold 大多在 source top10，source 很强；如果都在 900 名，source 只是噪声扩张。
+
+G. miss taxonomy
+
+对 gold not in union 的样本做归因：
+
+entity parse miss
+artist alias miss
+album/title ambiguity
+genre/mood vocabulary miss
+lyrics/theme miss
+similar_to_seed miss
+negative constraint over-filter
+train-context absent
+catalog metadata sparse
+gold is obscure/longtail
+candidate budget exhausted
+source generated but truncated by topK
+
+每个 miss 最好附：
+
+query
+gold title/artist
+which sources searched
+best rank of gold in each source, if any
+why excluded
+H. source noise metrics
+
+候选池不是越大越好。看：
+
+unique candidates added
+gold candidates added
+gold per 100 candidates
+source precision proxy = unique_gold_hits / total_added
+rerank damage proxy = extra candidates per additional gold
+
+例如：
+
+source A adds 100 candidates, adds 5 new gold hits -> good
+source B adds 1000 candidates, adds 3 new gold hits -> noisy
+9. 如何判断 source 真有用还是只加噪声？
+
+用四个层次判断。
+
+1. Unique gold contribution
+unique_gold_hits(S) = gold in S and gold not in base_union
+
+如果 unique_gold_hits 接近 0，source 不该占预算。
+
+2. Marginal recall per candidate
+efficiency(S) = incremental_recall(S) / number_of_new_candidates_added
+
+按 intent 分开看。
+
+一个 source 可能总体低效，但对 lyrics_theme 很有用。
+
+3. Rerank recoverability
+
+把 source candidates 加入 rerank 后看：
+
+gold in pool but rerank not top20
+
+如果 source 加了 gold，但 rerank 总排不上，可能是：
+
+source 特征不够；
+
+source 太噪；
+
+rerank 学不会；
+
+gold 在 extra tier 里被负样本淹没。
+
+这时不是 source 必然无用，而是要给 rerank 更多 source-aware features。
+
+4. Damage analysis
+
+加入 source 后，如果：
+
+candidate recall↑
+rerank nDCG↓
+
+说明 source 有 recall，但排序污染大。
+
+解决：
+
+source_tier feature
+source_gate by intent
+train with hard negatives from that source
+cap per-source topK
+do not use source order as final order
+10. 如何把粗排评测和 rerank 训练解耦？
+
+核心原则：
+
+candidate generation evaluation = coverage problem
+rerank evaluation = ordering problem
+
+不要用 rerank nDCG 直接否定一个召回 source。
+
+建议建三套 artifacts：
+
+A. Candidate pool artifact
+
+每 turn 保存：
+
+candidate_track_id
+source_name
+source_rank
+source_score
+query_variant
+matched_field
+pool_tier
+
+不排序，或者只按 source priority 暂存。
+
+B. Candidate recall report
+
+只看：
+
+union recall@300/500/1000
+incremental recall
+miss taxonomy
+source unique hits
+oracle upper bound
+
+这不涉及 LightGBM。
+
+C. Rerank report
+
+在固定候选池上训练/验证：
+
+candidate_pool_v1 + reranker_A
+candidate_pool_v1 + reranker_B
+candidate_pool_v2 + same reranker_A
+
+这样才能知道提升来自：
+
+source 变好了
+
+还是：
+
+rerank 变好了
+
+实验矩阵：
+
+Candidate pool	Reranker	目的
+old pool	old reranker	baseline
+new pool	old reranker	source 是否直接有益
+old pool	new reranker	rerank 是否变强
+new pool	new reranker	full system
+11. 如果 recall 高但 rerank 不好，或者 recall 低，分别怎么做？
+A. Candidate recall 很高，但 rerank 不好
+
+说明问题在排序，不在召回。
+
+常见症状：
+
+Recall@500 high
+Oracle upper bound high
+nDCG@20 low
+gold often in candidate pool but ranked 50+
+
+下一步改 rerank：
+
+1. 加 source-aware features
+best_source_rank
+source_count
+source_group_count
+high_precision_source_hit
+intent_matched_source_hit
+entity_exact_source_hit
+train_context_only_flag
+extra_pool_tier
+2. 分层训练 negatives
+
+不要随机从 500 里采负样本。
+
+采：
+
+top false positives from high-precision sources
+train-context noisy negatives
+same-artist wrong tracks
+same-title/album confusions
+extra500 hard negatives
+3. intent-specific rerank features
+
+例如：
+
+specific_track: title/artist exact match 权重大
+mood_playlist: tag/mood overlap 权重大
+similar_to_seed: seed similarity 权重大
+era_genre: decade/genre match 权重大
+4. protected topK / candidate tiering
+
+如果 500 噪声伤排序：
+
+core300 candidates get tier=0
+extra500 candidates get tier=1
+extra1000 candidates get tier=2
+
+让模型学习 extra candidates 要更强证据才能上 top20。
+
+5. 多任务目标
+
+除了 LambdaRank，可以辅助训练：
+
+is_gold_in_top20 classification
+pairwise gold vs high-rank negative
+intent-specific calibration
+B. Candidate recall 很低
+
+说明 source 不够，rerank 再强也没用。
+
+下一步加 source：
+
+specific_track 低
+
+加：
+
+better title normalization
+artist-title parser
+quoted span exact
+alias matching
+fuzzy title with artist disambiguation
+artist_exploration 低
+
+加：
+
+artist discography source
+artist alias source
+artist+genre constrained source
+same artist from positive seed
+album 低
+
+加：
+
+album exact tracks
+album alias / deluxe / remaster normalization
+album+artist disambiguation
+mood_playlist 低
+
+加：
+
+clean mood/activity tags
+train-context user query source
+genre synonym expansion
+manual vocabulary map: chill/relaxing/mellow, upbeat/energetic, sad/melancholic
+lyrics_theme 低
+
+加：
+
+lyrics index
+lyrics summary
+theme tags
+similar_to_seed 低
+
+加：
+
+same artist/album/tag seed expansion
+case-neighbor train turns
+embedding/CF seed source
+era_genre 低
+
+加：
+
+year/decade filters
+genre+decade index
+era synonym map: 90s/nineties/1990s
+12. 从当前系统演进到强 candidate pool 的路线图
+Phase 1：重构 candidate pool 为 source-union artifact
+
+目标：停止把 RRF 当粗排真理。
+
+产物：
+
+candidate_pool.parquet/jsonl
+source diagnostics report
+candidate_union_recall report
+
+每个 candidate 保留 source provenance。
+
+立刻做：
+
+current BM25 multi-index
+train-context source
+history seed query
+quoted entity query
+
+全部改成 unordered union + features。
+
+Phase 2：intent router + source budget
+
+先做 deterministic intent router。
+
+输出：
+
+intent labels
+entity confidence
+negative constraint flags
+source budget profile
+
+实现：
+
+specific_track rules
+artist/album rules
+mood/genre keyword rules
+lyrics/theme trigger
+cover-art trigger
+similar-to-seed trigger
+era/year trigger
+
+每个 intent 有独立 topK budget。
+
+Phase 3：BM25 index bank 清洗
+
+保留：
+
+title
+artist
+album
+title_artist_album
+genre_tag
+clean_description
+train_context
+lyrics/theme
+era_genre
+
+删除或隔离：
+
+noisy tags
+long unclean assistant responses
+private playlist artifacts
+debug/template text
+
+每个 index 单独诊断 source recall 和 incremental recall。
+
+Phase 4：entity parser
+
+做 catalog dictionary + query parser。
+
+优先支持：
+
+quoted title
+by artist
+from album
+like seed
+not artist/genre
+decade/year
+genre/mood/activity
+
+entity parser 的价值不仅是召回，也是 rerank features 和 negative filters。
+
+Phase 5：train-context 安全化
+
+把 train-context 从“大字段增强”改成多个可诊断 source：
+
+train_user_query_source
+train_goal_source
+train_reason_source
+train_case_neighbor_source
+
+做 OOF fold-local index，确认无泄漏。
+
+Phase 6：三档候选池
+
+建立三个固定配置：
+
+pool300_core
+pool500_recall
+pool1000_diagnostic
+
+每个 turn 输出：
+
+candidate_id
+pool_tier
+source list
+
+推荐使用：
+
+300：rerank 主训练稳定池
+500：final candidate 主要候选池
+1000：source 研究和 oracle upper bound
+
+如果 500 recall 明显高但 rerank 噪声大，就训练时把 500 extra 当 hard-negative / tiered candidates，而不是简单混进去。
+
+Phase 7：miss taxonomy 驱动加 source
+
+每周或每轮实验只问一个问题：
+
+gold 为什么不在 pool？
+
+按 taxonomy 加 source，而不是盲目加更多 BM25 variants。
+
+例如：
+
+20% miss 是 album -> 加 album source
+15% miss 是 lyrics theme -> 加 lyrics source
+30% miss 是 similar_to_seed -> 加 seed/case/embedding source
+Phase 8：和 rerank 协同
+
+当 candidate pool recall 上去后，rerank 要改成 source-aware：
+
+source_count
+intent_source_match
+pool_tier
+best_source_rank
+unique_source_hit
+exact_entity_match
+negative_violation
+train_context_only
+lyrics_only
+embedding_only
+
+并且训练 hard negatives：
+
+same artist wrong track
+same title wrong version
+train-context false positive
+mood tag false positive
+extra500 high-score false positive
+最终推荐框架
+
+我会把强 candidate pool 定义为：
+
+CandidatePool(turn) =
+  EntityExactSources(turn, intent, entities)
+  ∪ MetadataBM25Sources(turn, q_current, q_goal, q_recent)
+  ∪ ContextAugmentationSources(turn, fold_safe_train_context)
+  ∪ SeedExpansionSources(turn, positive_seeds, negative_seeds)
+  ∪ IntentSpecialSources(turn, lyrics/cover/era/album)
+  ∪ SmallFallbackSources(turn)
+
+然后每个 source 不直接竞争排名，而是贡献证据：
+
+candidate_features(track, turn) =
+  source ranks
+  source scores
+  entity matches
+  intent matches
+  seed relations
+  negative violations
+  pool tier
+  source overlap
+
+最重要的建设顺序是：
+
+1. source-union artifact
+2. intent router
+3. BM25 index bank 清洗
+4. entity parser
+5. fold-safe train-context source
+6. 300/500/1000 三档候选池
+7. candidate_union recall + incremental recall + miss taxonomy
+8. source-aware rerank
+
+你的当前信号已经说明：候选 source 有潜力，但早期融合策略不可信。所以下一步不是继续修 RRF，而是把粗排升级成一个按意图路由、按 source 归因、按候选集合评测、按 rerank 特征消费的 candidate pool framework。

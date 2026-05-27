@@ -1,6 +1,10 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+.DS_Store
 cache/
 experiments/
 submissions/
+bin/
+music-crs-evaluator/
+blindset_A_*submission.zip
